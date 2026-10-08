@@ -1,0 +1,174 @@
+# End-to-end test stack: two Syncthing "servers", one "PC", a fake Discord
+# webhook and the syncwatch image, run like the IVAR deployment (non-root,
+# read-only root filesystem). Driven by compose_test.go:
+#
+#   go test -tags compose -v ./test/compose
+#
+# Hosts are named *.e2e.invalid (RFC 2606): when a container is stopped, its
+# name must not fall through to the LAN's DNS and reach a real server with
+# the same short name. Ports are published on 127.0.0.1. When Docker runs in a VM whose port
+# forwarder reaches the VM's own interface, set SW_E2E_BIND=0.0.0.0.
+name: syncwatch-e2e
+
+x-syncthing: &syncthing
+  image: syncthing/syncthing:2.1.5
+  healthcheck:
+    disable: true
+  environment: &stenv
+    PUID: "1000"
+    PGID: "1000"
+    STGUIADDRESS: https://0.0.0.0:8384
+    STNOUPGRADE: "1"
+
+services:
+  e2e-akka:
+    <<: *syncthing
+    hostname: akka.e2e.invalid
+    networks:
+      default:
+        aliases: [akka.e2e.invalid]
+    environment:
+      <<: *stenv
+      STGUIAPIKEY: key-akka-compose-0123456789
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18701:8384"]
+
+  e2e-sol:
+    <<: *syncthing
+    hostname: sol.e2e.invalid
+    networks:
+      default:
+        aliases: [sol.e2e.invalid]
+    environment:
+      <<: *stenv
+      STGUIAPIKEY: key-sol-compose-0123456789
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18702:8384"]
+
+  e2e-mortis:
+    <<: *syncthing
+    hostname: mortis.e2e.invalid
+    networks:
+      default:
+        aliases: [mortis.e2e.invalid]
+    environment:
+      <<: *stenv
+      STGUIAPIKEY: key-mortis-compose-0123456789
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18703:8384"]
+
+  e2e-discord:
+    networks:
+      default:
+        aliases: [discord.e2e.invalid]
+    build:
+      context: ../..
+      dockerfile: test/fakediscord/Dockerfile
+    image: syncwatch-fakediscord:test
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18799:8080"]
+
+  # Seeds /data/syncwatch.yaml (imported once on first start) in the data
+  # volume, like a user would, and hands the volume to the syncwatch user.
+  init:
+    image: alpine:3
+    volumes:
+      - swdata:/data
+    environment:
+      CONFIG: |
+        public_url: http://dashboard.test
+        timezone: Europe/Stockholm
+        servers:
+          - name: AKKA
+            url: https://akka.e2e.invalid:8384
+            api_key: key-akka-compose-0123456789
+          - name: SOL
+            url: https://solgate.e2e.invalid:8080   # through the read-only gate
+            api_key: gate-token-sol-compose-0123456789
+        collector:
+          event_timeout: 20s
+          full_check_interval: 5m
+          structure_interval: 1m
+          request_timeout: 10s
+          down_after_failures: 2
+        checks:
+          H1: { debounce: 15s }
+          H2: { debounce: 60s }
+          H3: { debounce: 5s }
+          S1: { debounce: 10s }
+          S2: { debounce: 10s }
+          S3: { debounce: 10s }
+        thresholds:
+          paused: 20s
+          pc_offline: 40s
+        notifications:
+          discord_webhook: http://discord.e2e.invalid:8080/api/webhooks/1/compose-token
+          discord_role_id: "555"
+          quiet_hours: "off"
+          reminder_time: "off"
+          weekly_day: "off"
+        api:
+          token: swt_compose_token_0123456789
+        structure:
+          project_pattern: '^(ME-)?LIVE-[A-Za-z0-9]'
+          share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$'
+          type_tokens: [1SOURCE, 2PROJECTFILES, 3INTERMEDIATE, 4FINALS, 5COLLECT]
+          placement:
+            - when_name_matches: '^ME-LIVE-'
+              share_must_have: { me: true }
+            - when_name_matches: '^LIVE-'
+              share_must_have: { me: false }
+          ignore_dirs: ['.*', '@*']
+    command: ["sh", "-c", "printf '%s' \"$$CONFIG\" > /data/syncwatch.yaml && chmod 600 /data/syncwatch.yaml && chown -R 65532:65532 /data"]
+
+  # The read-only gate in front of SOL: it holds SOL's API key, syncwatch
+  # only knows the gate token.
+  e2e-sol-gate:
+    image: syncwatch:e2e
+    pull_policy: never
+    command: ["gate"]
+    hostname: solgate.e2e.invalid
+    networks:
+      default:
+        aliases: [solgate.e2e.invalid]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SYNCWATCH_GATE_SYNCTHING: https://sol.e2e.invalid:8384
+      SYNCWATCH_GATE_SYNCTHING_KEY: key-sol-compose-0123456789
+      SYNCWATCH_GATE_TOKEN: gate-token-sol-compose-0123456789
+      SYNCWATCH_TLS_HOSTS: solgate.e2e.invalid
+    volumes:
+      - solgate:/data
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18704:8080"]
+    depends_on:
+      e2e-sol: { condition: service_started }
+
+  syncwatch:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: e2e
+    image: syncwatch:e2e
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      TZ: Europe/Stockholm
+      SYNCWATCH_ADMIN_PASSWORD: compose-admin-password
+      SYNCWATCH_LOG_LEVEL: debug
+      SYNCWATCH_ALLOW_ANY_WEBHOOK: "true"   # the fake Discord isn't on discord.com
+    volumes:
+      - swdata:/data
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18780:8080"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+      e2e-akka: { condition: service_started }
+      e2e-sol: { condition: service_started }
+      e2e-sol-gate: { condition: service_started }
+      e2e-mortis: { condition: service_started }
+      e2e-discord: { condition: service_started }
+
+volumes:
+  swdata:
+  solgate:

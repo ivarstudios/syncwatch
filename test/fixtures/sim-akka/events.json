@@ -1,0 +1,146 @@
+[
+  {
+    "id": 101,
+    "globalID": 167,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:32:58.8670161+02:00",
+    "data": {
+      "duration": 74.8670161,
+      "folder": "p-beta",
+      "from": "idle",
+      "to": "scan-waiting"
+    }
+  },
+  {
+    "id": 102,
+    "globalID": 168,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:32:58.8670161+02:00",
+    "data": {
+      "duration": 0.8670161,
+      "folder": "p-beta",
+      "from": "scan-waiting",
+      "to": "scanning"
+    }
+  },
+  {
+    "id": 103,
+    "globalID": 169,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:32:58.8681187+02:00",
+    "data": {
+      "duration": 0.8681187,
+      "folder": "p-beta",
+      "from": "scanning",
+      "to": "idle"
+    }
+  },
+  {
+    "id": 104,
+    "globalID": 170,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:39.1827053+02:00",
+    "data": {
+      "duration": 69.1827053,
+      "folder": "p-alpha",
+      "from": "idle",
+      "to": "scan-waiting"
+    }
+  },
+  {
+    "id": 105,
+    "globalID": 171,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:39.1827053+02:00",
+    "data": {
+      "duration": 0.1827053,
+      "folder": "p-alpha",
+      "from": "scan-waiting",
+      "to": "scanning"
+    }
+  },
+  {
+    "id": 106,
+    "globalID": 172,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:39.1832212+02:00",
+    "data": {
+      "duration": 0.1832212,
+      "folder": "p-alpha",
+      "from": "scanning",
+      "to": "idle"
+    }
+  },
+  {
+    "id": 107,
+    "globalID": 173,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:44.1774666+02:00",
+    "data": {
+      "duration": 69.1774666,
+      "folder": "p-gamma",
+      "from": "idle",
+      "to": "scan-waiting"
+    }
+  },
+  {
+    "id": 108,
+    "globalID": 174,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:44.1774666+02:00",
+    "data": {
+      "duration": 0.1774666,
+      "folder": "p-gamma",
+      "from": "scan-waiting",
+      "to": "scanning"
+    }
+  },
+  {
+    "id": 109,
+    "globalID": 175,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:44.1779708+02:00",
+    "data": {
+      "duration": 0.1779708,
+      "folder": "p-gamma",
+      "from": "scanning",
+      "to": "idle"
+    }
+  },
+  {
+    "id": 110,
+    "globalID": 176,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:52.7942713+02:00",
+    "data": {
+      "duration": 54.7942713,
+      "folder": "p-beta",
+      "from": "idle",
+      "to": "scan-waiting"
+    }
+  },
+  {
+    "id": 111,
+    "globalID": 177,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:52.7942713+02:00",
+    "data": {
+      "duration": 0.7942713,
+      "folder": "p-beta",
+      "from": "scan-waiting",
+      "to": "scanning"
+    }
+  },
+  {
+    "id": 112,
+    "globalID": 178,
+    "type": "StateChanged",
+    "time": "2026-10-01T22:33:52.7953557+02:00",
+    "data": {
+      "duration": 0.7953557,
+      "folder": "p-beta",
+      "from": "scanning",
+      "to": "idle"
+    }
+  }
+]

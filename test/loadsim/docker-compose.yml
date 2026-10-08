@@ -1,0 +1,75 @@
+# Structure-scan load simulation: one Syncthing "NAS" with a large,
+# IVAR-like share and the syncwatch image watching it. Driven by
+# loadsim_test.go:
+#
+#   go test -tags loadsim -v -timeout 60m ./test/loadsim
+#
+# Names are under .invalid so nothing can resolve to a real server. Set
+# SW_E2E_BIND=0.0.0.0 when Docker runs in a VM (see test/compose).
+name: syncwatch-loadsim
+
+services:
+  load-nas:
+    image: syncthing/syncthing:2.1.5
+    hostname: nas.load.invalid
+    networks:
+      default:
+        aliases: [nas.load.invalid]
+    healthcheck:
+      disable: true
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      STGUIADDRESS: https://0.0.0.0:8384
+      STNOUPGRADE: "1"
+      STNODEFAULTFOLDER: "1"
+      STGUIAPIKEY: key-load-0123456789
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18711:8384"]
+
+  init:
+    image: alpine:3
+    volumes:
+      - swdata:/data
+    environment:
+      CONFIG: |
+        timezone: Europe/Stockholm
+        servers:
+          - name: NAS
+            url: https://nas.load.invalid:8384
+            api_key: key-load-0123456789
+        collector:
+          structure_interval: 1m
+          baseline_interval: 7d
+          concurrency: 3
+        structure:
+          project_pattern: '^LIVE-'
+          share_type_from_path: '-LIVE-(?P<type>[1-5][A-Z]+)$'
+          type_tokens: [1SOURCE, 2PROJECTFILES]
+        notifications:
+          quiet_hours: "off"
+          reminder_time: "off"
+          weekly_day: "off"
+        api:
+          token: swt_loadsim_token_0123456789
+    command: ["sh", "-c", "printf '%s' \"$$CONFIG\" > /data/syncwatch.yaml && chmod 600 /data/syncwatch.yaml && chown -R 65532:65532 /data"]
+
+  syncwatch:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: loadsim
+    image: syncwatch:loadsim
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      TZ: Europe/Stockholm
+      SYNCWATCH_ADMIN_PASSWORD: loadsim-admin-password
+    volumes:
+      - swdata:/data
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18781:8080"]
+    depends_on:
+      init: { condition: service_completed_successfully }
+
+volumes:
+  swdata:

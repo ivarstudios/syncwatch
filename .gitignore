@@ -1,0 +1,14 @@
+# Build output
+/syncwatch
+/syncwatch.exe
+/dist/
+
+# Local runtime data (database, secrets key)
+/data/
+*.db
+*.db-shm
+*.db-wal
+secret.key
+
+# Logs
+*.log

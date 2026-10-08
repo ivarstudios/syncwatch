@@ -1,0 +1,49 @@
+{{define "grid"}}{{template "head" .}}
+<div class="toolbar">
+  <label class="search">Search <input type="search" id="grid-search" placeholder="Folder name or ID" autocomplete="off"></label>
+  <label class="check"><input type="checkbox" id="grid-problems"> Only problems</label>
+</div>
+{{template "grid-body" .}}
+{{template "foot" .}}{{end}}
+
+{{define "cell"}}<span class="cell c-{{.Class}}" title="{{.Title}}">{{if .Icon}}<span aria-hidden="true">{{.Icon}}</span> {{end}}{{.Text}}</span>{{end}}
+
+{{define "grid-body"}}{{$vm := .Data.VM}}
+<div id="grid-body" hx-get="/frag/grid" hx-trigger="sse:update" hx-swap="outerHTML">
+  {{if not $vm.Groups}}<p class="card">No folders yet.</p>{{end}}
+  <div class="grid-wide">
+  {{range $gi, $g := $vm.Groups}}
+    <details class="group" id="g-{{$gi}}" data-key="group:{{$g.Name}}" {{if $g.Open}}open{{end}}>
+      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{$g.Rows}} folders</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with problems</span>{{else}} · <span class="c-ok">✔ all fine</span>{{end}}</summary>
+      <div class="scroll">
+      <table class="grid">
+        <thead><tr><th scope="col" class="fcol">Folder</th>{{range $vm.Devices}}<th scope="col" class="dcol {{if .Server}}srv{{end}}" title="{{.ID}}">{{.Name}}{{if .Server}}<span class="muted"> (server)</span>{{end}}</th>{{end}}</tr></thead>
+        <tbody>
+        {{range $g.Items}}
+          <tr class="frow{{if .Problem}} has-problem{{end}}" data-search="{{.Search}}">
+            <th scope="row" class="fcol" title="ID {{.ID}} · on {{.Servers}}">{{.Label}}</th>
+            {{range .Cells}}<td>{{template "cell" .}}</td>{{end}}
+          </tr>
+        {{end}}
+        </tbody>
+      </table>
+      </div>
+    </details>
+  {{end}}
+  </div>
+  <div class="grid-narrow">
+  {{range $vm.Lists}}
+    <details class="group" data-key="dev:{{.Device.ID}}" {{if .Problems}}open{{end}}>
+      <summary><strong>{{.Device.Name}}</strong>{{if .Device.Server}} <span class="muted">(server)</span>{{end}} · {{len .Items}} folders{{if .Problems}} · <span class="c-err">✖ {{.Problems}}</span>{{end}}</summary>
+      <ul class="dlist">
+        {{range .Items}}<li class="frow{{if .Cell.Problem}} has-problem{{end}}" data-search="{{lower .Folder}}"><span>{{.Folder}}</span>{{template "cell" .Cell}}</li>{{end}}
+      </ul>
+    </details>
+  {{end}}
+  </div>
+  <p class="legend muted small">
+    <span class="cell c-ok">✔ synced</span> <span class="cell c-sync">⟳ syncing</span> <span class="cell c-err">✖ error</span>
+    <span class="cell c-paused">⏸ paused</span> <span class="cell c-off">○ offline</span> <span class="cell c-warn">⊘ not shared back</span> <span class="cell c-na">– not shared</span>
+  </p>
+</div>
+{{end}}

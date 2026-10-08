@@ -1,0 +1,65 @@
+[
+  {
+    "id": "p-alpha",
+    "label": "LIVE-ALPHA-2PROJECTFILES",
+    "path": "D:\\tmp\\swsim\\st\\akka\\share\\AKKA-LIVE-2PROJECTFILES\\LIVE-ALPHA-2PROJECTFILES",
+    "type": "sendreceive",
+    "filesystemType": "basic",
+    "paused": false,
+    "markerName": ".stfolder",
+    "devices": [
+      {
+        "deviceID": "JRDDY2W-ZNFBC36-U4ZEJ3S-BKUZCT3-XWUSTDZ-KFHIY6T-EW7SETU-FYHIEAM"
+      },
+      {
+        "deviceID": "SXOSWHO-MXT5WVF-S2WPDKT-E42G7QN-DBNNSIY-2KH7DBH-SVT6EQK-CVEEDAZ"
+      },
+      {
+        "deviceID": "VAO5AMX-52V3GKC-HC5PP6N-TEESAVH-GWYJG4Q-JUOUQOP-FJ6RBTS-TJTKEAF"
+      }
+    ]
+  },
+  {
+    "id": "p-beta",
+    "label": "LIVE-BETA-1SOURCE",
+    "path": "D:\\tmp\\swsim\\st\\akka\\share\\AKKA-LIVE-1SOURCE\\LIVE-BETA-1SOURCE",
+    "type": "sendreceive",
+    "filesystemType": "basic",
+    "paused": false,
+    "markerName": ".stfolder",
+    "devices": [
+      {
+        "deviceID": "JRDDY2W-ZNFBC36-U4ZEJ3S-BKUZCT3-XWUSTDZ-KFHIY6T-EW7SETU-FYHIEAM"
+      },
+      {
+        "deviceID": "OQSKX2A-JN66XDT-SLLKWHV-JFRH22Q-CIWTGF2-XE4FYJ4-4OHDIZW-EGSFRQ7"
+      },
+      {
+        "deviceID": "VAO5AMX-52V3GKC-HC5PP6N-TEESAVH-GWYJG4Q-JUOUQOP-FJ6RBTS-TJTKEAF"
+      },
+      {
+        "deviceID": "3MO3PQR-CLYVSDK-AANMQI7-K4LFIYJ-6N2Z44T-UTZYCN3-VTLYGKL-57LO6AI"
+      }
+    ]
+  },
+  {
+    "id": "p-gamma",
+    "label": "LIVE-GAMMA-1SOURCE",
+    "path": "D:\\tmp\\swsim\\st\\akka\\share\\AKKA-LIVE-1SOURCE\\LIVE-GAMMA-1SOURCE",
+    "type": "sendreceive",
+    "filesystemType": "basic",
+    "paused": false,
+    "markerName": ".stfolder",
+    "devices": [
+      {
+        "deviceID": "JRDDY2W-ZNFBC36-U4ZEJ3S-BKUZCT3-XWUSTDZ-KFHIY6T-EW7SETU-FYHIEAM"
+      },
+      {
+        "deviceID": "OQSKX2A-JN66XDT-SLLKWHV-JFRH22Q-CIWTGF2-XE4FYJ4-4OHDIZW-EGSFRQ7"
+      },
+      {
+        "deviceID": "SXOSWHO-MXT5WVF-S2WPDKT-E42G7QN-DBNNSIY-2KH7DBH-SVT6EQK-CVEEDAZ"
+      }
+    ]
+  }
+]

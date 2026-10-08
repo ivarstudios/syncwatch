@@ -1,0 +1,14 @@
+# Minimal configuration: one or more servers and a Discord webhook. Every
+# check that needs no naming rules works out of the box (health, overlaps,
+# share roots as folders, duplicates, folders not in Syncthing, cleanup).
+public_url: https://monitor.lan:8080
+timezone: Europe/Berlin
+servers:
+  - name: nas1
+    url: https://nas1.lan:8384
+    api_key: CHANGE-ME
+  - name: nas2
+    url: https://nas2.lan:8384
+    api_key: CHANGE-ME
+notifications:
+  discord_webhook: https://discord.com/api/webhooks/CHANGE/ME

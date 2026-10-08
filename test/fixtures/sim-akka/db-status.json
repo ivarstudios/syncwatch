@@ -1,0 +1,53 @@
+{
+  "p-alpha": {
+    "state": "idle",
+    "stateChanged": "2026-10-01T22:32:30+02:00",
+    "error": "",
+    "watchError": "",
+    "invalid": "",
+    "errors": 0,
+    "pullErrors": 0,
+    "globalBytes": 43,
+    "globalTotalItems": 1,
+    "localBytes": 43,
+    "needBytes": 0,
+    "needTotalItems": 0,
+    "inSyncBytes": 43,
+    "receiveOnlyTotalItems": 0,
+    "sequence": 1
+  },
+  "p-beta": {
+    "state": "idle",
+    "stateChanged": "2026-10-01T22:31:44+02:00",
+    "error": "",
+    "watchError": "",
+    "invalid": "",
+    "errors": 0,
+    "pullErrors": 0,
+    "globalBytes": 44,
+    "globalTotalItems": 2,
+    "localBytes": 44,
+    "needBytes": 0,
+    "needTotalItems": 0,
+    "inSyncBytes": 44,
+    "receiveOnlyTotalItems": 0,
+    "sequence": 2
+  },
+  "p-gamma": {
+    "state": "idle",
+    "stateChanged": "2026-10-01T22:32:35+02:00",
+    "error": "",
+    "watchError": "",
+    "invalid": "",
+    "errors": 0,
+    "pullErrors": 0,
+    "globalBytes": 0,
+    "globalTotalItems": 0,
+    "localBytes": 0,
+    "needBytes": 0,
+    "needTotalItems": 0,
+    "inSyncBytes": 0,
+    "receiveOnlyTotalItems": 0,
+    "sequence": 0
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "version": "v2.1.5",
+  "longVersion": "syncthing v2.1.5 \"Hafnium Hornet\" (go1.27.1 windows-amd64) builder@github.syncthing.net 2026-09-08 06:57:55 UTC [stnoupgrade]",
+  "os": "windows",
+  "arch": "amd64",
+  "container": false
+}

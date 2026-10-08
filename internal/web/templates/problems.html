@@ -1,0 +1,100 @@
+{{define "problems"}}{{template "head" .}}
+{{$vm := .Data.VM}}
+<form class="toolbar filters" method="get" action="/problems">
+  <label>Severity
+    <select name="severity">
+      <option value="">All</option>
+      {{range $s := (list "error" "warn" "info")}}<option value="{{$s}}" {{if eq $vm.Filter.Severity $s}}selected{{end}}>{{$s}}</option>{{end}}
+    </select>
+  </label>
+  <label>Category
+    <select name="category">
+      <option value="">All</option>
+      {{range $c := (list "health" "cross" "structure" "cleanup")}}<option value="{{$c}}" {{if eq $vm.Filter.Category $c}}selected{{end}}>{{$c}}</option>{{end}}
+    </select>
+  </label>
+  <label>Check
+    <select name="check">
+      <option value="">All</option>
+      {{range $vm.Checks}}<option value="{{.ID}}" {{if eq $vm.Filter.Check .ID}}selected{{end}}>{{.ID}} {{.Title}}</option>{{end}}
+    </select>
+  </label>
+  <label>Server
+    <select name="server">
+      <option value="">All</option>
+      {{range $vm.Servers}}<option value="{{.ID}}" {{if eq $vm.Filter.Server .ID}}selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </label>
+  <label class="check"><input type="checkbox" name="snoozed" value="1" {{if $vm.Filter.ShowSnoozed}}checked{{end}}> Show snoozed and ignored</label>
+  <button type="submit">Filter</button>
+</form>
+{{template "problems-body" .}}
+{{template "foot" .}}{{end}}
+
+{{define "problems-body"}}{{$vm := .Data.VM}}{{$admin := .Data.Admin}}{{$csrf := .CSRF}}
+<div id="problems-body" hx-get="/frag/problems?{{$vm.Query}}" hx-trigger="sse:update" hx-swap="outerHTML">
+  <p class="summary">
+    <span class="sev sev-error">🔴 {{$vm.Errors}} errors</span>
+    <span class="sev sev-warn">🟠 {{$vm.Warns}} warnings</span>
+    <span class="sev sev-info">🔵 {{$vm.Infos}} suggestions</span>
+    {{if $vm.Hidden}}<span class="muted">· {{$vm.Hidden}} snoozed or ignored hidden</span>{{end}}
+    <span class="muted">· {{$vm.NewThisWeek}} new and {{len $vm.ResolvedThisWeek}} resolved this week</span>
+  </p>
+  {{if not $vm.Rows}}<p class="card c-ok">✔ Nothing to show.</p>{{end}}
+  <ul class="plist">
+  {{range $vm.Rows}}
+    <li id="f-{{.ID}}" class="sev-row-{{.Severity}}{{if .Snoozed}} snoozed{{end}}">
+      <details data-key="f:{{.ID}}">
+        <summary>
+          {{template "sev" .}} <span class="chk" title="{{.Title}}">{{.Checks}}</span>
+          {{if .Urgent}}<span class="tag urgent" title="Sends urgent pings">urgent</span>{{end}}
+          {{if .Stale}}<span class="tag stale" title="A server it depends on is unreachable; this is the last known state">stale</span>{{end}}
+          {{if .Snoozed}}<span class="tag snoozed">{{.SnoozeLabel}}</span>{{end}}
+          <span class="msg">{{.Message}}</span>
+          <span class="muted nowrap">· open {{.OpenFor}}</span>
+        </summary>
+        <div class="fold">
+          <table class="kv">
+            <tr><th>Check</th><td>{{.Checks}} — {{.Title}} ({{.Category}})</td></tr>
+            <tr><th>Subject</th><td>{{.Subject}}</td></tr>
+            {{if .ServerName}}<tr><th>Server</th><td>{{.ServerName}}</td></tr>{{end}}
+            <tr><th>Since</th><td>{{.Since}}</td></tr>
+            <tr><th>Opened</th><td>{{.OpenedAt}}{{if .Pinged}} · pinged {{.Pinged}}{{end}}</td></tr>
+            {{range .Details}}{{if .Value}}<tr><th>{{.Key}}</th><td class="mono">{{.Value}}</td></tr>{{end}}{{end}}
+          </table>
+          {{if .Paths}}<p><strong>Failing files</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
+          <p class="mono small muted">Finding ID {{.ID}}</p>
+          {{if .Link}}<p><a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a></p>{{end}}
+          {{if $admin}}
+          <div class="actions">
+            {{if .Snoozed}}
+            <form method="post" action="/problems/{{.ID}}/unsnooze"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Un-snooze</button></form>
+            {{else}}
+            <form method="post" action="/problems/{{.ID}}/snooze" class="inline">
+              <input type="hidden" name="csrf" value="{{$csrf}}">
+              <button type="submit" name="for" value="1d">Snooze 1 day</button>
+              <button type="submit" name="for" value="1w">Snooze 1 week</button>
+              <label>until <input type="date" name="until"></label>
+              <button type="submit" name="for" value="date">Snooze until date</button>
+            </form>
+            <form method="post" action="/problems/{{.ID}}/ignore" class="inline">
+              <input type="hidden" name="csrf" value="{{$csrf}}">
+              <label>Reason <input name="reason" required placeholder="why this is fine"></label>
+              <button type="submit">Ignore</button>
+            </form>
+            {{end}}
+          </div>
+          {{end}}
+        </div>
+      </details>
+    </li>
+  {{end}}
+  </ul>
+  {{if $vm.ResolvedThisWeek}}
+  <details class="card" data-key="resolved-week">
+    <summary><strong>Resolved this week ({{len $vm.ResolvedThisWeek}})</strong></summary>
+    <ul class="plist compact">{{range $vm.ResolvedThisWeek}}<li><span class="c-ok">{{.Icon}}</span> <span class="chk">{{.Check}}</span> {{.Message}} <span class="muted">· {{.When}}</span></li>{{end}}</ul>
+  </details>
+  {{end}}
+</div>
+{{end}}

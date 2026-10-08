@@ -1,0 +1,53 @@
+# IVAR Studios example configuration for syncwatch.
+#
+# Place it at /data/syncwatch.yaml before the first start (it is imported once),
+# or import it later under Settings → Export and import. API keys may be added
+# here for the first import; they are then stored encrypted and never exported.
+
+public_url: https://192.168.1.10:8080
+timezone: Europe/Stockholm
+
+servers:
+  - name: AKKA
+    url: https://192.168.1.10:8384
+    # api_key: …
+  - name: SOL
+    url: https://192.168.2.10:8384
+  - name: SIRIUS
+    url: https://192.168.3.10:8384
+
+collector:
+  mode: events            # switch to "polled" if the probe shows load on the NASes
+  event_timeout: 50s      # below the VPN's idle timeout
+  full_check_interval: 4h
+  structure_interval: 1h
+
+notifications:
+  # discord_webhook: https://discord.com/api/webhooks/…
+  discord_role_id: ""     # numeric ID of the role to mention in urgent messages
+  quiet_hours: "22:00-07:00"
+  reminder_time: "08:00"
+  weekly_day: monday
+  weekly_time: "08:00"
+
+# IVAR naming rules.
+#   Shares:          <NAS>-LIVE-<n><TYPE> and <NAS>-ME-LIVE-<n><TYPE>
+#   Project folders: LIVE-<PROJECT>[-…] and ME-LIVE-<PROJECT>[-…] at the top of a share,
+#                    normally containing the share's type token.
+structure:
+  project_pattern: '^(ME-)?LIVE-[A-Za-z0-9]'
+  share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$'
+  type_tokens: [1SOURCE, 2PROJECTFILES, 3INTERMEDIATE, 4FINALS, 5COLLECT]
+  placement:
+    - when_name_matches: '^ME-LIVE-'
+      share_must_have: { me: true }
+    - when_name_matches: '^LIVE-'
+      share_must_have: { me: false }
+  ignore_dirs: ['@Recycle', '@Recently-Snapshot', '.streams', '.@__thumb', '@eaDir', '.stversions', '.stfolder', '.*', '#recycle']
+  nested_scan_depth: 3
+
+shares:
+  # Shares that have no Syncthing folder yet but should be checked.
+  add:
+    SIRIUS: [/share/CACHEDEV2_DATA/SIRIUS-LIVE-5COLLECT]
+  exclude: {}

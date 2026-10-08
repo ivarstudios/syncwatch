@@ -1,0 +1,91 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
+<title>{{if .Title}}{{.Title}} · {{end}}syncwatch</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="icon" href="/assets/syncwatch-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/syncwatch-icon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/syncwatch-icon-256.png">
+<script src="/assets/htmx.min.js" defer></script>
+<script src="/assets/htmx-ext-sse.js" defer></script>
+<script src="/assets/app.js" defer></script>
+</head>
+<body{{if .Role}} hx-ext="sse" sse-connect="/events"{{end}}>
+<header class="top">
+  <a class="brand" href="/"><img class="logo" src="/assets/syncwatch-icon.svg" alt="" width="21" height="24">syncwatch</a>
+  {{if .Role}}
+  <nav aria-label="Main">
+    <a href="/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
+    <a href="/grid" {{if eq .Nav "grid"}}aria-current="page"{{end}}>Folders</a>
+    <a href="/problems" {{if eq .Nav "problems"}}aria-current="page"{{end}}>Problems</a>
+    {{if eq .Role "admin"}}<a href="/settings" {{if eq .Nav "settings"}}aria-current="page"{{end}}>Settings</a>{{end}}
+  </nav>
+  {{if .LoggedIn}}
+  <form method="post" action="/logout" class="logout">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="link">Log out</button>
+  </form>
+  {{else if not .Proxy}}
+  <a class="logout" href="/login">Log in</a>
+  {{end}}
+  {{end}}
+</header>
+<main>
+{{template "alert" .}}
+{{if .Flash}}<div class="flash ok" role="status">✔ {{.Flash}}</div>{{end}}
+{{if .FlashErr}}<div class="flash err" role="alert">✖ {{.FlashErr}}</div>{{end}}
+{{end}}
+
+{{define "foot"}}
+</main>
+<footer class="foot">syncwatch {{.Version}} · read-only monitor for Syncthing</footer>
+</body>
+</html>
+{{end}}
+
+{{define "alert"}}{{if .Role}}<div id="sw-alert" hx-get="/frag/alert" hx-trigger="every 60s" hx-swap="outerHTML">
+{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications are failing</strong> since {{.Since}}{{with .Error}}: {{.}}{{end}}. Nobody is told about new problems until this is fixed{{if eq $.Role "admin"}} under <a href="/settings#notifications">Settings → Notifications</a>{{end}}.</div>{{end -}}
+</div>{{end}}{{end}}
+
+{{define "sev"}}<span class="sev sev-{{.Severity}}" title="{{.SeverityLabel}}">{{.Icon}} {{.SeverityLabel}}</span>{{end}}
+
+{{define "error"}}{{template "head" .}}
+<section class="card narrow">
+  <h1>{{.Data.Title}}</h1>
+  <p>{{.Data.Message}}</p>
+  <p><a href="/">Back to the dashboard</a></p>
+</section>
+{{template "foot" .}}{{end}}
+
+{{define "login"}}{{template "head" .}}
+<section class="card narrow">
+  <h1>Log in</h1>
+  {{with .Data.Error}}<p class="flash err" role="alert">✖ {{.}}</p>{{end}}
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="next" value="{{.Data.Next}}">
+    <label>Password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
+    <button type="submit">Log in</button>
+  </form>
+  <p class="muted">Use the admin password, or the viewer password if viewing is password-protected.</p>
+</section>
+{{template "foot" .}}{{end}}
+
+{{define "setup"}}{{template "head" .}}
+<section class="card narrow">
+  <h1>Set up syncwatch</h1>
+  <p>Choose the admin password. To prove you run this server, enter the one-time
+  <strong>setup token</strong> printed in the syncwatch log (for Docker: <code>docker logs syncwatch</code>).</p>
+  {{with .Data.Error}}<p class="flash err" role="alert">✖ {{.}}</p>{{end}}
+  <form method="post" action="/setup">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Setup token <input name="token" value="{{.Data.Token}}" autocomplete="off" required></label>
+    <label>Admin password (at least 10 characters) <input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
+    <label>Repeat password <input type="password" name="password2" autocomplete="new-password" minlength="10" required></label>
+    <button type="submit">Save and continue</button>
+  </form>
+</section>
+{{template "foot" .}}{{end}}

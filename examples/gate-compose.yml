@@ -1,0 +1,43 @@
+# The read-only gate on one NAS (example: SOL, QNAP Container Station).
+# It holds this Syncthing's API key, which can change anything; syncwatch
+# only gets a gate token that reaches the read-only endpoints it uses.
+# Run one gate on every NAS syncwatch watches.
+#
+# 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data
+#    chown 1000:1000 /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data
+#    (the user: line below; it must also be able to read config.xml).
+# 2. Adjust the two paths, the user and the LAN address below.
+# 3. docker compose up -d. `docker logs syncwatch-gate` shows the gate token
+#    once (it is also in data/gate-token).
+# 4. In syncwatch, Settings → Servers → SOL: URL https://192.168.2.10:8385
+#    and the gate token as the API key. Its certificate is pinned like
+#    Syncthing's.
+# 5. Port 8384 (the Syncthing GUI) no longer needs to be open to the
+#    syncwatch host; 8385 does.
+services:
+  syncwatch-gate:
+    image: ghcr.io/ivarstudios/syncwatch:1.0.0   # pin the digest too (README → Updating)
+    command: ["gate"]
+    container_name: syncwatch-gate
+    restart: unless-stopped
+    # Syncthing's user (its PUID/PGID), so the gate can read config.xml.
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # Syncthing runs with host networking; so does the gate, to reach its
+    # GUI on 127.0.0.1 (trusted: same machine).
+    network_mode: host
+    environment:
+      - SYNCWATCH_LISTEN=192.168.2.10:8385            # the NAS's LAN address
+      - SYNCWATCH_TLS_HOSTS=192.168.2.10
+      - SYNCWATCH_GATE_SYNCTHING=https://127.0.0.1:8384
+      - SYNCWATCH_GATE_SYNCTHING_CONFIG=/syncthing/config.xml
+    volumes:
+      - /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data:/data
+      # Syncthing's own config.xml, read-only: the gate reads the API key
+      # from it, so the key is never copied anywhere.
+      - /share/CACHEDEV1_DATA/Containers/syncthing/config/config.xml:/syncthing/config.xml:ro
+    labels:
+      - com.centurylinklabs.watchtower.enable=false

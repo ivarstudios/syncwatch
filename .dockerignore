@@ -1,0 +1,10 @@
+.git
+.github
+data
+dist
+*.db
+*.db-*
+secret.key
+docs
+test/fixtures/*/raw
+**/*.log

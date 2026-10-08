@@ -1,0 +1,63 @@
+{{define "overview"}}{{template "head" .}}
+{{template "overview-body" .}}
+{{template "foot" .}}{{end}}
+
+{{define "overview-body"}}{{$vm := .Data.VM}}
+<div id="overview-body" hx-get="/frag/overview" hx-trigger="sse:update" hx-swap="outerHTML">
+  <p class="health" aria-label="Health summary">{{$vm.Health}}</p>
+  <section class="tiles" aria-label="Servers">
+    {{range $vm.Servers}}
+    <article class="tile st-{{.Status}}">
+      <header>
+        <h2>{{.Name}}</h2>
+        <span class="badge st-{{.Status}}">{{.StatusIcon}} {{.StatusLabel}}</span>
+      </header>
+      {{if .LastError}}{{if ne .Status "ok"}}<p class="err-text">{{.LastError}}</p>{{end}}{{end}}
+      <dl class="facts">
+        <dt>Version</dt><dd>{{if .Version}}{{.Version}}{{else}}—{{end}}</dd>
+        <dt>Uptime</dt><dd>{{if .Uptime}}{{.Uptime}}{{else}}—{{end}}</dd>
+        <dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{.Errors}} error</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>
+        <dt>Problems</dt><dd>{{if .Problems}}<a href="/problems?server={{.ID}}">{{.Problems}} open</a>{{else}}none{{end}}</dd>
+        <dt>Certificate</dt><dd>{{if .CertExpires}}<span {{if .CertWarn}}class="c-warn"{{end}}>expires {{.CertExpires}}</span>{{else}}—{{end}}</dd>
+        <dt>Shares</dt><dd>{{.Shares}}{{if .LastScan}} · scanned {{.LastScan}}{{with .ScanCost}} <span class="muted small">({{.}})</span>{{end}}{{end}}</dd>
+        <dt>Last contact</dt><dd>{{.LastContact}}{{if .Mode}} · {{.Mode}}{{end}}</dd>
+      </dl>
+      {{range .ShareErrors}}<p class="c-warn small">⚠ {{.}}</p>{{end}}
+      {{if .Link}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
+    </article>
+    {{else}}
+    <article class="tile"><p>No servers yet. {{if eq $.Role "admin"}}<a href="/settings#servers">Add one in Settings</a>.{{else}}Ask an admin to add one.{{end}}</p></article>
+    {{end}}
+    <article class="tile">
+      <header><h2>PCs</h2></header>
+      <dl class="facts">
+        <dt>Total</dt><dd>{{$vm.PCTotal}}</dd>
+        <dt>Online</dt><dd class="c-ok">✔ {{$vm.PCOnline}}</dd>
+        <dt>Offline &gt; {{$vm.PCOffLabel}}</dt><dd>{{if $vm.PCOff}}<span class="c-warn">○ {{$vm.PCOff}}</span>{{else}}0{{end}}</dd>
+      </dl>
+      <a href="/grid">Folder grid →</a>
+    </article>
+  </section>
+
+  <section class="card">
+    <header class="row">
+      <h2>Top problems</h2>
+      <a href="/problems">All {{$vm.OpenCount}} open →</a>
+    </header>
+    {{if $vm.Top}}
+    <ul class="plist compact">
+      {{range $vm.Top}}
+      <li class="sev-row-{{.Severity}}">
+        {{template "sev" .}} <span class="chk">{{.Checks}}</span>
+        {{if .Urgent}}<span class="tag urgent" title="Sends urgent pings">urgent</span>{{end}}
+        {{if .Stale}}<span class="tag stale" title="Server unreachable: last known state">stale</span>{{end}}
+        <a class="plain" href="/problems#f-{{.ID}}">{{.Message}}</a>
+        <span class="muted">· open {{.OpenFor}}</span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}<p class="c-ok">✔ No open problems.</p>{{end}}
+  </section>
+  <p class="muted small">Live view · last change {{$vm.Evaluated}}</p>
+</div>
+{{end}}

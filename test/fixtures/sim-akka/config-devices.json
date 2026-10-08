@@ -1,0 +1,47 @@
+[
+  {
+    "deviceID": "JRDDY2W-ZNFBC36-U4ZEJ3S-BKUZCT3-XWUSTDZ-KFHIY6T-EW7SETU-FYHIEAM",
+    "name": "AKKA",
+    "addresses": [
+      "dynamic"
+    ],
+    "paused": false,
+    "introducer": false
+  },
+  {
+    "deviceID": "OQSKX2A-JN66XDT-SLLKWHV-JFRH22Q-CIWTGF2-XE4FYJ4-4OHDIZW-EGSFRQ7",
+    "name": "SIRIUS",
+    "addresses": [
+      "tcp://127.0.0.1:19402"
+    ],
+    "paused": false,
+    "introducer": false
+  },
+  {
+    "deviceID": "SXOSWHO-MXT5WVF-S2WPDKT-E42G7QN-DBNNSIY-2KH7DBH-SVT6EQK-CVEEDAZ",
+    "name": "MORTIS",
+    "addresses": [
+      "tcp://127.0.0.1:19403"
+    ],
+    "paused": false,
+    "introducer": false
+  },
+  {
+    "deviceID": "VAO5AMX-52V3GKC-HC5PP6N-TEESAVH-GWYJG4Q-JUOUQOP-FJ6RBTS-TJTKEAF",
+    "name": "SOL",
+    "addresses": [
+      "tcp://127.0.0.1:19401"
+    ],
+    "paused": false,
+    "introducer": false
+  },
+  {
+    "deviceID": "3MO3PQR-CLYVSDK-AANMQI7-K4LFIYJ-6N2Z44T-UTZYCN3-VTLYGKL-57LO6AI",
+    "name": "VENUS",
+    "addresses": [
+      "tcp://127.0.0.1:19404"
+    ],
+    "paused": false,
+    "introducer": false
+  }
+]

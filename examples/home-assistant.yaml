@@ -1,0 +1,140 @@
+# Home Assistant sensors from syncwatch, for three servers (AKKA, SOL and
+# SIRIUS, as in examples/ivar.yaml).
+# Paste into configuration.yaml (or a package) and put the token in
+# secrets.yaml:
+#
+#   syncwatch_auth: "Bearer swt_…"     # Settings → API in syncwatch
+#
+# One request a minute reads every server from syncwatch's /api/v1/ha. The
+# keys under value_json.servers are syncwatch's server IDs (Settings →
+# Servers). Per server you get: running (binary sensor), status, data moved
+# in the last 24 hours and 7 days (received and sent as attributes), and the
+# current download and upload speed. Remove the sensors of a server you
+# don't have: a missing key logs a template error every minute. Home
+# Assistant never gets a Syncthing API key; syncwatch's token is read-only.
+rest:
+  - resource: https://192.168.1.10:8080/api/v1/ha
+    headers:
+      Authorization: !secret syncwatch_auth
+    verify_ssl: false          # syncwatch's self-signed certificate
+    scan_interval: 60
+    timeout: 20
+    binary_sensor:
+      - name: AKKA Syncthing running
+        unique_id: syncwatch_akka_running
+        device_class: running
+        value_template: "{{ value_json.servers.akka.running }}"
+      - name: SOL Syncthing running
+        unique_id: syncwatch_sol_running
+        device_class: running
+        value_template: "{{ value_json.servers.sol.running }}"
+      - name: SIRIUS Syncthing running
+        unique_id: syncwatch_sirius_running
+        device_class: running
+        value_template: "{{ value_json.servers.sirius.running }}"
+    sensor:
+      # AKKA
+      - name: AKKA Syncthing status
+        unique_id: syncwatch_akka_status
+        icon: mdi:sync
+        value_template: "{{ value_json.servers.akka.status }}"
+        json_attributes_path: "$.servers.akka"
+        json_attributes: [folders, folders_syncing, folders_error, folders_paused]
+      - name: AKKA data moved 24 h
+        unique_id: syncwatch_akka_moved_24h
+        device_class: data_size
+        state_class: measurement
+        unit_of_measurement: GB
+        value_template: "{{ value_json.servers.akka.moved_24h_gb }}"
+        json_attributes_path: "$.servers.akka"
+        json_attributes: [received_24h_gb, sent_24h_gb]
+      - name: AKKA data moved 7 days
+        unique_id: syncwatch_akka_moved_7d
+        device_class: data_size
+        state_class: measurement
+        unit_of_measurement: GB
+        value_template: "{{ value_json.servers.akka.moved_7d_gb }}"
+        json_attributes_path: "$.servers.akka"
+        json_attributes: [received_7d_gb, sent_7d_gb]
+      - name: AKKA download speed
+        unique_id: syncwatch_akka_download
+        device_class: data_rate
+        state_class: measurement
+        unit_of_measurement: MB/s
+        value_template: "{{ value_json.servers.akka.download_mb_s }}"
+      - name: AKKA upload speed
+        unique_id: syncwatch_akka_upload
+        device_class: data_rate
+        state_class: measurement
+        unit_of_measurement: MB/s
+        value_template: "{{ value_json.servers.akka.upload_mb_s }}"
+      # SOL
+      - name: SOL Syncthing status
+        unique_id: syncwatch_sol_status
+        icon: mdi:sync
+        value_template: "{{ value_json.servers.sol.status }}"
+        json_attributes_path: "$.servers.sol"
+        json_attributes: [folders, folders_syncing, folders_error, folders_paused]
+      - name: SOL data moved 24 h
+        unique_id: syncwatch_sol_moved_24h
+        device_class: data_size
+        state_class: measurement
+        unit_of_measurement: GB
+        value_template: "{{ value_json.servers.sol.moved_24h_gb }}"
+        json_attributes_path: "$.servers.sol"
+        json_attributes: [received_24h_gb, sent_24h_gb]
+      - name: SOL data moved 7 days
+        unique_id: syncwatch_sol_moved_7d
+        device_class: data_size
+        state_class: measurement
+        unit_of_measurement: GB
+        value_template: "{{ value_json.servers.sol.moved_7d_gb }}"
+        json_attributes_path: "$.servers.sol"
+        json_attributes: [received_7d_gb, sent_7d_gb]
+      - name: SOL download speed
+        unique_id: syncwatch_sol_download
+        device_class: data_rate
+        state_class: measurement
+        unit_of_measurement: MB/s
+        value_template: "{{ value_json.servers.sol.download_mb_s }}"
+      - name: SOL upload speed
+        unique_id: syncwatch_sol_upload
+        device_class: data_rate
+        state_class: measurement
+        unit_of_measurement: MB/s
+        value_template: "{{ value_json.servers.sol.upload_mb_s }}"
+      # SIRIUS
+      - name: SIRIUS Syncthing status
+        unique_id: syncwatch_sirius_status
+        icon: mdi:sync
+        value_template: "{{ value_json.servers.sirius.status }}"
+        json_attributes_path: "$.servers.sirius"
+        json_attributes: [folders, folders_syncing, folders_error, folders_paused]
+      - name: SIRIUS data moved 24 h
+        unique_id: syncwatch_sirius_moved_24h
+        device_class: data_size
+        state_class: measurement
+        unit_of_measurement: GB
+        value_template: "{{ value_json.servers.sirius.moved_24h_gb }}"
+        json_attributes_path: "$.servers.sirius"
+        json_attributes: [received_24h_gb, sent_24h_gb]
+      - name: SIRIUS data moved 7 days
+        unique_id: syncwatch_sirius_moved_7d
+        device_class: data_size
+        state_class: measurement
+        unit_of_measurement: GB
+        value_template: "{{ value_json.servers.sirius.moved_7d_gb }}"
+        json_attributes_path: "$.servers.sirius"
+        json_attributes: [received_7d_gb, sent_7d_gb]
+      - name: SIRIUS download speed
+        unique_id: syncwatch_sirius_download
+        device_class: data_rate
+        state_class: measurement
+        unit_of_measurement: MB/s
+        value_template: "{{ value_json.servers.sirius.download_mb_s }}"
+      - name: SIRIUS upload speed
+        unique_id: syncwatch_sirius_upload
+        device_class: data_rate
+        state_class: measurement
+        unit_of_measurement: MB/s
+        value_template: "{{ value_json.servers.sirius.upload_mb_s }}"

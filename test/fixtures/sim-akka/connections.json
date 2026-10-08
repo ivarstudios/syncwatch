@@ -1,0 +1,38 @@
+{
+  "3MO3PQR-CLYVSDK-AANMQI7-K4LFIYJ-6N2Z44T-UTZYCN3-VTLYGKL-57LO6AI": {
+    "connected": true,
+    "paused": false,
+    "address": "127.0.0.1:19404",
+    "type": "tcp-client",
+    "clientVersion": "v2.1.5",
+    "isLocal": true,
+    "startedAt": "2026-10-01T22:25:51+02:00"
+  },
+  "OQSKX2A-JN66XDT-SLLKWHV-JFRH22Q-CIWTGF2-XE4FYJ4-4OHDIZW-EGSFRQ7": {
+    "connected": true,
+    "paused": false,
+    "address": "127.0.0.1:19402",
+    "type": "tcp-client",
+    "clientVersion": "v2.1.5",
+    "isLocal": true,
+    "startedAt": "2026-10-01T22:25:51+02:00"
+  },
+  "SXOSWHO-MXT5WVF-S2WPDKT-E42G7QN-DBNNSIY-2KH7DBH-SVT6EQK-CVEEDAZ": {
+    "connected": true,
+    "paused": false,
+    "address": "127.0.0.1:19403",
+    "type": "tcp-client",
+    "clientVersion": "v2.1.5",
+    "isLocal": true,
+    "startedAt": "2026-10-01T22:25:51+02:00"
+  },
+  "VAO5AMX-52V3GKC-HC5PP6N-TEESAVH-GWYJG4Q-JUOUQOP-FJ6RBTS-TJTKEAF": {
+    "connected": true,
+    "paused": false,
+    "address": "127.0.0.1:19401",
+    "type": "tcp-client",
+    "clientVersion": "v2.1.5",
+    "isLocal": true,
+    "startedAt": "2026-10-01T22:25:51+02:00"
+  }
+}

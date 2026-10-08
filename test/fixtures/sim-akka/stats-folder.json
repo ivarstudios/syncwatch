@@ -1,0 +1,26 @@
+{
+  "p-alpha": {
+    "lastFile": {
+      "at": "0001-01-01T00:00:00Z",
+      "filename": "",
+      "deleted": false
+    },
+    "lastScan": "2026-10-01T22:32:30+02:00"
+  },
+  "p-beta": {
+    "lastFile": {
+      "at": "0001-01-01T00:00:00Z",
+      "filename": "",
+      "deleted": false
+    },
+    "lastScan": "2026-10-01T22:31:44+02:00"
+  },
+  "p-gamma": {
+    "lastFile": {
+      "at": "0001-01-01T00:00:00Z",
+      "filename": "",
+      "deleted": false
+    },
+    "lastScan": "2026-10-01T22:32:35+02:00"
+  }
+}

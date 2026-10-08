@@ -1,0 +1,86 @@
+[
+  {
+    "Folder": "p-gamma",
+    "Device": "SXOSWHO-MXT5WVF-S2WPDKT-E42G7QN-DBNNSIY-2KH7DBH-SVT6EQK-CVEEDAZ",
+    "completion": 100,
+    "globalBytes": 0,
+    "globalItems": 0,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 0
+  },
+  {
+    "Folder": "p-alpha",
+    "Device": "VAO5AMX-52V3GKC-HC5PP6N-TEESAVH-GWYJG4Q-JUOUQOP-FJ6RBTS-TJTKEAF",
+    "completion": 100,
+    "globalBytes": 43,
+    "globalItems": 1,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 3
+  },
+  {
+    "Folder": "p-beta",
+    "Device": "VAO5AMX-52V3GKC-HC5PP6N-TEESAVH-GWYJG4Q-JUOUQOP-FJ6RBTS-TJTKEAF",
+    "completion": 100,
+    "globalBytes": 44,
+    "globalItems": 2,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 4
+  },
+  {
+    "Folder": "p-beta",
+    "Device": "OQSKX2A-JN66XDT-SLLKWHV-JFRH22Q-CIWTGF2-XE4FYJ4-4OHDIZW-EGSFRQ7",
+    "completion": 100,
+    "globalBytes": 44,
+    "globalItems": 2,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 4
+  },
+  {
+    "Folder": "p-beta",
+    "Device": "3MO3PQR-CLYVSDK-AANMQI7-K4LFIYJ-6N2Z44T-UTZYCN3-VTLYGKL-57LO6AI",
+    "completion": 100,
+    "globalBytes": 44,
+    "globalItems": 2,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 8
+  },
+  {
+    "Folder": "p-gamma",
+    "Device": "OQSKX2A-JN66XDT-SLLKWHV-JFRH22Q-CIWTGF2-XE4FYJ4-4OHDIZW-EGSFRQ7",
+    "completion": 100,
+    "globalBytes": 0,
+    "globalItems": 0,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 0
+  },
+  {
+    "Folder": "p-alpha",
+    "Device": "SXOSWHO-MXT5WVF-S2WPDKT-E42G7QN-DBNNSIY-2KH7DBH-SVT6EQK-CVEEDAZ",
+    "completion": 100,
+    "globalBytes": 43,
+    "globalItems": 1,
+    "needBytes": 0,
+    "needItems": 0,
+    "needDeletes": 0,
+    "remoteState": "valid",
+    "sequence": 2
+  }
+]
