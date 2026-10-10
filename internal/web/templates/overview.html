@@ -12,11 +12,16 @@
         <h2>{{.Name}}</h2>
         <span class="badge st-{{.Status}}">{{.StatusIcon}} {{.StatusLabel}}</span>
       </header>
+      {{if .Disabled}}
+      <p class="muted">syncwatch does not poll this server.{{if eq $.Role "admin"}} <a class="nowrap" href="/settings#servers">Settings → Servers</a>{{end}}</p>
+      {{else}}
       {{if .LastError}}{{if ne .Status "ok"}}<p class="err-text">{{.LastError}}</p>{{end}}{{end}}
       <dl class="facts">
         <dt>Version</dt><dd>{{if .Version}}{{.Version}}{{else}}—{{end}}</dd>
         <dt>Uptime</dt><dd>{{if .Uptime}}{{.Uptime}}{{else}}—{{end}}</dd>
-        <dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Scanning}} · <span class="c-sync">⟳ {{.Scanning}} scanning</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{plural .Errors "error" "errors"}}</span>{{end}}{{if .WatchErrors}} · <span class="c-warn">⚠ {{plural .WatchErrors "file watcher error" "file watcher errors"}}</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>
+        {{if .NoContact}}<dt>Folders</dt><dd>—</dd>
+        {{else if .FoldersStale}}<dt>Folders</dt><dd class="muted" title="The server is not up: this is the last known state">{{plural .Folders "folder" "folders"}} · last known <span class="nowrap">{{.LastContact}}</span>: {{.Idle}} idle{{if .Syncing}} · {{.Syncing}} syncing{{end}}{{if .Scanning}} · {{.Scanning}} scanning{{end}}{{if .Errors}} · {{plural .Errors "error" "errors"}}{{end}}{{if .WatchErrors}} · {{plural .WatchErrors "file watcher error" "file watcher errors"}}{{end}}{{if .Paused}} · {{.Paused}} paused{{end}}</dd>
+        {{else}}<dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Scanning}} · <span class="c-sync">⟳ {{.Scanning}} scanning</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{plural .Errors "error" "errors"}}</span>{{end}}{{if .WatchErrors}} · <span class="c-warn">⚠ {{plural .WatchErrors "file watcher error" "file watcher errors"}}</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>{{end}}
         <dt>Findings</dt><dd>{{if .Problems}}<a href="/problems?server={{.ID}}">{{.Problems}} open</a>{{else}}none{{end}}</dd>
         <dt>Certificate</dt><dd>{{if .CertExpires}}<span {{if .CertWarn}}class="c-warn"{{end}}>valid until {{.CertExpires}}</span>{{else}}—{{end}}</dd>
         <dt>Shares</dt><dd>{{.Shares}}{{if .LastScan}} · last scan {{.LastScan}}{{with .ScanCost}} <span class="muted small">({{.}})</span>{{end}}{{end}}</dd>
@@ -24,6 +29,7 @@
       </dl>
       {{range .ShareErrors}}<p class="c-warn small">⚠ {{.}}</p>{{end}}
       {{if .Link}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
+      {{end}}
     </article>
     {{else}}
     <article class="tile"><p>There are no servers. {{if eq $.Role "admin"}}<a href="/settings#servers">Add one in Settings</a>.{{else}}Ask an administrator to add one.{{end}}</p></article>
@@ -34,6 +40,7 @@
         <dt>Total</dt><dd>{{$vm.PCTotal}}</dd>
         <dt>Online</dt><dd class="c-ok">✔ {{$vm.PCOnline}}</dd>
         <dt>Offline more than {{$vm.PCOffLabel}}</dt><dd>{{if $vm.PCOff}}<span class="c-warn">○ {{$vm.PCOff}}</span>{{else}}0{{end}}</dd>
+        {{if $vm.PCUnknown}}<dt>Unknown</dt><dd class="muted" title="A server that knows these PCs is not up: their state is not known">? {{$vm.PCUnknown}}</dd>{{end}}
       </dl>
       <a href="/grid">Folders →</a>
     </article>
@@ -58,6 +65,6 @@
     </ul>
     {{else}}<p class="c-ok">✔ There are no open findings.</p>{{end}}
   </section>
-  <p class="muted small">Real-time view · last change {{$vm.Evaluated}}</p>
+  <p class="muted small"><span class="live-on">Real-time view</span><span class="live-off">No connection to syncwatch</span> · last change {{$vm.Evaluated}}</p>
 </div>
 {{end}}

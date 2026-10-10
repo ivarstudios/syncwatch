@@ -50,12 +50,12 @@ func (s *Server) handleAPIHA(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	day, err := s.st.TrafficSince(now.Add(-24 * time.Hour))
 	if err != nil {
-		http.Error(w, `{"error":"reading traffic"}`, http.StatusInternalServerError)
+		apiError(w, http.StatusInternalServerError, "reading traffic")
 		return
 	}
 	week, err := s.st.TrafficSince(now.Add(-7 * 24 * time.Hour))
 	if err != nil {
-		http.Error(w, `{"error":"reading traffic"}`, http.StatusInternalServerError)
+		apiError(w, http.StatusInternalServerError, "reading traffic")
 		return
 	}
 	out := haStatus{GeneratedAt: now.UTC(), Servers: map[string]haServer{}}

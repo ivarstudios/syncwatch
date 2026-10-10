@@ -13,7 +13,7 @@
 <script src="/assets/htmx-ext-sse.js" defer></script>
 <script src="/assets/app.js" defer></script>
 </head>
-<body{{if .Role}} hx-ext="sse" sse-connect="/events"{{end}}>
+<body{{if .Role}} hx-ext="sse" sse-connect="/events" data-tz-offset="{{.TZOffset}}"{{end}}>
 <header class="top">
   <a class="brand" href="/"><img class="logo" src="/assets/syncwatch-icon.svg" alt="" width="21" height="24">syncwatch</a>
   {{if .Role}}
@@ -35,6 +35,7 @@
 </header>
 <main>
 {{template "alert" .}}
+{{if .Role}}<div id="sw-conn" class="conn-lost" role="status" hidden>✖ <strong>No connection to syncwatch</strong> from <span class="sw-conn-since"></span>. The page shows old data.</div>{{end}}
 {{if .Flash}}<div class="flash ok" role="status">✔ {{.Flash}}</div>{{end}}
 {{if .FlashErr}}<div class="flash err" role="alert">✖ {{.FlashErr}}</div>{{end}}
 {{end}}
@@ -47,7 +48,7 @@
 {{end}}
 
 {{define "alert"}}{{if .Role}}<div id="sw-alert" hx-get="/frag/alert" hx-trigger="every 60s" hx-swap="outerHTML">
-{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch sends no notifications about new findings until you correct this{{if eq $.Role "admin"}} in <a href="/settings#notifications">Settings → Notifications</a>{{end}}.</div>{{end -}}
+{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch tries again automatically. If Discord refuses the webhook (HTTP 401, 403 or 404), {{if eq $.Role "admin"}}type a new webhook URL in <a href="/settings#notifications">Settings → Notifications</a>{{else}}an administrator must type a new webhook URL in Settings → Notifications{{end}}.</div>{{end -}}
 </div>{{end}}{{end}}
 
 {{define "sev"}}<span class="sev sev-{{.Severity}}" title="{{.SeverityLabel}}">{{.Icon}} {{.SeverityLabel}}</span>{{end}}

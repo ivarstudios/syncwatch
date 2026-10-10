@@ -23,7 +23,7 @@ type problemRow struct {
 	Server, ServerName, Subject, Message, Title                string
 	Urgent, Stale, Snoozed, Ignored                            bool
 	SnoozeLabel, OpenFor, Since, OpenedAt, Pinged              string
-	Details                                                    []model.Detail
+	Details                                                    []detailRow
 	Paths                                                      []string
 	Link                                                       string
 }
@@ -42,12 +42,12 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 		row := problemRow{
 			ID: r.ID, Check: r.Check, Checks: strings.Join(r.Checks, "+"), Severity: r.Severity.Lower(),
 			SeverityLabel: r.Severity.Label(), Icon: notify.Icon(r.Severity), Category: r.Category,
-			Server: r.Server, Subject: r.Subject, Message: r.Message, Urgent: r.Urgent, Stale: r.Stale,
-			Details: r.Details, Paths: r.Paths, Link: r.Link,
+			Server: r.Server, Subject: showControls(r.Subject), Message: showControls(r.Message), Urgent: r.Urgent, Stale: r.Stale,
+			Details: s.detailRows(r.Details), Paths: showAll(r.Paths), Link: r.Link,
 			Title: config.CatalogByID[r.Check].Title,
 		}
 		if sv := v.Snapshot.Server(r.Server); sv != nil {
-			row.ServerName = sv.Name
+			row.ServerName = showControls(sv.Name)
 		}
 		since := r.Since
 		if since.IsZero() || since.After(r.OpenedAt) {
@@ -63,11 +63,11 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 			row.Snoozed = true
 			if z.Kind == store.IgnoreKind {
 				row.Ignored = true
-				row.SnoozeLabel = "ignored: " + z.Reason
+				row.SnoozeLabel = "ignored: " + showControls(z.Reason)
 			} else {
 				row.SnoozeLabel = "snoozed until " + s.fmtTime(z.Until)
 				if z.Reason != "" {
-					row.SnoozeLabel += " (" + z.Reason + ")"
+					row.SnoozeLabel += " (" + showControls(z.Reason) + ")"
 				}
 			}
 		}
@@ -87,12 +87,16 @@ type serverTile struct {
 	ShareErrors                                                             []string
 	Shares                                                                  int
 	LastScan, ScanCost                                                      string
+	FoldersStale                                                            bool // the folder counts are the last known state
+	NoContact                                                               bool // never contacted: no folder state at all
+	Disabled                                                                bool // in the configuration, but syncwatch does not poll it
 }
 
 type overviewVM struct {
 	Health                   string
 	Servers                  []serverTile
 	PCTotal, PCOnline, PCOff int
+	PCUnknown                int // not connected, but a server that knows the PC is not up: maybe online
 	PCOffLabel               string
 	Top                      []problemRow
 	OpenCount, UrgentOpen    int
@@ -116,7 +120,7 @@ func statusLabel(st model.ServerStatus) (label, icon, class string) {
 func (s *Server) overview(v *engine.View) overviewVM {
 	cfg := s.cfg.Get()
 	now := s.now()
-	vm := overviewVM{Health: notify.HealthLine(cfg, v, now), Evaluated: s.fmtTime(v.Changed)}
+	vm := overviewVM{Health: showControls(notify.HealthLine(cfg, v, now)), Evaluated: s.fmtTime(v.Changed)}
 	perServer := map[string]int{}
 	var visible []*store.Record
 	for _, r := range v.Open {
@@ -137,29 +141,16 @@ func (s *Server) overview(v *engine.View) overviewVM {
 	vm.Top = s.problemRows(v, visible)
 	for _, sv := range v.Snapshot.Servers {
 		label, icon, class := statusLabel(sv.Status)
-		t := serverTile{ID: sv.ID, Name: sv.Name, Status: class, StatusLabel: label, StatusIcon: icon,
+		t := serverTile{ID: sv.ID, Name: showControls(sv.Name), Status: class, StatusLabel: label, StatusIcon: icon,
 			Version: sv.Version, Link: sv.GUIURL, Problems: perServer[sv.ID], Mode: sv.Mode,
-			LastContact: s.fmtTime(sv.LastContact), LastError: sv.LastError}
+			LastContact: s.fmtTime(sv.LastContact), LastError: showControls(sv.LastError)}
 		if !sv.StartTime.IsZero() && sv.Status == model.StatusUp {
 			t.Uptime = rules.Ago(now.Sub(sv.StartTime))
 		}
-		for _, f := range sv.Folders {
-			t.Folders++
-			switch f.FolderSync() {
-			case model.SyncPaused:
-				t.Paused++
-			case model.SyncError:
-				t.Errors++
-			case model.SyncWatchError:
-				t.WatchErrors++
-			case model.SyncScanning:
-				t.Scanning++
-			case model.SyncUpToDate:
-				t.Idle++
-			default:
-				t.Syncing++
-			}
-		}
+		c := countFolders(sv)
+		t.Folders, t.Idle, t.Syncing, t.Scanning, t.Errors, t.WatchErrors, t.Paused = c.Total, c.Idle, c.Syncing, c.Scanning, c.Errors, c.WatchErrors, c.Paused
+		t.FoldersStale = !folderStateKnown(sv)
+		t.NoContact = t.FoldersStale && sv.LastContact.IsZero()
 		if !sv.Cert.NotAfter.IsZero() {
 			t.CertExpires = sv.Cert.NotAfter.In(cfg.Location()).Format("2006-01-02")
 			t.CertWarn = sv.Cert.NotAfter.Sub(now) < 30*24*time.Hour
@@ -172,23 +163,20 @@ func (s *Server) overview(v *engine.View) overviewVM {
 			}
 			for _, sh := range sv.Structure.Shares {
 				if sh.Error != "" {
-					t.ShareErrors = append(t.ShareErrors, sh.Name+": "+sh.Error)
+					t.ShareErrors = append(t.ShareErrors, showControls(sh.Name+": "+sh.Error))
 				}
 			}
 		}
 		vm.Servers = append(vm.Servers, t)
 	}
-	for _, d := range v.Snapshot.Devices() {
-		if d.IsServer {
-			continue
-		}
-		vm.PCTotal++
-		if d.Connected {
-			vm.PCOnline++
-		} else if d.LastSeen.IsZero() || now.Sub(d.LastSeen) > cfg.Thresholds.PCOffline.D() {
-			vm.PCOff++
+	// A disabled server keeps a grey tile, so it does not disappear without a trace.
+	for _, sc := range cfg.Servers {
+		if sc.Disabled && v.Snapshot.Server(sc.ID) == nil {
+			vm.Servers = append(vm.Servers, serverTile{ID: sc.ID, Name: showControls(sc.Name), Status: "wait", StatusLabel: "Disabled", StatusIcon: "○", Disabled: true})
 		}
 	}
+	pcs := countPCs(v.Snapshot, cfg.Thresholds.PCOffline.D(), now)
+	vm.PCTotal, vm.PCOnline, vm.PCOff, vm.PCUnknown = pcs.Total, pcs.Online, pcs.Offline, pcs.Unknown
 	vm.PCOffLabel = rules.Ago(cfg.Thresholds.PCOffline.D())
 	return vm
 }
@@ -208,12 +196,14 @@ type gridCell struct {
 type gridRow struct {
 	ID, Label, Search, Servers string
 	Problem                    bool
+	Stale                      bool // a server of the folder shows only its last known state
 	Cells                      []gridCell
 }
 
 type gridGroup struct {
 	Name           string
 	Problems, Rows int
+	Stale          int // rows with the last known state of a server
 	Open           bool
 	Items          []gridRow
 }
@@ -293,7 +283,7 @@ func (s *Server) grid(v *engine.View) gridVM {
 	devs := snap.Devices()
 	vm := gridVM{}
 	for _, d := range devs {
-		vm.Devices = append(vm.Devices, gridDevice{ID: d.ID, Name: d.Name, Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected})
+		vm.Devices = append(vm.Devices, gridDevice{ID: d.ID, Name: showControls(d.Name), Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected})
 	}
 	cs := s.cfg.Structure()
 	cfg := s.cfg.Get()
@@ -321,9 +311,9 @@ func (s *Server) grid(v *engine.View) gridVM {
 			f := sv.Folders[id]
 			fi := infos[id]
 			if fi == nil {
-				fi = &folderInfo{id: id, label: f.DisplayName(), on: map[string]*model.Folder{}}
+				fi = &folderInfo{id: id, label: showControls(f.DisplayName()), on: map[string]*model.Folder{}}
 				if sh := rules.ShareOf(shares, f.Path, st); sh != nil {
-					fi.group = groupName(sv.Name, sh.Name)
+					fi.group = showControls(groupName(sv.Name, sh.Name))
 				} else {
 					fi.group = "Other folders"
 				}
@@ -331,7 +321,7 @@ func (s *Server) grid(v *engine.View) gridVM {
 				order = append(order, id)
 			}
 			fi.on[sv.ID] = f
-			fi.servers = append(fi.servers, sv.Name)
+			fi.servers = append(fi.servers, showControls(sv.Name))
 		}
 	}
 
@@ -349,12 +339,19 @@ func (s *Server) grid(v *engine.View) gridVM {
 			if d.IsServer {
 				if f, ok := fi.on[d.ServerID]; ok {
 					cell = serverCell(f)
+					if sv := snap.Server(d.ServerID); sv != nil && !folderStateKnown(sv) {
+						// The last known state, in grey: not a current "✔ 100%".
+						cell.Class, cell.Icon = "off", "○"
+						cell.Title = fmt.Sprintf("%s %s, last known state %s: %s", sv.Name, staleWhy(sv), s.fmtTime(sv.LastContact), cell.Title)
+						row.Stale = true
+					}
 				} else {
 					cell = gridCell{Class: "na", Icon: "", Text: "–", Title: "Not on this server"}
 				}
 			} else {
 				cell = s.pcCell(snap, fi.on, d)
 			}
+			cell.Title = showControls(cell.Title)
 			if cell.Problem {
 				row.Problem = true
 				lists[i].Problems++
@@ -374,6 +371,9 @@ func (s *Server) grid(v *engine.View) gridVM {
 		g.Rows++
 		if row.Problem {
 			g.Problems++
+		}
+		if row.Stale {
+			g.Stale++
 		}
 		vm.Folders++
 	}
@@ -430,6 +430,14 @@ func (s *Server) pcCell(snap *model.Snapshot, on map[string]*model.Folder, d *mo
 		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the device", Problem: true}
 	case best.RemoteState == "notSharing":
 		return gridCell{Class: "warn", Icon: "⊘", Text: "not shared back", Title: "The server shares the folder, but the device does not share it back", Problem: true}
+	case !d.Connected && !serversKnown(snap, d.SeenBy):
+		// A server that knows the device is not up: the device can be
+		// connected to it. The same rule as the PCs tile.
+		title := "A server of this device is not up: last known " + pct(best.Percent)
+		if !d.LastSeen.IsZero() {
+			title += ", last seen " + s.fmtTime(d.LastSeen)
+		}
+		return gridCell{Class: "off", Icon: "?", Text: "unknown", Title: title}
 	case !d.Connected:
 		title := "Offline"
 		if !d.LastSeen.IsZero() {
@@ -554,7 +562,7 @@ func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 			resolved = resolved[:30]
 		}
 		for _, h := range resolved {
-			vm.ResolvedThisWeek = append(vm.ResolvedThisWeek, historyRow{Icon: "✔", Check: h.Check, Message: h.Message, When: s.fmtTime(h.ResolvedAt)})
+			vm.ResolvedThisWeek = append(vm.ResolvedThisWeek, historyRow{Icon: "✔", Check: h.Check, Message: showControls(h.Message), When: s.fmtTime(h.ResolvedAt)})
 		}
 	}
 	return vm
