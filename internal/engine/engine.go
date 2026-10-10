@@ -224,6 +224,23 @@ func (z *freezer) anyStale(ids []string) bool {
 	return false
 }
 
+// anyPresentStale reports whether one of the servers that are still in the
+// configuration is stale.
+func (z *freezer) anyPresentStale(ids []string) bool {
+	for _, id := range ids {
+		if z.present[id] && z.stale[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// absenceCheck reports whether a check says that a device is absent: H7
+// (PC offline) and C2 (inactive device). A server that cannot be reached
+// can still have the device connected, so such a finding can only be
+// judged while every server that has the device configured is reachable.
+func absenceCheck(check string) bool { return check == "H7" || check == "C2" }
+
 // gone reports whether the servers a finding depends on have left the
 // configuration (removed or disabled): it can't be judged again, and there
 // is nobody to report it resolved either.
@@ -272,8 +289,12 @@ func (z *freezer) frozen(f model.Finding) bool {
 		return z.unknown[f.Server]
 	}
 	if f.Server == "" {
-		// A cross-server finding is judged on whichever related servers
-		// are reachable; only when none is can nothing be said about it.
+		if absenceCheck(f.Check) && z.anyPresentStale(f.Related) {
+			return true
+		}
+		// Other cross-server findings are judged on whichever related
+		// servers are reachable; only when none is can nothing be said
+		// about them.
 		return z.allStale(f.Related)
 	}
 	if z.isStale(f.Server) || z.anyStale(f.Related) {

@@ -180,32 +180,100 @@ func TestFailedShareListingFreezesItsFindings(t *testing.T) {
 	}
 }
 
-// A cross-server finding is judged on whichever related servers are
-// reachable: one unreachable NAS must not blind the PC checks on the other.
+// A cross-server finding about what the servers see (H8, X1) is judged on
+// whichever related servers are reachable: one unreachable NAS must not
+// blind these checks on the other. The absence of a PC (H7, C2) is
+// different: the unreachable NAS can have the PC connected, so these wait
+// while any server that has the PC configured is unreachable.
 func TestCrossFindingsFreezeOnlyWhenEveryServerIsStale(t *testing.T) {
-	r := newRig(t)
-	old := r.now.Add(-10 * 24 * time.Hour)
+	r := newRig(t) // pc_offline: 7 days, old_device: 90 days
 	for _, id := range []string{"a", "b"} {
-		r.hub.Update(id, func(s *model.Server) { s.Devices["PC-ID"] = &model.Device{ID: "PC-ID", Name: "PC", LastSeen: old} })
+		r.hub.Update(id, func(s *model.Server) {
+			s.Version = "v2.1.5"
+			s.Devices["PC-ID"] = &model.Device{ID: "PC-ID", Name: "MORTIS", LastSeen: r.now.Add(-10 * 24 * time.Hour)}
+			s.Devices["NEW-ID"] = &model.Device{ID: "NEW-ID", Name: "LATEPC", LastSeen: r.now.Add(-5 * 24 * time.Hour)}
+			s.Devices["OLD-ID"] = &model.Device{ID: "OLD-ID", Name: "OLDPC", LastSeen: r.now.Add(-100 * 24 * time.Hour)}
+			s.Devices["V-ID"] = &model.Device{ID: "V-ID", Name: "VENUS", LastSeen: r.now}
+			s.Folders["x-"+id] = &model.Folder{ID: "x-" + id, Label: "LIVE-SAME", Path: "/s/X/LIVE-SAME", State: "idle", Completion: map[string]*model.Completion{}}
+		})
 	}
+	r.hub.Update("a", func(s *model.Server) {
+		s.Connections["V-ID"] = &model.Connection{Connected: true, ClientVersion: "v2.0.9", StartedAt: r.now}
+	})
+	live := func(v *View, check, part string, stale bool) {
+		t.Helper()
+		if g := find(v, check, part); g == nil || g.Stale != stale {
+			t.Fatalf("%s %s: want open with stale=%v, got %+v", check, part, stale, g)
+		}
+	}
+	v := r.at(0)
+	live(v, "H7", "MORTIS", false)
+	live(v, "C2", "OLDPC", false)
+	live(v, "H8", "VENUS", false)
+	live(v, "X1", "LIVE-SAME", false)
+	// B goes down. A still sees VENUS and the folders: H8 and X1 carry on.
+	// B can have the PCs connected: H7 and C2 stay as they are, and no new
+	// H7 opens for LATEPC, which is offline for 8 days now.
 	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
-	v := r.at(time.Hour)
-	h7 := find(v, "H7", "PC")
-	if h7 == nil || h7.Stale {
-		t.Fatalf("H7 should open while A still sees the PC offline: %+v", h7)
+	v = r.at(3 * 24 * time.Hour)
+	live(v, "H8", "VENUS", false)
+	live(v, "X1", "LIVE-SAME", false)
+	live(v, "H7", "MORTIS", true)
+	live(v, "C2", "OLDPC", true)
+	if g := find(v, "H7", "LATEPC"); g != nil {
+		t.Fatalf("H7 opened while a server of the PC is unreachable: %+v", g)
 	}
-	// With both servers down nothing can be said: it freezes.
+	// With both servers down nothing can be said: everything freezes.
 	r.hub.Update("a", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
-	if h7 = find(r.at(time.Minute), "H7", "PC"); h7 == nil || !h7.Stale {
-		t.Fatalf("H7 should be frozen with every server down: %+v", h7)
-	}
-	// A is back and the PC has connected to it: it resolves.
+	v = r.at(time.Minute)
+	live(v, "H8", "VENUS", true)
+	live(v, "X1", "LIVE-SAME", true)
+	// A is back and the PC has connected to it. While B is down, H7 waits.
 	r.hub.Update("a", func(s *model.Server) {
 		s.Status = model.StatusUp
 		s.Connections["PC-ID"] = &model.Connection{Connected: true, StartedAt: r.now}
 	})
-	if find(r.at(time.Minute), "H7", "PC") != nil {
-		t.Fatal("H7 should resolve once a reachable server sees the PC")
+	v = r.at(time.Minute)
+	live(v, "H8", "VENUS", false)
+	live(v, "H7", "MORTIS", true)
+	// B is back: H7 resolves for the PC that A sees, and opens for LATEPC.
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	v = r.at(time.Minute)
+	if find(v, "H7", "MORTIS") != nil {
+		t.Fatal("H7 should resolve once a reachable server sees the PC and no server is stale")
+	}
+	live(v, "H7", "LATEPC", false)
+	live(v, "C2", "OLDPC", false)
+}
+
+// During a VPN outage the far NAS is unreachable, and the near NAS loses
+// the connections to the far site's PCs. Those PCs still sync with the far
+// NAS, so they are not offline: no H7, and no C2 later.
+func TestPCOfflineWaitsForEveryServer(t *testing.T) {
+	r := newRig(t)
+	r.hub.Update("a", func(s *model.Server) {
+		s.Devices["PC-ID"] = &model.Device{ID: "PC-ID", Name: "EDIT-02", LastSeen: r.now}
+	})
+	r.hub.Update("b", func(s *model.Server) {
+		s.Devices["PC-ID"] = &model.Device{ID: "PC-ID", Name: "EDIT-02", LastSeen: r.now}
+		s.Connections["PC-ID"] = &model.Connection{Connected: true, StartedAt: r.now}
+	})
+	r.at(0)
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince, s.LastError = model.StatusDown, r.now, "timeout" })
+	r.at(0)
+	for _, d := range []time.Duration{8 * 24 * time.Hour, 100 * 24 * time.Hour} {
+		v := r.at(d)
+		if g := find(v, "H7", "EDIT-02"); g != nil {
+			t.Fatalf("H7 while the PC's other server is unreachable: %+v", g)
+		}
+		if g := find(v, "C2", "EDIT-02"); g != nil {
+			t.Fatalf("C2 while the PC's other server is unreachable: %+v", g)
+		}
+	}
+	// B is back and still has the PC connected.
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	if v := r.at(time.Minute); find(v, "H7", "EDIT-02") != nil || find(v, "C2", "EDIT-02") != nil {
+		t.Fatal("H7 or C2 for a PC that B has connected")
 	}
 }
 
