@@ -41,10 +41,16 @@ func (c *Collector) sampleTraffic(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	sm, err := c.st.RecordTraffic(c.id, start.UTC().Format(time.RFC3339), tr.InBytesTotal, tr.OutBytesTotal, now)
+	// After more than three missed samples the increase can't be placed in
+	// time (syncwatch was down, or the server unreachable): it is dropped
+	// rather than booked at "now".
+	sm, err := c.st.RecordTraffic(c.id, start.UTC().Format(time.RFC3339), tr.InBytesTotal, tr.OutBytesTotal, now, 3*c.trafficEvery)
 	if err != nil {
 		c.log.Warn("recording traffic", "err", err)
 		return
+	}
+	if sm.Gap {
+		c.log.Debug("traffic counters re-baselined after a gap in the readings")
 	}
 	if secs := sm.Over.Seconds(); secs > 0 {
 		c.update(func(s *model.Server) {

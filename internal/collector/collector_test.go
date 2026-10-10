@@ -1027,3 +1027,60 @@ func TestLastErrorIsReadable(t *testing.T) {
 		t.Fatalf("LastError %q", sv.LastError)
 	}
 }
+
+// Bytes moved while there were no readings (the server unreachable, or
+// syncwatch down) used to be booked at the first reading afterwards, so the
+// day and week sums included older traffic. After more than three missed
+// samples the counters are only re-baselined.
+func TestTrafficGapIsNotBooked(t *testing.T) {
+	old := trafficEvery
+	trafficEvery = 200 * time.Millisecond
+	defer func() { trafficEvery = old }()
+	shrinkBackoff(t, 100*time.Millisecond)
+	fake := newFakeST(t)
+	fake.inBytes, fake.outBytes = 5_000_000, 1_000_000
+	var mu sync.Mutex
+	away := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		a := away
+		mu.Unlock()
+		if a {
+			http.Error(w, "Not Authorized", http.StatusUnauthorized)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	hub, _, st, stop := startManager(t, srv, "collector: {event_timeout: 5s, down_after_failures: 1}", nil, nil)
+	defer stop()
+	waitFor(t, hub, "loaded", func(s *model.Server) bool { return s.Loaded })
+	time.Sleep(500 * time.Millisecond) // a baseline reading
+	mu.Lock()
+	away = true
+	mu.Unlock()
+	fake.push("StateChanged", map[string]string{"folder": "p-alpha", "to": "idle"}) // ends the open long-poll
+	waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	fake.mu.Lock()
+	fake.inBytes += 30_000_000
+	fake.outBytes += 3_000_000
+	fake.mu.Unlock()
+	time.Sleep(time.Second) // more than three sampling intervals without a reading
+	mu.Lock()
+	away = false
+	mu.Unlock()
+	waitFor(t, hub, "up again", func(s *model.Server) bool { return s.Status == model.StatusUp })
+	time.Sleep(500 * time.Millisecond) // the reading that re-baselines
+	fake.mu.Lock()
+	fake.inBytes += 1_000_000
+	fake.outBytes += 100_000
+	fake.mu.Unlock()
+	waitFor(t, hub, "a transfer rate", func(s *model.Server) bool { return s.Rate.In > 0 })
+	tr, err := st.TrafficSince(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tr["akka"]; got.In != 1_000_000 || got.Out != 100_000 {
+		t.Fatalf("recorded traffic: %+v; the bytes moved while away must not count", got)
+	}
+}

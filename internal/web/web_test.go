@@ -313,9 +313,9 @@ api: {token: swt_test_token}
 		s.Rate = model.Rate{In: 12_500_000, Out: 250_000, At: now}
 	})
 	e.eng.Evaluate() // the engine's view follows the hub within a second
-	_, _ = e.st.RecordTraffic("akka", "s", 0, 0, now.Add(-6*24*time.Hour))
-	_, _ = e.st.RecordTraffic("akka", "s", 4_000_000_000, 1_000_000_000, now.Add(-3*24*time.Hour)) // inside the week only
-	_, _ = e.st.RecordTraffic("akka", "s", 5_500_000_000, 1_250_000_000, now.Add(-time.Hour))
+	_, _ = e.st.RecordTraffic("akka", "s", 0, 0, now.Add(-6*24*time.Hour), 7*24*time.Hour)
+	_, _ = e.st.RecordTraffic("akka", "s", 4_000_000_000, 1_000_000_000, now.Add(-3*24*time.Hour), 7*24*time.Hour) // inside the week only
+	_, _ = e.st.RecordTraffic("akka", "s", 5_500_000_000, 1_250_000_000, now.Add(-time.Hour), 7*24*time.Hour)
 
 	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/ha", nil)
 	if resp, _ := http.DefaultClient.Do(req); resp.StatusCode != http.StatusUnauthorized {
