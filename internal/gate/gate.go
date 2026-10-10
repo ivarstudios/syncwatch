@@ -45,7 +45,8 @@ type Options struct {
 	APIKey    string          // Syncthing's API key
 	Token     string          // what syncwatch sends as X-API-Key
 	Pin       string          // pinned SHA-256 of Syncthing's certificate, "" = trust on first use
-	OnPin     func(fp string) // called when Syncthing's certificate is trusted on first use
+	OnPin     func(fp string) // called with the fingerprint to store whenever the pin is set or replaced
+	RootCAs   *x509.CertPool  // nil means the system pool
 	Log       *slog.Logger
 }
 
@@ -100,8 +101,9 @@ func New(o Options) (*Gate, error) {
 }
 
 // verify checks Syncthing's certificate: anything on loopback (the gate
-// runs next to Syncthing), a certificate that chains to a trusted CA, or the
-// pinned self-signed one (trusted on first use).
+// runs next to Syncthing). Elsewhere the certificate is pinned on first use,
+// CA-signed or not, and may only change to one that chains to a trusted CA
+// for the host name (a renewal); any other change refuses the connection.
 func (g *Gate) verify(cs tls.ConnectionState) error {
 	if g.loopback {
 		return nil
@@ -114,25 +116,32 @@ func (g *Gate) verify(cs tls.ConnectionState) error {
 	for _, c := range cs.PeerCertificates[1:] {
 		inter.AddCert(c)
 	}
-	if _, err := leaf.Verify(x509.VerifyOptions{DNSName: g.base.Hostname(), Intermediates: inter}); err == nil {
-		return nil
-	}
+	_, caErr := leaf.Verify(x509.VerifyOptions{DNSName: g.base.Hostname(), Roots: g.o.RootCAs, Intermediates: inter})
 	sum := sha256.Sum256(leaf.Raw)
 	fp := hex.EncodeToString(sum[:])
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	switch g.pin {
-	case "":
-		g.pin = fp
-		if g.o.OnPin != nil {
-			g.o.OnPin(fp)
+	log := g.o.Log.With("sha256", stclient.ShortFP(fp))
+	switch {
+	case g.pin == fp:
+		return nil
+	case g.pin == "":
+		if caErr == nil {
+			log.Info("pinned Syncthing's CA-signed certificate")
+		} else {
+			log.Info("trusting Syncthing's self-signed certificate on first use")
 		}
-		return nil
-	case fp:
-		return nil
+	case caErr == nil:
+		log.Info("Syncthing's certificate renewed", "old", stclient.ShortFP(g.pin))
+	default:
+		return fmt.Errorf("Syncthing's certificate changed (pinned %s, got %s); if that is expected, delete the gate's syncthing.pin and restart it",
+			stclient.ShortFP(g.pin), stclient.ShortFP(fp))
 	}
-	return fmt.Errorf("Syncthing's certificate changed (pinned %s, got %s); if that is expected, delete the gate's syncthing.pin and restart it",
-		stclient.ShortFP(g.pin), stclient.ShortFP(fp))
+	g.pin = fp
+	if g.o.OnPin != nil {
+		g.o.OnPin(fp)
+	}
+	return nil
 }
 
 func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why string) {

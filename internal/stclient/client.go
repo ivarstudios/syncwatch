@@ -4,8 +4,10 @@
 // there is no generic request method, no way to choose the HTTP method, and
 // /rest/config (which contains the GUI password hash and API key) is not on the
 // list. TLS certificates are checked during the handshake, before the API key
-// is sent: certificates that chain to a trusted CA are accepted, self-signed
-// ones are trusted on first use and pinned by SHA-256.
+// is sent: the server's certificate is pinned by SHA-256 on first use, whether
+// it chains to a trusted CA or is self-signed. A pinned certificate may only
+// change to one that chains to a trusted CA for the host name (a renewal);
+// any other change aborts the handshake.
 package stclient
 
 import (
@@ -20,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -85,10 +88,11 @@ type Options struct {
 	URL     string // base URL of the Syncthing GUI, e.g. https://192.168.1.10:8384
 	APIKey  string
 	Pin     string          // pinned SHA-256 certificate fingerprint (hex), or "" for none yet
-	OnPin   func(fp string) // called when a self-signed certificate is trusted on first use
+	OnPin   func(fp string) // called with the fingerprint to store whenever the pin is set or replaced
 	Timeout time.Duration   // per-request timeout (default 30 s); events use their own
 	Retries int             // extra attempts for failed requests (default 2)
 	RootCAs *x509.CertPool  // nil means the system pool
+	Log     *slog.Logger    // gets a line when a certificate is pinned or renewed; nil means slog.Default()
 }
 
 // CertInfo describes the last certificate the server presented.
@@ -99,8 +103,9 @@ type CertInfo struct {
 	CASigned    bool
 }
 
-// CertChangedError is returned when a pinned self-signed certificate changes.
-// The connection is closed during the handshake, so no API key is sent.
+// CertChangedError is returned when a pinned certificate changes to one that
+// doesn't chain to a trusted CA for the host name. The connection is closed
+// during the handshake, so no API key is sent.
 type CertChangedError struct {
 	Server   string
 	Old, New string
@@ -156,6 +161,9 @@ func New(o Options) (*Client, error) {
 		o.Retries = 0
 	} else if o.Retries == 0 {
 		o.Retries = 2
+	}
+	if o.Log == nil {
+		o.Log = slog.Default()
 	}
 	c := &Client{opts: o, base: u, host: u.Hostname(), pin: o.Pin}
 	tr := &http.Transport{
@@ -237,6 +245,11 @@ func ShortFP(fp string) string {
 	return b.String()
 }
 
+// verify runs during the handshake, before any request is sent. The leaf is
+// pinned on first use, CA-signed or not, so the server can't later be swapped
+// for one with a different certificate: a pinned server may change its
+// certificate only to one that chains to a trusted CA for the host name (a
+// renewal). Anything else aborts the handshake with a CertChangedError.
 func (c *Client) verify(cs tls.ConnectionState) error {
 	if len(cs.PeerCertificates) == 0 {
 		return errors.New("server presented no certificate")
@@ -252,25 +265,31 @@ func (c *Client) verify(cs tls.ConnectionState) error {
 		Roots:         c.opts.RootCAs,
 		Intermediates: inter,
 	})
+	caSigned := caErr == nil
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cert = CertInfo{Fingerprint: fp, Subject: leaf.Subject.String(), NotAfter: leaf.NotAfter, CASigned: caErr == nil}
-	if caErr == nil {
+	c.cert = CertInfo{Fingerprint: fp, Subject: leaf.Subject.String(), NotAfter: leaf.NotAfter, CASigned: caSigned}
+	log := c.opts.Log.With("server", c.opts.Name, "fingerprint", ShortFP(fp), "expires", leaf.NotAfter.Format("2006-01-02"))
+	switch {
+	case c.pin == fp:
 		return nil
-	}
-	switch c.pin {
-	case "":
-		c.pin = fp
-		if c.opts.OnPin != nil {
-			c.opts.OnPin(fp)
+	case c.pin == "":
+		if caSigned {
+			log.Info("pinned CA-signed certificate")
+		} else {
+			log.Info("trusting self-signed certificate on first use")
 		}
-		return nil
-	case fp:
-		return nil
+	case caSigned:
+		log.Info("certificate renewed", "old", ShortFP(c.pin))
 	default:
 		return &CertChangedError{Server: c.opts.Name, Old: c.pin, New: fp, NotAfter: leaf.NotAfter}
 	}
+	c.pin = fp
+	if c.opts.OnPin != nil {
+		c.opts.OnPin(fp)
+	}
+	return nil
 }
 
 // IsCertChanged reports whether err is (or wraps) a CertChangedError.

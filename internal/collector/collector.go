@@ -59,11 +59,11 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 		APIKey:  apiKey,
 		Pin:     pin,
 		Timeout: cfg.Get().Collector.RequestTimeout.D(),
+		Log:     log,
 		OnPin: func(fp string) {
 			if err := st.SetPin(sc.ID, fp); err != nil {
 				c.log.Error("saving pinned certificate", "err", err)
 			}
-			c.log.Info("trusting self-signed certificate on first use", "fingerprint", stclient.ShortFP(fp))
 		},
 	})
 	if err != nil {

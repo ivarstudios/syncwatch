@@ -68,7 +68,6 @@ func RunGate(ctx context.Context, o GateOptions) error {
 			if err := os.WriteFile(pinFile, []byte(fp+"\n"), 0o600); err != nil {
 				log.Error("saving Syncthing's certificate pin", "err", err)
 			}
-			log.Info("trusting Syncthing's self-signed certificate on first use", "sha256", fp[:16])
 		},
 	})
 	if err != nil {
