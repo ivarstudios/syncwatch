@@ -30,6 +30,7 @@ const (
 	ColorWarn     = 0xF29900
 	ColorInfo     = 0x1A73E8
 	ColorResolved = 0x188038
+	ColorNotice   = 0x80868B // grey: a settings notice is not a finding
 )
 
 // Message is one notification, rendered per channel.

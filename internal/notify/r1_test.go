@@ -398,3 +398,71 @@ func TestHealthLineStates(t *testing.T) {
 		t.Errorf("health line after a start:\n got %s\nwant %s", got, want)
 	}
 }
+
+// waitFor waits up to 5 seconds for cond (a notice is sent in a goroutine).
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A settings notice gets one log line for each decision (admin-anna AA-36):
+// when the channels it went to are still the configured ones and Discord
+// refuses it, it is discarded at once, not "retried" and discarded 45 ms
+// later. When the webhook was replaced, it is kept for the new one.
+// Notices are grey, not in the WARNING colour (W-039).
+func TestNoticeLogsOneDecision(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	logs := &lockedLog{}
+	r.n.log = slog.New(slog.NewTextHandler(logs, nil))
+	dead := &fakeSender{}
+	dead.fail(&httpError{code: 404, text: "Unknown Webhook"})
+	r.n.SetSenders(func() []Sender { return []Sender{dead} })
+	r.n.NoticeLater()("Server AKKA changed", "The API key is replaced.")
+	waitFor(t, func() bool { return strings.Contains(logs.String(), "settings notice") })
+	r.at(start.Add(time.Minute))
+	r.at(start.Add(5 * time.Minute))
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 || !strings.Contains(logs.String(), "discarded") || pendingNotices(r) != 0 {
+		t.Fatalf("refused by the configured webhook: %d warnings, %d pending:\n%s", n, pendingNotices(r), logs.String())
+	}
+	dead.mu.Lock()
+	tried := dead.attempts
+	dead.mu.Unlock()
+	if tried != 1 {
+		t.Fatalf("refused notice tried %d times", tried)
+	}
+
+	r = newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	logs = &lockedLog{}
+	r.n.log = slog.New(slog.NewTextHandler(logs, nil))
+	var mu sync.Mutex
+	current := []Sender{dead}
+	r.n.SetSenders(func() []Sender {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	})
+	notice := r.n.NoticeLater()
+	mu.Lock()
+	current = []Sender{r.sender}
+	mu.Unlock()
+	r.n.ChannelsChanged() // the administrator saved a new webhook
+	notice("Discord webhook replaced", "x")
+	waitFor(t, func() bool { return pendingNotices(r) == 1 })
+	r.at(start.Add(time.Minute))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindNotice || msgs[0].Color != ColorNotice {
+		t.Fatalf("notice for the new webhook: %+v", msgs)
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 || !strings.Contains(logs.String(), "retries") {
+		t.Fatalf("replaced webhook: %d warnings:\n%s", n, logs.String())
+	}
+}

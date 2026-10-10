@@ -718,7 +718,8 @@ func queueNoticeTo(t *testing.T, r *rig, title string) {
 }
 
 // A notice Discord rejects for good (HTTP 400) is dropped with one warning
-// instead of blocking every other notification for a day.
+// instead of blocking every other notification for a day. The channel it
+// went to is still the configured one, so it is dropped at once.
 func TestRejectedNoticeIsDropped(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA")
@@ -727,7 +728,11 @@ func TestRejectedNoticeIsDropped(t *testing.T) {
 	r.n.log = slog.New(slog.NewTextHandler(logs, nil))
 	sel := &kindSender{failKind: KindNotice, err: &httpError{code: 400, text: "Invalid Form Body"}}
 	r.n.SetSenders(func() []Sender { return []Sender{sel} })
-	queueNoticeTo(t, r, "Configuration imported")
+	r.n.Notice("Configuration imported", strings.Repeat("x", 100))
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "settings notice") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	r.setDown("AKKA", true)
 	r.at(start)
 	r.at(local(2026, 10, 6, 10, 5))
@@ -740,13 +745,13 @@ func TestRejectedNoticeIsDropped(t *testing.T) {
 	if d := r.n.Delivery(); d.Failing {
 		t.Fatalf("the rejected notice counts as a failing channel: %+v", d)
 	}
-	if n := strings.Count(logs.String(), "level=WARN"); n != 2 { // once held back, once dropped
-		t.Fatalf("expected two warnings, got %d:\n%s", n, logs.String())
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 || !strings.Contains(logs.String(), "discarded") { // dropped at once
+		t.Fatalf("expected one warning, got %d:\n%s", n, logs.String())
 	}
 	for m := 6; m <= 60; m++ {
 		r.at(start.Add(time.Duration(m) * time.Minute))
 	}
-	if n := sel.tried(KindNotice); n != 2 { // the first attempt and the one retry
+	if n := sel.tried(KindNotice); n != 1 { // the first attempt, no retry
 		t.Fatalf("rejected notice tried %d times", n)
 	}
 }

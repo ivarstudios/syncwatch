@@ -724,20 +724,24 @@ func (n *Notifier) SendTest(ctx context.Context) error {
 // key or certificate pin, access settings). It is sent at once, also during
 // quiet hours, without a mention, so a change nobody expected is noticed.
 func (n *Notifier) Notice(title, summary string) {
-	n.notice(n.senders(), true, title, summary)
+	gen := n.generation()
+	n.notice(n.senders(), gen, true, title, summary)
 }
 
 // NoticeLater captures the channels configured now and returns a function
 // that sends a notice to them. A change that replaces or removes a channel
 // is announced with it, so the channel that loses messages hears about it.
 func (n *Notifier) NoticeLater() func(title, summary string) {
+	gen := n.generation()
 	senders := n.senders()
 	// Those channels may be gone by then; their failures aren't the
 	// current channels' and don't count towards the banner.
-	return func(title, summary string) { n.notice(senders, false, title, summary) }
+	return func(title, summary string) { n.notice(senders, gen, false, title, summary) }
 }
 
-func (n *Notifier) notice(senders []Sender, current bool, title, summary string) {
+// notice sends a settings notice to senders, built in channel generation
+// built.
+func (n *Notifier) notice(senders []Sender, built int, current bool, title, summary string) {
 	cfg := n.cfg.Get()
 	now := n.now()
 	n.dmu.Lock()
@@ -745,12 +749,16 @@ func (n *Notifier) notice(senders []Sender, current bool, title, summary string)
 	key := fmt.Sprintf("notice:%d:%d", now.UnixNano(), n.noticeSeq)
 	gen := n.gen
 	n.dmu.Unlock()
-	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: summary, Color: ColorWarn, URL: cfg.PublicURL, Key: key}
+	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: summary, Color: ColorNotice, URL: cfg.PublicURL, Key: key}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := n.sendTo(ctx, now, m, senders, current, gen); errors.Is(err, errNoChannel) {
 			n.log.Info("settings notice not sent: no Discord webhook is configured", "title", title)
+		} else if rejected(err) && built == n.generation() {
+			// The retry would go to the same channels, which refuse it:
+			// one decision, one log line.
+			n.log.Warn("settings notice discarded, Discord refused it", "title", title, "err", err)
 		} else if err != nil {
 			n.log.Warn("cannot send the settings notice, syncwatch retries it with the next notifications", "title", title, "err", err)
 			n.queueNotice(m, now)
