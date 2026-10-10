@@ -120,7 +120,7 @@ func TestPinChangesNeedConfirmation(t *testing.T) {
 		t.Fatalf("accepted %d, reset %d", accepted, resets)
 	}
 	notices := e.noticesText()
-	if !strings.Contains(notices, "new certificate accepted") || !strings.Contains(notices, "pinned certificate forgotten") {
+	if !strings.Contains(notices, "new certificate accepted") || !strings.Contains(notices, "Pinned certificate forgotten") {
 		t.Fatalf("notices: %q", notices)
 	}
 }

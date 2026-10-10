@@ -649,10 +649,16 @@ func (s *Server) handleSnooze(w http.ResponseWriter, r *http.Request, info reque
 		s.redirect(w, r, backTo(r), "Unknown snooze length.", true)
 		return
 	}
-	if err := s.eng.Snooze(id, until, strings.TrimSpace(r.FormValue("reason")), info.Role); err != nil {
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if err := s.eng.Snooze(id, until, reason, info.Role); err != nil {
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
+	detail := "Snoozed until " + s.fmtTime(until) + "."
+	if reason != "" {
+		detail += " Reason: " + reason
+	}
+	s.announceHidden(r, id, "snoozed", detail)
 	s.redirect(w, r, backTo(r), "Snoozed until "+s.fmtTime(until)+".", false)
 }
 
@@ -666,7 +672,19 @@ func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info reque
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
+	s.announceHidden(r, r.PathValue("id"), "ignored", "Ignored: "+reason)
 	s.redirect(w, r, backTo(r), "Problem ignored.", false)
+}
+
+// announceHidden tells the channels when an urgent problem is snoozed or
+// ignored, since nobody is pinged about it from then on.
+func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
+	for _, f := range s.eng.View().Open {
+		if f.ID == id && f.Urgent {
+			s.announce(r, "Urgent problem "+what, f.Check+" "+f.Subject+": "+f.Message+"\n"+detail)
+			return
+		}
+	}
 }
 
 func (s *Server) handleUnsnooze(w http.ResponseWriter, r *http.Request, info requestInfo) {
