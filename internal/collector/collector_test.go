@@ -627,3 +627,86 @@ func TestResetPinTakesEffectImmediately(t *testing.T) {
 		t.Fatalf("new certificate not pinned: %q", pin)
 	}
 }
+
+// startManager runs a manager for one server, AKKA at srv, with extra YAML
+// (e.g. a collector section) and returns its hub and store. stop ends it;
+// call it before closing srv.
+func startManager(t *testing.T, srv *httptest.Server, extra string, log *slog.Logger) (hub *model.Hub, m *Manager, st *store.Store, stop func()) {
+	t.Helper()
+	cfg, err := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL) + extra + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := config.NewHolder(cfg)
+	st, _ = store.OpenMemory(make([]byte, 32))
+	_ = st.SetServerKey("akka", "k", srv.URL)
+	hub = model.NewHub(nil)
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	m = NewManager(hub, st, h, log)
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	return hub, m, st, cancel
+}
+
+// An HTTP error on one folder's db/status or db/completion is that folder's
+// problem: the folder shows it, the other folders are read and the server
+// stays up. Only 401/403 (a bad key) and transport errors concern the server.
+func TestPerFolderErrorStaysWithTheFolder(t *testing.T) {
+	fake := newFakeST(t)
+	var mu sync.Mutex
+	keyErr := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		ke := keyErr
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/rest/db/status" && q.Get("folder") == "p-beta":
+			if ke {
+				http.Error(w, "Not Authorized", http.StatusUnauthorized)
+			} else {
+				http.Error(w, "database is broken", http.StatusInternalServerError)
+			}
+			return
+		case r.URL.Path == "/rest/db/completion" && q.Get("folder") == "p-alpha" && strings.HasPrefix(q.Get("device"), "SXOSWHO"):
+			http.Error(w, "bad device", http.StatusBadRequest)
+			return
+		case r.URL.Path == "/rest/db/completion" && q.Get("folder") == "p-gamma":
+			// Paused after the config was read: the normal 404, not a problem.
+			http.Error(w, "folder is paused", http.StatusNotFound)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	hub, m, _, stop := startManager(t, srv, "collector: {event_timeout: 5s, down_after_failures: 1}", nil)
+	defer stop()
+	sv := waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	if sv.Status != model.StatusUp || sv.LastError != "" {
+		t.Fatalf("server: %s %q", sv.Status, sv.LastError)
+	}
+	beta := sv.Folders["p-beta"]
+	if beta.State != "unknown" || !strings.Contains(beta.Error, "500") || beta.FolderSync() != model.SyncError {
+		t.Fatalf("p-beta: state %q, error %q", beta.State, beta.Error)
+	}
+	alpha := sv.Folders["p-alpha"]
+	if alpha.State != "idle" || !strings.Contains(alpha.Error, "400") || !strings.Contains(alpha.Error, "SXOSWHO") || len(alpha.Completion) != 1 {
+		t.Fatalf("p-alpha: state %q, error %q, %d completions", alpha.State, alpha.Error, len(alpha.Completion))
+	}
+	gamma := sv.Folders["p-gamma"]
+	if gamma.State != "idle" || gamma.Error != "" || len(gamma.Completion) != 0 {
+		t.Fatalf("p-gamma: state %q, error %q, %d completions", gamma.State, gamma.Error, len(gamma.Completion))
+	}
+
+	// 401 on a per-folder request is about the key, so about the server.
+	mu.Lock()
+	keyErr = true
+	mu.Unlock()
+	m.RescanNow()
+	sv = waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	if !strings.Contains(sv.LastError, "401") {
+		t.Fatalf("LastError %q", sv.LastError)
+	}
+}

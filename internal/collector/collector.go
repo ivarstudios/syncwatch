@@ -415,16 +415,42 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			}
 		}()
 	}
+	// A per-folder request answered with an HTTP error (other than 401/403,
+	// which the key gets everywhere) is that folder's problem, not the
+	// server's: the folder shows the error and the check goes on. The 404 a
+	// paused folder answers is normal and only logged. Transport errors and
+	// timeouts fail the check as above.
+	problems := map[string]string{} // by folder ID; applied after the parallel phase
+	folderErr := func(f *model.Folder, dev, what string, err error) error {
+		id := f.ID
+		if dev != "" {
+			id += "/" + model.ShortID(dev)
+		}
+		if serverLevel(err) {
+			return fmt.Errorf("%s %s: %w", what, id, err)
+		}
+		msg := shortErr(err)
+		if f.Paused || paused404(err) {
+			c.log.Debug(what+" unavailable", "folder", id, "err", msg)
+			return nil
+		}
+		c.log.Warn(what+" failed; the folder shows the error", "folder", id, "err", msg)
+		if dev != "" {
+			msg += " (device " + model.ShortID(dev) + ")"
+		}
+		mu.Lock()
+		if _, ok := problems[f.ID]; !ok {
+			problems[f.ID] = msg
+		}
+		mu.Unlock()
+		return nil
+	}
 	for _, f := range newFolders {
 		f := f
 		run(func() error {
 			ds, err := cl.DBStatus(fctx, f.ID)
 			if err != nil {
-				if perFolder(err) {
-					c.log.Debug("db/status unavailable for folder", "folder", f.ID, "err", shortErr(err))
-					return nil
-				}
-				return fmt.Errorf("db/status %s: %w", f.ID, err)
+				return folderErr(f, "", "db/status", err)
 			}
 			mu.Lock()
 			applyDBStatus(f, ds)
@@ -438,10 +464,11 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			if ds.Errors > 0 || ds.PullErrors > 0 {
 				fe, err := cl.FolderErrors(fctx, f.ID, 5)
 				if err != nil {
-					if perFolder(err) {
-						return nil
+					if serverLevel(err) {
+						return fmt.Errorf("folder/errors %s: %w", f.ID, err)
 					}
-					return fmt.Errorf("folder/errors %s: %w", f.ID, err)
+					c.log.Debug("folder/errors unavailable", "folder", f.ID, "err", shortErr(err))
+					return nil
 				}
 				mu.Lock()
 				f.FileErrors = fileErrors(fe.Errors)
@@ -458,11 +485,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			run(func() error {
 				comp, err := cl.Completion(fctx, f.ID, dev)
 				if err != nil {
-					if perFolder(err) {
-						c.log.Debug("completion unavailable", "folder", f.ID, "device", model.ShortID(dev), "err", shortErr(err))
-						return nil
-					}
-					return fmt.Errorf("completion %s/%s: %w", f.ID, model.ShortID(dev), err)
+					return folderErr(f, dev, "completion", err)
 				}
 				mu.Lock()
 				f.Completion[dev] = completionFrom(comp, time.Now())
@@ -477,6 +500,15 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	}
 	if firstErr != nil {
 		return firstErr
+	}
+	for id, msg := range problems {
+		f := newFolders[id]
+		if f.State == "" {
+			f.State = "unknown" // db/status didn't answer
+		}
+		if f.Error == "" {
+			f.Error = msg
+		}
 	}
 
 	conflicts, err := cl.ConflictCounters(ctx)
@@ -544,6 +576,22 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 func perFolder(err error) bool {
 	var se *stclient.StatusError
 	return errors.As(err, &se) && se.Code >= 400 && se.Code < 500 && se.Code != 401 && se.Code != 403
+}
+
+// serverLevel reports whether an error from a per-folder request means the
+// server itself is in trouble: a transport error or timeout, or 401/403,
+// which the key gets on every request. Any other HTTP status concerns only
+// that folder or device.
+func serverLevel(err error) bool {
+	var se *stclient.StatusError
+	return !errors.As(err, &se) || se.Code == 401 || se.Code == 403
+}
+
+// paused404 reports whether err is the 404 "folder is paused" Syncthing
+// answers for a folder that was paused after the config was read.
+func paused404(err error) bool {
+	var se *stclient.StatusError
+	return errors.As(err, &se) && se.Code == 404 && strings.Contains(se.Body, "paused")
 }
 
 func folderFromConfig(fc stclient.FolderConfig, self string) *model.Folder {
