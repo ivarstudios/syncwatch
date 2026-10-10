@@ -32,7 +32,7 @@
     </div>
     {{end}}
     <form method="post" action="/settings/servers" class="grid-form">
-      <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="orig_id" value="{{.ID}}">
+      <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}"><input type="hidden" name="orig_id" value="{{.ID}}">
       <label>Name <input name="name" value="{{.Name}}" required></label>
       <label>API URL <input name="url" value="{{.URL}}" placeholder="https://192.168.1.10:8384" required></label>
       <label>GUI URL for links (optional) <input name="gui_url" value="{{.GUIURL}}"></label>
@@ -45,14 +45,14 @@
       <div class="actions"><button type="submit">Save</button></div>
     </form>
     <form method="post" action="/settings/servers/{{.ID}}/delete" data-confirm="Remove {{.Name}} from syncwatch? Its API key and pinned certificate are deleted.">
-      <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="danger link">Remove server</button>
+      <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}"><button type="submit" class="danger link">Remove server</button>
     </form>
   </details>
   {{end}}
   <details class="server-edit" data-key="srv:new" {{if not $d.Servers}}open{{end}}>
     <summary><strong>+ Add a server</strong></summary>
     <form method="post" action="/settings/servers" class="grid-form">
-      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
       <label>Name <input name="name" required placeholder="AKKA"></label>
       <label>API URL <input name="url" required placeholder="https://192.168.1.10:8384"></label>
       <label>GUI URL for links (optional) <input name="gui_url"></label>
@@ -66,7 +66,7 @@
 <section class="card" id="notifications">
   <h2>Notifications</h2>
   <form method="post" action="/settings/notifications" class="grid-form">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>Discord webhook URL {{if $d.HasWebhook}}<span class="muted">(set — leave empty to keep)</span>{{else}}<span class="muted">(not set)</span>{{end}}
       <input type="password" name="discord_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"></label>
     {{if $d.HasWebhook}}<label class="check"><input type="checkbox" name="discord_webhook_clear"> Remove the webhook</label>{{end}}
@@ -84,7 +84,7 @@
   {{if $d.Log}}
   <details data-key="notify-log"><summary>Recent notifications</summary>
     <table class="list small"><thead><tr><th>Time</th><th>Kind</th><th>Channel</th><th>Result</th><th>Title</th></tr></thead><tbody>
-    {{range $d.Log}}<tr><td class="nowrap">{{datefmt .SentAt}} {{.SentAt.Format "15:04"}}</td><td>{{.Kind}}</td><td>{{.Channel}}</td><td>{{if .OK}}<span class="c-ok">✔ sent</span>{{else}}<span class="c-err">✖ {{.Error}}</span>{{end}}</td><td>{{.Summary}}</td></tr>{{end}}
+    {{range $d.Log}}<tr><td class="nowrap">{{timefmt .SentAt}}</td><td>{{.Kind}}</td><td>{{.Channel}}</td><td>{{if .OK}}<span class="c-ok">✔ sent</span>{{else}}<span class="c-err">✖ {{.Error}}</span>{{end}}</td><td>{{.Summary}}</td></tr>{{end}}
     </tbody></table>
   </details>
   {{end}}
@@ -93,7 +93,7 @@
 <section class="card" id="checks">
   <h2>Checks</h2>
   <form method="post" action="/settings/checks">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <div class="scroll">
     <table class="list">
       <thead><tr><th>Check</th><th>Severity</th><th>Enabled</th><th>Urgent ping</th><th>Debounce</th></tr></thead>
@@ -127,7 +127,7 @@
   <h2>Structure rules and shares</h2>
   <p class="muted small">Naming and placement rules (S3–S5, X2) and manual share additions/exclusions per server (by name or ID). Without a <code>project_pattern</code>, every top-level directory counts as a project folder.</p>
   <form method="post" action="/settings/structure">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <textarea name="yaml" rows="22" class="mono" spellcheck="false" aria-label="Structure rules YAML">{{$d.StructureYAML}}</textarea>
     <div class="actions"><button type="submit">Save rules</button></div>
   </form>
@@ -136,7 +136,7 @@
 <section class="card" id="collector">
   <h2>Collector</h2>
   <form method="post" action="/settings/collector" class="grid-form">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>Mode <select name="mode"><option value="events" {{if eq $cfg.Collector.Mode "events"}}selected{{end}}>events (live)</option><option value="polled" {{if eq $cfg.Collector.Mode "polled"}}selected{{end}}>polled (lighter on the NAS)</option></select></label>
     <label>Event long-poll timeout <input name="event_timeout" value="{{$cfg.Collector.EventTimeout}}"></label>
     <label>Full re-check every <input name="full_check_interval" value="{{$cfg.Collector.FullCheckInterval}}"></label>
@@ -153,7 +153,7 @@
 <section class="card" id="access">
   <h2>Access</h2>
   <form method="post" action="/settings/access" class="grid-form">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>Login <select name="mode">
       <option value="builtin" {{if eq $cfg.Access.Mode "builtin"}}selected{{end}}>built-in passwords</option>
       <option value="proxy" {{if eq $cfg.Access.Mode "proxy"}}selected{{end}}>off — a reverse proxy or VPN handles access</option>
@@ -192,7 +192,7 @@
   <h2>Export and import</h2>
   <p><a href="/settings/export">Download the configuration as YAML</a> (without API keys, webhooks or tokens).</p>
   <form method="post" action="/settings/import" enctype="multipart/form-data" data-confirm="Replace the whole configuration with the imported file?">
-    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>YAML file <input type="file" name="file" accept=".yaml,.yml,text/yaml"></label>
     <label>…or paste YAML <textarea name="yaml" rows="6" class="mono" spellcheck="false"></textarea></label>
     <p class="small muted">Import replaces the configuration. Secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>api.token</code>) are stored encrypted; secrets not in the file are kept, but a kept API key is only used while its server's URL stays the same.</p>

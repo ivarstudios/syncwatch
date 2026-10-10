@@ -113,7 +113,12 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	out := apiStatus{GeneratedAt: now.UTC(), Version: s.version, Health: notify.HealthLine(cfg, v, now), Counts: map[string]int{}}
 	if s.hooks.Delivery != nil {
 		if d := s.hooks.Delivery(); d.Failing {
-			out.Notifications = apiNotifications{Failing: true, Since: tptr(d.Since.UTC()), Error: d.Error}
+			out.Notifications = apiNotifications{Failing: true, Since: tptr(d.Since.UTC())}
+			// The error text can quote the channel's answer; like the
+			// banner, only admins see it.
+			if s.resolve(r).Role == RoleAdmin {
+				out.Notifications.Error = d.Error
+			}
 		}
 	}
 	for _, sv := range v.Snapshot.Servers {

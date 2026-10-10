@@ -9,9 +9,12 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -54,6 +57,7 @@ type Server struct {
 	tmpl    *template.Template
 	limiter *limiter
 	mux     *http.ServeMux
+	hosts   []string // names answered besides addresses, localhost and public_url's host
 
 	setupMu    sync.Mutex
 	setupToken string
@@ -89,9 +93,64 @@ func (s *Server) SetupToken() string {
 	return s.setupToken
 }
 
+// LogSetupToken logs the setup token while no admin password is set in
+// built-in mode. When the log level hides warnings the line goes to stderr
+// as well: the first start can't be finished without it.
+func (s *Server) LogSetupToken(stderr io.Writer) {
+	tok := s.SetupToken()
+	if tok == "" || s.cfg.Get().Access.Mode != config.AccessBuiltin {
+		return
+	}
+	const msg = "no admin password is set yet: open the dashboard and enter this one-time setup token"
+	s.log.Warn(msg, "setup_token", tok)
+	if !s.log.Enabled(context.Background(), slog.LevelWarn) {
+		fmt.Fprintf(stderr, "syncwatch: %s: %s\n", msg, tok)
+	}
+}
+
 func (s *Server) adminConfigured() bool {
 	h, _ := s.st.Setting(KeyAdminHash)
 	return h != ""
+}
+
+// AllowHosts adds names the dashboard answers to: the host of the listen
+// address and extra names (SYNCWATCH_TLS_HOSTS). Addresses, localhost and
+// the host of public_url are always answered. Call it before serving.
+func (s *Server) AllowHosts(listen string, extra ...string) {
+	if h, _, err := net.SplitHostPort(listen); err == nil && h != "" {
+		s.hosts = append(s.hosts, h)
+	}
+	for _, h := range extra {
+		if h = strings.TrimSpace(h); h != "" {
+			s.hosts = append(s.hosts, h)
+		}
+	}
+}
+
+// hostAllowed reports whether the Host header names this server. A page on
+// any other name (DNS rebinding) is refused: it would be same-origin with
+// its own name, so the Origin check alone can't keep it out.
+func (s *Server) hostAllowed(r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if u, err := url.Parse(s.cfg.Get().PublicURL); err == nil && strings.EqualFold(u.Hostname(), host) {
+		return true
+	}
+	for _, h := range s.hosts {
+		if strings.EqualFold(strings.TrimSuffix(h, "."), host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) routes() {
@@ -158,6 +217,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "same-origin")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	if !s.hostAllowed(r) {
+		s.log.Info("request for an unknown host name refused", "host", r.Host, "ip", clientIP(r))
+		http.Error(w, fmt.Sprintf("syncwatch doesn't answer to the host name %q: open it by IP address and set public_url under Settings → Notifications, or set SYNCWATCH_TLS_HOSTS to the names you use", r.Host), http.StatusMisdirectedRequest)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -173,6 +237,8 @@ type handler func(w http.ResponseWriter, r *http.Request, info requestInfo)
 // page wraps a GET (or login/setup POST) handler with role checks.
 func (s *Server) page(need string, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Login and setup parse a form before anyone is logged in.
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		info := s.resolve(r)
 		s.ensureCSRF(w, r, &info)
 		if !roleAtLeast(info.Role, need) {
@@ -216,7 +282,12 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/login?next="+urlQueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+	to := "/login"
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		// Only a page can be returned to; a form has to be sent again.
+		to += "?next=" + urlQueryEscape(r.URL.RequestURI())
+	}
+	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
 func urlQueryEscape(s string) string {
@@ -354,6 +425,7 @@ func (s *Server) funcs() template.FuncMap {
 			}
 			return t.In(s.cfg.Get().Location()).Format("2006-01-02")
 		},
+		"timefmt":      s.fmtTime,
 		"severityName": func(sev any) string { return fmt.Sprint(sev) },
 		"plus1":        func(i int) int { return i + 1 },
 		"list":         func(s ...string) []string { return s },
@@ -369,6 +441,13 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request, info re
 	}
 	if !s.adminConfigured() {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+	if info.Session != nil && info.Role != RoleNone {
+		// Already logged in, for example through a link from Discord. A
+		// viewer session from before viewing was switched off gives no
+		// role; it gets the form rather than a page that sends it back.
+		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}
 	s.render(w, r, http.StatusOK, "login", info, map[string]any{"Title": "Log in", "Next": safeNext(r.URL.Query().Get("next"))})
@@ -409,15 +488,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 	wait(r, delay)
 	pw := r.FormValue("password")
 	role := RoleNone
+	tried := []string{RoleAdmin} // a wrong password was a guess at each password it was checked against
 	if h, _ := s.st.Setting(KeyAdminHash); h != "" && CheckPassword(pw, h) {
 		role = RoleAdmin
 	} else if s.cfg.Get().Access.Viewer == config.ViewerPassword {
+		tried = append(tried, RoleViewer)
 		if h, _ := s.st.Setting(KeyViewerHash); h != "" && CheckPassword(pw, h) {
 			role = RoleViewer
 		}
 	}
 	if role == RoleNone {
-		if s.limiter.fail(ip, now) {
+		if s.limiter.fail(ip, now, tried...) {
 			s.log.Warn("many failed logins from different addresses; logins are slowed down for a while")
 		}
 		s.log.Warn("failed login", "ip", ip)
@@ -425,7 +506,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 		s.render(w, r, http.StatusUnauthorized, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "Wrong password."})
 		return
 	}
-	s.limiter.success(ip)
+	s.limiter.success(ip, role)
 	if err := s.startSession(w, r, role); err != nil {
 		http.Error(w, "could not start session", http.StatusInternalServerError)
 		return
@@ -466,10 +547,11 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	want := s.SetupToken()
 	got := strings.TrimSpace(r.FormValue("token"))
 	if want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
-		s.limiter.fail(ip, s.now())
+		s.limiter.fail(ip, s.now(), RoleAdmin)
 		s.render(w, r, http.StatusUnauthorized, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "Wrong setup token. It is printed in the container log."})
 		return
 	}
+	s.limiter.success(ip, RoleAdmin)
 	pw := r.FormValue("password")
 	if err := checkNewPassword(pw); err != nil {
 		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": err.Error(), "Token": got})
@@ -598,10 +680,16 @@ func (s *Server) handleSnooze(w http.ResponseWriter, r *http.Request, info reque
 		s.redirect(w, r, backTo(r), "Unknown snooze length.", true)
 		return
 	}
-	if err := s.eng.Snooze(id, until, strings.TrimSpace(r.FormValue("reason")), info.Role); err != nil {
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if err := s.eng.Snooze(id, until, reason, info.Role); err != nil {
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
+	detail := "Snoozed until " + s.fmtTime(until) + "."
+	if reason != "" {
+		detail += " Reason: " + reason
+	}
+	s.announceHidden(r, id, "snoozed", detail)
 	s.redirect(w, r, backTo(r), "Snoozed until "+s.fmtTime(until)+".", false)
 }
 
@@ -615,7 +703,19 @@ func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info reque
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
+	s.announceHidden(r, r.PathValue("id"), "ignored", "Ignored: "+reason)
 	s.redirect(w, r, backTo(r), "Problem ignored.", false)
+}
+
+// announceHidden tells the channels when an urgent problem is snoozed or
+// ignored, since nobody is pinged about it from then on.
+func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
+	for _, f := range s.eng.View().Open {
+		if f.ID == id && f.Urgent {
+			s.announce(r, "Urgent problem "+what, f.Check+" "+f.Subject+": "+f.Message+"\n"+detail)
+			return
+		}
+	}
 }
 
 func (s *Server) handleUnsnooze(w http.ResponseWriter, r *http.Request, info requestInfo) {
