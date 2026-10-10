@@ -55,10 +55,22 @@ const (
 	rootsMaxAge     = 10 * time.Minute // Syncthing's folder list is read again after this
 	rootsMissAge    = time.Minute      // or sooner, when a directory isn't under it (a folder may just have been added)
 	rootsRetry      = 30 * time.Second // wait after a failed read of the folder list
-	rootsTimeout    = time.Minute      // for the gate's own requests to Syncthing
 	logInterval     = time.Minute      // one log line per client, reason and minute about refused requests
 	maxRefusals     = 4096             // refusal counters kept (client × reason)
 )
+
+// Timeouts toward Syncthing. Event long-polls go through their own
+// transport without a header timeout; their deadline comes from the
+// request's own timeout (eventsWait).
+const (
+	dialTimeout   = 10 * time.Second
+	headerTimeout = 60 * time.Second // ResponseHeaderTimeout for everything but events
+	maxEventsWait = 11 * time.Minute // the most an events long-poll may take
+)
+
+// eventsExtra is how much longer than its own timeout an events long-poll
+// may take. A variable so tests can shorten it.
+var eventsExtra = 30 * time.Second
 
 // queryParams lists, per endpoint, the parameters syncwatch's client sends.
 // An endpoint that isn't listed takes no query at all.
@@ -96,7 +108,8 @@ type Gate struct {
 	o        Options
 	base     *url.URL
 	loopback bool
-	hc       *http.Client
+	hc       *http.Client // Syncthing
+	hcLong   *http.Client // Syncthing, for event long-polls
 	allowed  map[string]bool
 	now      func() time.Time
 
@@ -144,21 +157,28 @@ func New(o Options) (*Gate, error) {
 	for _, p := range stclient.Allowlist() {
 		g.allowed[p] = true
 	}
-	g.hc = &http.Client{
-		Transport: &http.Transport{
-			Proxy: nil,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // checked in verify
-				VerifyConnection:   g.verify,
-				MinVersion:         tls.VersionTLS12,
-			},
-			TLSHandshakeTimeout: 10 * time.Second,
-			MaxIdleConnsPerHost: 8,
-			IdleConnTimeout:     60 * time.Second,
-		},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	g.hc = &http.Client{Transport: g.transport(headerTimeout), CheckRedirect: noRedirect}
+	g.hcLong = &http.Client{Transport: g.transport(0), CheckRedirect: noRedirect}
 	return g, nil
+}
+
+// transport connects to Syncthing: no proxy, a dial timeout, and a
+// response header timeout unless 0 (event long-polls).
+func (g *Gate) transport(headerTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		Proxy:       nil,
+		DialContext: (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // checked in verify
+			VerifyConnection:   g.verify,
+			MinVersion:         tls.VersionTLS12,
+		},
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: headerTimeout,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       60 * time.Second,
+	}
 }
 
 // verify checks Syncthing's certificate: anything on loopback (the gate
@@ -275,8 +295,16 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		q.Set("current", dir)
 	}
+	hc, ctx := g.hc, r.Context()
+	if r.URL.Path == pathEvents {
+		// A long-poll may take as long as it asked for, plus a margin.
+		hc = g.hcLong
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, eventsWait(q.Get("timeout")))
+		defer cancel()
+	}
 
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, g.upstream(r.URL.Path, q.Encode()), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.upstream(r.URL.Path, q.Encode()), nil)
 	if err != nil {
 		http.Error(w, "syncwatch gate: bad request", http.StatusBadRequest)
 		return
@@ -285,7 +313,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("X-API-Key", g.o.APIKey)
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := g.hc.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		if r.Context().Err() == nil {
 			g.o.Log.Warn("reaching Syncthing failed", "path", r.URL.Path, "err", err)
@@ -375,6 +403,19 @@ func checkQuery(path, raw string) (url.Values, error) {
 		}
 	}
 	return q, nil
+}
+
+// eventsWait is how long an events long-poll may take: its own timeout
+// (Syncthing's default when it has none) plus a margin, at most 11 minutes.
+func eventsWait(timeout string) time.Duration {
+	n := 60
+	if timeout != "" {
+		n, _ = strconv.Atoi(timeout) // checked by checkQuery
+	}
+	if d := time.Duration(n)*time.Second + eventsExtra; d < maxEventsWait {
+		return d
+	}
+	return maxEventsWait
 }
 
 // sameMask reports whether names are exactly the collector's event mask,
@@ -528,7 +569,7 @@ func (g *Gate) refreshRootsLocked(maxAge time.Duration) error {
 // the directories the token may list: each folder's parent (a drive root
 // counts, / doesn't: syncwatch never lists it) and the extra roots.
 func (g *Gate) fetchRoots() (roots []browsePath, windows bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), rootsTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), headerTimeout)
 	defer cancel()
 	var st stclient.SystemStatus
 	if err := g.getJSON(ctx, pathSystemStatus, &st); err != nil {

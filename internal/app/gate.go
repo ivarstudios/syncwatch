@@ -91,6 +91,7 @@ func RunGate(ctx context.Context, o GateOptions) error {
 		TLSConfig:         tc,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 		// No write timeout: event long-polls stay open for minutes.
 	}
 	errc := make(chan error, 1)

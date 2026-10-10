@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net/http"
@@ -96,6 +97,15 @@ func TestRunGate(t *testing.T) {
 		if strings.Contains(string(b), "ok") {
 			t.Fatal("the gate answered over plain HTTP")
 		}
+	}
+	// Headers over 64 KiB are refused.
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // the gate's own self-signed certificate
+	req, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/healthz", nil)
+	req.Header.Set("X-Padding", strings.Repeat("a", 70<<10))
+	if resp, err := hc.Do(req); err != nil || resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("70 KiB header: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
 	}
 	stop()
 

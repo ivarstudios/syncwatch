@@ -35,15 +35,16 @@ const (
 type fakeSyncthing struct {
 	mu      sync.Mutex
 	reqs    []*http.Request
-	sep     string   // pathSeparator in /rest/system/status; "/" when empty
-	folders []string // folder paths in /rest/config/folders; /s/LIVE-F when nil
-	down    bool     // answer 500 to everything
+	sep     string        // pathSeparator in /rest/system/status; "/" when empty
+	folders []string      // folder paths in /rest/config/folders; /s/LIVE-F when nil
+	down    bool          // answer 500 to everything
+	delay   time.Duration // wait this long before answering version and events
 }
 
 func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, r.Clone(context.Background()))
-	sep, folders, down := f.sep, f.folders, f.down
+	sep, folders, down, delay := f.sep, f.folders, f.down, f.delay
 	f.mu.Unlock()
 	if r.URL.Path != "/rest/noauth/health" && r.Header.Get("X-API-Key") != realKey {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -52,6 +53,9 @@ func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if down {
 		http.Error(w, "down", http.StatusInternalServerError)
 		return
+	}
+	if r.URL.Path == "/rest/system/version" || r.URL.Path == "/rest/events" {
+		time.Sleep(delay)
 	}
 	if sep == "" {
 		sep = "/"
@@ -551,6 +555,37 @@ func TestGateLogsRefusalsOnceAMinute(t *testing.T) {
 	refused("/rest/system/status", "", http.StatusForbidden)
 	if n := strings.Count(logs.String(), "gate refused a request"); n != 4 || !strings.Contains(logs.String(), "count=50") {
 		t.Fatalf("after a minute: %d lines, want 4 with count=50:\n%s", n, logs.String())
+	}
+}
+
+// Syncthing gets a dial and a response header timeout, except for event
+// long-polls, which may take their own timeout plus a margin.
+func TestGateUpstreamTimeouts(t *testing.T) {
+	st, g, gs := setup(t)
+	tr, trLong := g.hc.Transport.(*http.Transport), g.hcLong.Transport.(*http.Transport)
+	if tr.ResponseHeaderTimeout != 60*time.Second || trLong.ResponseHeaderTimeout != 0 || tr.DialContext == nil || trLong.DialContext == nil {
+		t.Fatalf("transports: header timeouts %v and %v, dialers %v %v", tr.ResponseHeaderTimeout, trLong.ResponseHeaderTimeout, tr.DialContext != nil, trLong.DialContext != nil)
+	}
+	for in, want := range map[string]time.Duration{"": 90 * time.Second, "0": 30 * time.Second, "600": 630 * time.Second, "100000": 11 * time.Minute} {
+		if got := eventsWait(in); got != want {
+			t.Errorf("eventsWait(%q) = %v, want %v", in, got, want)
+		}
+	}
+	// Shortened so the test is quick: a slow answer is a 502, a long-poll
+	// within its timeout plus the margin isn't.
+	tr.ResponseHeaderTimeout = 200 * time.Millisecond
+	defer func(d time.Duration) { eventsExtra = d }(eventsExtra)
+	eventsExtra = 200 * time.Millisecond
+	st.delay = 600 * time.Millisecond
+	start := time.Now()
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/version", token); code != http.StatusBadGateway || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("slow Syncthing: %d %s after %v", code, strings.TrimSpace(body), time.Since(start))
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=0", token); code != http.StatusBadGateway {
+		t.Fatalf("long-poll over its timeout plus the margin: %d", code)
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=1", token); code != 200 {
+		t.Fatalf("long-poll within its timeout: %d", code)
 	}
 }
 
