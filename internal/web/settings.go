@@ -9,6 +9,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ type checkRow struct {
 	Enabled, Urgent bool
 	Debounce        string
 	SeverityLabel   string
+	Invalid         bool // the debounce of a refused save is not valid
 }
 
 type structureDoc struct {
@@ -60,11 +62,81 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 		"Weekdays":      []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "off"},
 		"Now":           s.fmtTime(s.now()),
 		"Rev":           configRev(cfg),
+		"Form":          formValues(cfg),
+		"Bad":           map[string]bool{},
+		"Errors":        map[string]string{},
 	}
 	for k, val := range extra {
 		data[k] = val
 	}
 	return data
+}
+
+// formInputs lists, for each form that refuse shows again, the inputs whose
+// typed text it keeps (the rows of the checks table are in checkRow).
+var formInputs = map[string][]string{
+	"notifications": {"discord_webhook_clear", "discord_role_id", "quiet_hours", "reminder_time", "weekly_day", "weekly_time", "weekly_top", "timezone", "public_url"},
+	"checks":        {"failing_files", "stuck_sync", "paused", "pc_offline", "conflict_window", "inactive_project", "old_device", "dead_share"},
+	"collector":     {"mode", "event_timeout", "full_check_interval", "poll_interval", "structure_interval", "baseline_interval", "concurrency", "request_timeout", "down_after_failures"},
+}
+
+// formValues returns the text that each input of formInputs shows for c.
+func formValues(c *config.Config) map[string]string {
+	n, th, col := c.Notify, c.Thresholds, c.Collector
+	return map[string]string{
+		"discord_role_id": n.DiscordRoleID, "quiet_hours": n.QuietHours, "reminder_time": n.ReminderTime, "weekly_day": n.WeeklyDay,
+		"weekly_time": n.WeeklyTime, "weekly_top": strconv.Itoa(n.WeeklyTop), "timezone": c.Timezone, "public_url": c.PublicURL,
+		"failing_files": th.FailingFiles.String(), "stuck_sync": th.StuckSync.String(), "paused": th.Paused.String(), "pc_offline": th.PCOffline.String(),
+		"conflict_window": th.ConflictWindow.String(), "inactive_project": th.InactiveProject.String(), "old_device": th.OldDevice.String(), "dead_share": th.DeadShare.String(),
+		"mode": col.Mode, "event_timeout": col.EventTimeout.String(), "full_check_interval": col.FullCheckInterval.String(), "poll_interval": col.PollInterval.String(),
+		"structure_interval": col.StructureInterval.String(), "baseline_interval": col.BaselineInterval.String(), "concurrency": strconv.Itoa(col.Concurrency),
+		"request_timeout": col.RequestTimeout.String(), "down_after_failures": strconv.Itoa(col.DownAfter),
+	}
+}
+
+// refuse answers a refused save of the Notifications, Checks or Collector
+// form with the settings page itself (HTTP 422) instead of a redirect, so
+// the form keeps each value that was typed: a value such as "3 days" cannot
+// go through the configuration. The page shows the configuration old with
+// its revision (a newer one makes the next save stale), the inputs of
+// section show the posted text, msg shows above the Save button of section
+// and the inputs in bad are marked.
+func (s *Server) refuse(w http.ResponseWriter, r *http.Request, info requestInfo, old *config.Config, section, msg string, bad map[string]bool) {
+	d := s.settingsData(info, nil)
+	form := d["Form"].(map[string]string)
+	for _, name := range formInputs[section] {
+		form[name] = r.FormValue(name)
+	}
+	if section == "checks" {
+		rows := d["Checks"].([]checkRow)
+		for i := range rows {
+			id := rows[i].ID
+			rows[i].Enabled = r.FormValue("enabled_"+id) == "on"
+			rows[i].Urgent = r.FormValue("urgent_"+id) == "on"
+			rows[i].Debounce = r.FormValue("debounce_" + id)
+			rows[i].Invalid = bad["debounce_"+id]
+		}
+	}
+	d["Rev"], d["Bad"], d["Errors"] = configRev(old), bad, map[string]string{section: msg}
+	s.render(w, r, http.StatusUnprocessableEntity, "settings", info, d)
+}
+
+// keyRe finds the YAML keys that config.FieldLabel puts after the labels in
+// a validation message: "H7 PC offline for more than (thresholds.pc_offline)".
+var keyRe = regexp.MustCompile(`\(([a-z_]+(?:\.[A-Za-z0-9_]+)*)\)`)
+
+// badInputs returns the form inputs that a validation error names.
+func badInputs(err error) map[string]bool {
+	bad := map[string]bool{}
+	for _, m := range keyRe.FindAllStringSubmatch(err.Error(), -1) {
+		k := m[1]
+		if id, ok := strings.CutPrefix(k, "checks."); ok {
+			bad["debounce_"+strings.TrimSuffix(id, ".debounce")] = true
+			continue
+		}
+		bad[k[strings.LastIndex(k, ".")+1:]] = true
+	}
+	return bad
 }
 
 func (s *Server) setting(key string) (string, bool) {
@@ -95,16 +167,17 @@ func (s *Server) stale(w http.ResponseWriter, r *http.Request, old *config.Confi
 }
 
 // save applies a configuration change, announces what changed and redirects
-// back to a settings section.
-func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Config, section, title, okMsg string) {
+// back to a settings section. When the change is refused, it writes no
+// answer and returns the error.
+func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Config, section, title, okMsg string) error {
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#"+section, "Not saved. "+sentence(err.Error()), true)
-		return
+		return err
 	}
 	if ch := configChanges(old, c); len(ch) > 0 {
 		s.announce(r, title, strings.Join(ch, "\n"))
 	}
 	s.redirect(w, r, "/settings#"+section, okMsg, false)
+	return nil
 }
 
 // announce logs a security-relevant settings change and sends it as a notice.
@@ -337,20 +410,28 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	}
 	n.WeeklyDay = r.FormValue("weekly_day")
 	n.WeeklyTime = strings.TrimSpace(r.FormValue("weekly_time"))
-	if top, err := strconv.Atoi(r.FormValue("weekly_top")); err == nil && top > 0 && top <= 25 {
-		n.WeeklyTop = top
+	if top, err := strconv.Atoi(r.FormValue("weekly_top")); err == nil {
+		n.WeeklyTop = top // out of range: Validate names the field and the range
 	}
 	c.Timezone = strings.TrimSpace(r.FormValue("timezone"))
 	c.PublicURL = strings.TrimRight(strings.TrimSpace(r.FormValue("public_url")), "/")
+	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
+	typedHook := hook != ""
+	refused := func(err error) {
+		msg := "Not saved. " + sentence(err.Error())
+		if typedHook {
+			msg += "\nType the Discord webhook URL again." // the page does not show it again
+		}
+		s.refuse(w, r, info, old, "notifications", msg, badInputs(err))
+	}
 	if err := c.Validate(); err != nil {
-		s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
+		refused(err)
 		return
 	}
-	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	if !clearHook && hook != "" {
 		var err error
 		if hook, err = config.CanonicalDiscordWebhook(hook); err != nil {
-			s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
+			refused(err)
 			return
 		}
 	}
@@ -616,6 +697,7 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 	c := old.Clone()
 	c.Checks = map[string]config.Check{}
 	var errs []string
+	bad := map[string]bool{}
 	for _, ci := range config.Catalog {
 		var ch config.Check
 		en := r.FormValue("enabled_"+ci.ID) == "on"
@@ -630,6 +712,7 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 			dv, err := config.ParseDuration(d)
 			if err != nil {
 				errs = append(errs, ci.ID+" debounce: "+err.Error())
+				bad["debounce_"+ci.ID] = true
 			} else if dv.D() != ci.Debounce {
 				ch.Debounce = &dv
 			}
@@ -639,22 +722,26 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 		}
 	}
 	th := &c.Thresholds
-	for name, dst := range map[string]*config.Duration{
+	durations := map[string]*config.Duration{
 		"failing_files": &th.FailingFiles, "stuck_sync": &th.StuckSync, "paused": &th.Paused, "pc_offline": &th.PCOffline, "conflict_window": &th.ConflictWindow,
 		"inactive_project": &th.InactiveProject, "old_device": &th.OldDevice, "dead_share": &th.DeadShare,
-	} {
+	}
+	for _, name := range formInputs["checks"] { // in the order of the form
 		d, err := config.ParseDuration(r.FormValue(name))
 		if err != nil || d <= 0 {
 			errs = append(errs, fieldLabel(name)+": the value must be a duration of more than 0. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.")
+			bad[name] = true
 			continue
 		}
-		*dst = d
+		*durations[name] = d
 	}
 	if len(errs) > 0 {
-		s.redirect(w, r, "/settings#checks", "Not saved. "+strings.Join(errs, " "), true)
+		s.refuse(w, r, info, old, "checks", "Not saved. "+strings.Join(errs, "\n"), bad)
 		return
 	}
-	s.save(w, r, old, c, "checks", "Checks changed", "The checks are saved.")
+	if err := s.save(w, r, old, c, "checks", "Checks changed", "The checks are saved."); err != nil {
+		s.refuse(w, r, info, old, "checks", "Not saved. "+sentence(err.Error()), badInputs(err))
+	}
 }
 
 func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -676,7 +763,9 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 		// scanning recycle bins and snapshots. An explicit [] clears it.
 		c.Structure.IgnoreDirs = old.Structure.IgnoreDirs
 	}
-	s.save(w, r, old, c, "structure", "Structure rules changed", "The structure rules are saved. The next structure scan uses them.")
+	if err := s.save(w, r, old, c, "structure", "Structure rules changed", "The structure rules are saved. The next structure scan uses them."); err != nil {
+		s.redirect(w, r, "/settings#structure", "Not saved. "+sentence(err.Error()), true)
+	}
 }
 
 func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -688,13 +777,20 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 	col := &c.Collector
 	col.Mode = r.FormValue("mode")
 	var errs []string
-	for name, dst := range map[string]*config.Duration{
+	bad := map[string]bool{}
+	durations := map[string]*config.Duration{
 		"event_timeout": &col.EventTimeout, "full_check_interval": &col.FullCheckInterval, "poll_interval": &col.PollInterval,
 		"structure_interval": &col.StructureInterval, "baseline_interval": &col.BaselineInterval, "request_timeout": &col.RequestTimeout,
-	} {
+	}
+	for _, name := range formInputs["collector"] { // in the order of the form
+		dst, ok := durations[name]
+		if !ok {
+			continue
+		}
 		d, err := config.ParseDuration(r.FormValue(name))
 		if err != nil || d <= 0 {
 			errs = append(errs, fieldLabel(name)+": the value must be a duration of more than 0. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.")
+			bad[name] = true
 			continue
 		}
 		*dst = d
@@ -702,14 +798,16 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 	if n, err := strconv.Atoi(r.FormValue("concurrency")); err == nil {
 		col.Concurrency = n
 	}
-	if n, err := strconv.Atoi(r.FormValue("down_after_failures")); err == nil && n > 0 {
-		col.DownAfter = n
+	if n, err := strconv.Atoi(r.FormValue("down_after_failures")); err == nil {
+		col.DownAfter = n // out of range: Validate names the field and the range
 	}
 	if len(errs) > 0 {
-		s.redirect(w, r, "/settings#collector", "Not saved. "+strings.Join(errs, " "), true)
+		s.refuse(w, r, info, old, "collector", "Not saved. "+strings.Join(errs, "\n"), bad)
 		return
 	}
-	s.save(w, r, old, c, "collector", "Collector settings changed", "The collector settings are saved. syncwatch restarted the collectors.")
+	if err := s.save(w, r, old, c, "collector", "Collector settings changed", "The collector settings are saved. syncwatch restarted the collectors."); err != nil {
+		s.refuse(w, r, info, old, "collector", "Not saved. "+sentence(err.Error()), badInputs(err))
+	}
 }
 
 func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info requestInfo) {

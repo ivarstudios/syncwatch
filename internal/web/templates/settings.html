@@ -1,4 +1,4 @@
-{{define "settings"}}{{template "head" .}}{{$d := .Data}}{{$csrf := .CSRF}}{{$cfg := $d.Cfg}}
+{{define "settings"}}{{template "head" .}}{{$d := .Data}}{{$csrf := .CSRF}}{{$cfg := $d.Cfg}}{{$f := $d.Form}}{{$bad := $d.Bad}}
 <nav class="subnav" aria-label="Settings sections">
   <a href="#servers">Servers</a><a href="#notifications">Notifications</a><a href="#checks">Checks</a>
   <a href="#structure">Structure</a><a href="#collector">Collector</a><a href="#access">Access</a><a href="#api">API</a><a href="#import">Export and import</a>
@@ -67,17 +67,18 @@
   <h2>Notifications</h2>
   <form method="post" action="/settings/notifications" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
-    <label>Discord webhook URL {{if $d.HasWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
-      <input type="password" name="discord_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"></label>
-    {{if $d.HasWebhook}}<label class="check"><input type="checkbox" name="discord_webhook_clear"> Remove the webhook</label>{{end}}
-    <label>Role to mention in urgent messages (role ID) <input name="discord_role_id" value="{{$cfg.Notify.DiscordRoleID}}" inputmode="numeric" placeholder="123456789012345678"></label>
-    <label>Quiet hours (HH:MM-HH:MM or off) <input name="quiet_hours" value="{{$cfg.Notify.QuietHours}}"></label>
-    <label>Daily reminder (HH:MM or off) <input name="reminder_time" value="{{$cfg.Notify.ReminderTime}}"></label>
-    <label>Weekly report day <select name="weekly_day">{{range $d.Weekdays}}<option {{if eq . $cfg.Notify.WeeklyDay}}selected{{end}}>{{.}}</option>{{end}}</select></label>
-    <label>Weekly report time <input name="weekly_time" value="{{$cfg.Notify.WeeklyTime}}"></label>
-    <label>Findings listed in the weekly report <input type="number" name="weekly_top" min="1" max="25" value="{{$cfg.Notify.WeeklyTop}}"></label>
-    <label>Time zone <input name="timezone" value="{{$cfg.Timezone}}" placeholder="Europe/Stockholm"></label>
-    <label>Dashboard URL for links in messages <input name="public_url" value="{{$cfg.PublicURL}}" placeholder="http://192.168.1.10:8080"></label>
+    <label{{if index $bad "discord_webhook"}} class="c-err"{{end}}>Discord webhook URL {{if $d.HasWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
+      <input type="password" name="discord_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"{{if index $bad "discord_webhook"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    {{if $d.HasWebhook}}<label class="check"><input type="checkbox" name="discord_webhook_clear" {{if eq (index $f "discord_webhook_clear") "on"}}checked{{end}}> Remove the webhook</label>{{end}}
+    <label{{if index $bad "discord_role_id"}} class="c-err"{{end}}>Role to mention in urgent messages (role ID) <input name="discord_role_id" value="{{index $f "discord_role_id"}}" inputmode="numeric" placeholder="123456789012345678"{{if index $bad "discord_role_id"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "quiet_hours"}} class="c-err"{{end}}>Quiet hours (HH:MM-HH:MM or off) <input name="quiet_hours" value="{{index $f "quiet_hours"}}"{{if index $bad "quiet_hours"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "reminder_time"}} class="c-err"{{end}}>Daily reminder (HH:MM or off) <input name="reminder_time" value="{{index $f "reminder_time"}}"{{if index $bad "reminder_time"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "weekly_day"}} class="c-err"{{end}}>Weekly report day <select name="weekly_day"{{if index $bad "weekly_day"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}>{{range $d.Weekdays}}<option {{if eq . (index $f "weekly_day")}}selected{{end}}>{{.}}</option>{{end}}</select></label>
+    <label{{if index $bad "weekly_time"}} class="c-err"{{end}}>Weekly report time <input name="weekly_time" value="{{index $f "weekly_time"}}"{{if index $bad "weekly_time"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "weekly_top"}} class="c-err"{{end}}>Findings listed in the weekly report <input type="number" name="weekly_top" min="1" max="25" value="{{index $f "weekly_top"}}"{{if index $bad "weekly_top"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "timezone"}} class="c-err"{{end}}>Time zone <input name="timezone" value="{{index $f "timezone"}}" placeholder="Europe/Stockholm"{{if index $bad "timezone"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "public_url"}} class="c-err"{{end}}>Dashboard URL for links in messages <input name="public_url" value="{{index $f "public_url"}}" placeholder="http://192.168.1.10:8080"{{if index $bad "public_url"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    {{with index $d.Errors "notifications"}}<p id="notifications-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
     <div class="actions"><button type="submit">Save</button></div>
   </form>
   <form method="post" action="/settings/notifications/test"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
@@ -99,26 +100,27 @@
       <thead><tr><th>Check</th><th>Severity</th><th>Enabled</th><th>Urgent</th><th>Debounce</th></tr></thead>
       <tbody>
       {{range $d.Checks}}
-      <tr><td><strong>{{.ID}}</strong> {{.Title}} <span class="muted small">{{.Category}}</span></td><td>{{.SeverityLabel}}</td>
+      <tr{{if .Invalid}} class="c-err"{{end}}><td><strong>{{.ID}}</strong> {{.Title}} <span class="muted small">{{.Category}}</span></td><td>{{.SeverityLabel}}</td>
         <td><input type="checkbox" name="enabled_{{.ID}}" aria-label="{{.ID}} enabled" {{if .Enabled}}checked{{end}}></td>
         <td><input type="checkbox" name="urgent_{{.ID}}" aria-label="{{.ID}} urgent" {{if .Urgent}}checked{{end}}></td>
-        <td><input name="debounce_{{.ID}}" value="{{.Debounce}}" size="5" aria-label="{{.ID}} debounce"></td></tr>
+        <td><input name="debounce_{{.ID}}" value="{{.Debounce}}" size="5" aria-label="{{.ID}} debounce"{{if .Invalid}} aria-invalid="true" aria-describedby="checks-error"{{end}}></td></tr>
       {{end}}
       </tbody>
     </table>
     </div>
     <h3>Thresholds</h3>
     <div class="grid-form">
-      <label>H4 with only failed items after <input name="failing_files" value="{{$cfg.Thresholds.FailingFiles}}"></label>
-      <label>H5 stuck sync after <input name="stuck_sync" value="{{$cfg.Thresholds.StuckSync}}"></label>
-      <label>H6 paused for more than <input name="paused" value="{{$cfg.Thresholds.Paused}}"></label>
-      <label>H7 PC offline for more than <input name="pc_offline" value="{{$cfg.Thresholds.PCOffline}}"></label>
-      <label>H10 conflicts in the last <input name="conflict_window" value="{{$cfg.Thresholds.ConflictWindow}}"></label>
-      <label>C1 no file change for <input name="inactive_project" value="{{$cfg.Thresholds.InactiveProject}}"></label>
-      <label>C2 device not seen for <input name="old_device" value="{{$cfg.Thresholds.OldDevice}}"></label>
-      <label>C3 folder not used by device after <input name="dead_share" value="{{$cfg.Thresholds.DeadShare}}"></label>
+      <label{{if index $bad "failing_files"}} class="c-err"{{end}}>H4 with only failed items after <input name="failing_files" value="{{index $f "failing_files"}}"{{if index $bad "failing_files"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "stuck_sync"}} class="c-err"{{end}}>H5 stuck sync after <input name="stuck_sync" value="{{index $f "stuck_sync"}}"{{if index $bad "stuck_sync"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "paused"}} class="c-err"{{end}}>H6 paused for more than <input name="paused" value="{{index $f "paused"}}"{{if index $bad "paused"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "pc_offline"}} class="c-err"{{end}}>H7 PC offline for more than <input name="pc_offline" value="{{index $f "pc_offline"}}"{{if index $bad "pc_offline"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "conflict_window"}} class="c-err"{{end}}>H10 conflicts in the last <input name="conflict_window" value="{{index $f "conflict_window"}}"{{if index $bad "conflict_window"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "inactive_project"}} class="c-err"{{end}}>C1 no file change for <input name="inactive_project" value="{{index $f "inactive_project"}}"{{if index $bad "inactive_project"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "old_device"}} class="c-err"{{end}}>C2 device not seen for <input name="old_device" value="{{index $f "old_device"}}"{{if index $bad "old_device"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "dead_share"}} class="c-err"{{end}}>C3 folder not used by device after <input name="dead_share" value="{{index $f "dead_share"}}"{{if index $bad "dead_share"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
     </div>
     <p class="small muted">Durations: 30s, 15m, 24h, 3d, 2w.</p>
+    {{with index $d.Errors "checks"}}<p id="checks-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
     <div class="actions"><button type="submit">Save checks</button></div>
   </form>
 </section>
@@ -137,15 +139,16 @@
   <h2>Collector</h2>
   <form method="post" action="/settings/collector" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
-    <label>Mode <select name="mode"><option value="events" {{if eq $cfg.Collector.Mode "events"}}selected{{end}}>events (real time)</option><option value="polled" {{if eq $cfg.Collector.Mode "polled"}}selected{{end}}>polled (less load on the server)</option></select></label>
-    <label>Event long-poll timeout <input name="event_timeout" value="{{$cfg.Collector.EventTimeout}}"></label>
-    <label>Full check every <input name="full_check_interval" value="{{$cfg.Collector.FullCheckInterval}}"></label>
-    <label>Poll interval (polled mode) <input name="poll_interval" value="{{$cfg.Collector.PollInterval}}"></label>
-    <label>Structure scan every <input name="structure_interval" value="{{$cfg.Collector.StructureInterval}}"></label>
-    <label>Baseline scan every <input name="baseline_interval" value="{{$cfg.Collector.BaselineInterval}}"></label>
-    <label>Parallel requests for each server <input type="number" name="concurrency" min="1" max="16" value="{{$cfg.Collector.Concurrency}}"></label>
-    <label>Request timeout <input name="request_timeout" value="{{$cfg.Collector.RequestTimeout}}"></label>
-    <label>Mark unreachable after failures <input type="number" name="down_after_failures" min="1" max="10" value="{{$cfg.Collector.DownAfter}}"></label>
+    <label{{if index $bad "mode"}} class="c-err"{{end}}>Mode <select name="mode"{{if index $bad "mode"}} aria-invalid="true" aria-describedby="collector-error"{{end}}><option value="events" {{if eq (index $f "mode") "events"}}selected{{end}}>events (real time)</option><option value="polled" {{if eq (index $f "mode") "polled"}}selected{{end}}>polled (less load on the server)</option></select></label>
+    <label{{if index $bad "event_timeout"}} class="c-err"{{end}}>Event long-poll timeout <input name="event_timeout" value="{{index $f "event_timeout"}}"{{if index $bad "event_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "full_check_interval"}} class="c-err"{{end}}>Full check every <input name="full_check_interval" value="{{index $f "full_check_interval"}}"{{if index $bad "full_check_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "poll_interval"}} class="c-err"{{end}}>Poll interval (polled mode) <input name="poll_interval" value="{{index $f "poll_interval"}}"{{if index $bad "poll_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "structure_interval"}} class="c-err"{{end}}>Structure scan every <input name="structure_interval" value="{{index $f "structure_interval"}}"{{if index $bad "structure_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "baseline_interval"}} class="c-err"{{end}}>Baseline scan every <input name="baseline_interval" value="{{index $f "baseline_interval"}}"{{if index $bad "baseline_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "concurrency"}} class="c-err"{{end}}>Parallel requests for each server <input type="number" name="concurrency" min="1" max="16" value="{{index $f "concurrency"}}"{{if index $bad "concurrency"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "request_timeout"}} class="c-err"{{end}}>Request timeout <input name="request_timeout" value="{{index $f "request_timeout"}}"{{if index $bad "request_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "down_after_failures"}} class="c-err"{{end}}>Mark unreachable after failures <input type="number" name="down_after_failures" min="1" max="10" value="{{index $f "down_after_failures"}}"{{if index $bad "down_after_failures"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    {{with index $d.Errors "collector"}}<p id="collector-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
     <div class="actions"><button type="submit">Save and restart collectors</button></div>
   </form>
 </section>
