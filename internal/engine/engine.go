@@ -175,6 +175,11 @@ func findingServers(f model.Finding) []string {
 
 // Evaluate runs the rules once and updates the findings.
 func (e *Engine) Evaluate() {
+	if !e.hub.Ready() {
+		// The collector manager hasn't published the server set yet; an
+		// empty snapshot would resolve every open finding.
+		return
+	}
 	cfg := e.cfg.Get()
 	snap := e.hub.Snapshot()
 	now := e.now()
