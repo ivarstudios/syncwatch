@@ -15,6 +15,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,30 +33,57 @@ const (
 
 // fakeSyncthing answers the allowlisted endpoints and records what it got.
 type fakeSyncthing struct {
-	mu   sync.Mutex
-	reqs []*http.Request
+	mu      sync.Mutex
+	reqs    []*http.Request
+	sep     string   // pathSeparator in /rest/system/status; "/" when empty
+	folders []string // folder paths in /rest/config/folders; /s/LIVE-F when nil
+	down    bool     // answer 500 to everything
 }
 
 func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, r.Clone(context.Background()))
+	sep, folders, down := f.sep, f.folders, f.down
 	f.mu.Unlock()
 	if r.URL.Path != "/rest/noauth/health" && r.Header.Get("X-API-Key") != realKey {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
+	}
+	if down {
+		http.Error(w, "down", http.StatusInternalServerError)
+		return
+	}
+	if sep == "" {
+		sep = "/"
+	}
+	if folders == nil {
+		folders = []string{"/s/LIVE-F"}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/rest/noauth/health":
 		_, _ = w.Write([]byte(`{"status":"OK"}`))
 	case "/rest/system/status":
-		_, _ = w.Write([]byte(`{"myID":"AAAA","startTime":"2026-10-04T10:00:00Z","pathSeparator":"/"}`))
+		s, _ := json.Marshal(sep)
+		_, _ = w.Write([]byte(`{"myID":"AAAA","startTime":"2026-10-04T10:00:00Z","pathSeparator":` + string(s) + `}`))
 	case "/rest/events":
 		_, _ = w.Write([]byte(`[{"id":1,"type":"StateChanged","time":"2026-10-04T10:00:00Z","data":{"folder":"f","from":"idle","to":"scanning"}},
 			{"id":2,"type":"ConfigSaved","time":"2026-10-04T10:00:01Z","data":{"gui":{"apiKey":"` + realKey + `","password":"$2a$hash"}}}]`))
 	case "/rest/config/folders":
-		_, _ = w.Write([]byte(`[{"id":"f","label":"LIVE-F","path":"/s/LIVE-F","rescanIntervalS":3600,
-			"devices":[{"deviceID":"AAAA","encryptionPassword":""},{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]}]`))
+		// The first folder carries the devices, one with a secret.
+		var out []string
+		for i, p := range folders {
+			s, _ := json.Marshal(p)
+			f := `{"id":"f` + strconv.Itoa(i) + `","label":"LIVE-F","path":` + string(s) + `,"rescanIntervalS":3600`
+			if i == 0 {
+				f += `,"devices":[{"deviceID":"AAAA","encryptionPassword":""},{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]`
+			}
+			out = append(out, f+"}")
+		}
+		_, _ = w.Write([]byte("[" + strings.Join(out, ",") + "]"))
+	case "/rest/system/browse":
+		s, _ := json.Marshal(r.URL.Query().Get("current") + "sub")
+		_, _ = w.Write([]byte("[" + string(s) + "]"))
 	case "/rest/system/shutdown", "/rest/config":
 		t := "must never be reached"
 		_, _ = w.Write([]byte(`{"error":"` + t + `"}`))
@@ -62,10 +92,30 @@ func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// set changes the path separator and folder list Syncthing reports.
+func (f *fakeSyncthing) set(sep string, folders []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sep, f.folders = sep, folders
+}
+
 func (f *fakeSyncthing) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.reqs)
+}
+
+// countPath counts the requests for one path.
+func (f *fakeSyncthing) countPath(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.reqs {
+		if r.URL.Path == path {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeSyncthing) last() *http.Request {
@@ -184,7 +234,8 @@ func TestGateTokenBeforePath(t *testing.T) {
 
 func TestGateRemovesSecrets(t *testing.T) {
 	st, _, gs := setup(t)
-	code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1&events=StateChanged,ConfigSaved", token)
+	mask := strings.Join(stclient.EventMask, ",")
+	code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1&events="+mask, token)
 	if code != 200 || strings.Contains(body, realKey) || strings.Contains(body, "hash") {
 		t.Fatalf("events: %d %s", code, body)
 	}
@@ -192,8 +243,8 @@ func TestGateRemovesSecrets(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &evs); err != nil || len(evs) != 2 || evs[0]["data"] == nil || evs[1]["data"] != nil {
 		t.Fatalf("events after cleaning: %v %s", err, body)
 	}
-	if q := st.last().URL.RawQuery; q != "since=0&timeout=1&events=StateChanged,ConfigSaved" && q != "since=0&timeout=1&events=StateChanged%2CConfigSaved" {
-		t.Fatalf("query not passed on: %q", q)
+	if q := st.last().URL.Query(); q.Get("since") != "0" || q.Get("timeout") != "1" || q.Get("events") != mask || len(q) != 3 {
+		t.Fatalf("query not passed on: %q", st.last().URL.RawQuery)
 	}
 	code, body = get(t, gs, http.MethodGet, "/rest/config/folders", token)
 	if code != 200 || strings.Contains(body, "untrusted-secret") || strings.Contains(body, "encryptionPassword") {
@@ -201,6 +252,242 @@ func TestGateRemovesSecrets(t *testing.T) {
 	}
 	if !strings.Contains(body, `"rescanIntervalS":3600`) || !strings.Contains(body, `"deviceID":"BBBB"`) {
 		t.Fatalf("folders lost other fields: %s", body)
+	}
+}
+
+// Only the parameters syncwatch's client sends pass, with the values it
+// sends; everything else is a 400 that never reaches Syncthing.
+func TestGateQueryAllowlist(t *testing.T) {
+	st, _, gs := setup(t)
+	mask := strings.Join(stclient.EventMask, ",")
+	passed := 0
+	for _, c := range []struct {
+		path string
+		want int
+	}{
+		{"/rest/system/status", 200},
+		{"/rest/system/status?", 200},
+		{"/rest/system/status?folder=f", 400},
+		{"/rest/system/version?x", 400},
+		{"/metrics?x=1", 400},
+		{"/rest/noauth/health?x=1", 400},
+		{"/rest/db/status?folder=f", 200},
+		{"/rest/db/status?folder=f&folder=g", 400},
+		{"/rest/db/status?folder=f&device=D", 400},
+		{"/rest/db/completion?folder=f&device=D", 200},
+		{"/rest/db/completion?folder=f&device=D&x=", 400},
+		{"/rest/folder/errors?folder=f&page=1&perpage=5", 200},
+		{"/rest/folder/errors?folder=f&page=0&perpage=5", 400},
+		{"/rest/folder/errors?folder=f&page=1&perpage=x", 400},
+		{"/rest/events", 200},
+		{"/rest/events?since=0&timeout=1&events=" + mask, 200},
+		{"/rest/events?since=7&timeout=600", 200},
+		{"/rest/events?timeout=601", 400},
+		{"/rest/events?timeout=-1", 400},
+		{"/rest/events?timeout=1s", 400},
+		{"/rest/events?since=x", 400},
+		{"/rest/events?since=-1", 400},
+		{"/rest/events?limit=5", 400},
+		{"/rest/events?events=StartupComplete", 400},
+		{"/rest/events?events=StateChanged,ConfigSaved", 400},
+		{"/rest/events?events=" + mask + ",LoginAttempt", 400},
+		{"/rest/events?events=" + mask + ",", 400},
+		{"/rest/events?events=" + mask + "&events=" + mask, 400},
+		{"/rest/system/status?%zz", 400},
+		{"/rest/system/status?a;b", 400},
+	} {
+		code, body := get(t, gs, http.MethodGet, c.path, token)
+		if code != c.want {
+			t.Errorf("%s: %d %s, want %d", c.path, code, strings.TrimSpace(body), c.want)
+		}
+		if code == 200 {
+			passed++
+		} else if !strings.HasPrefix(body, "syncwatch gate: query not allowed: ") {
+			t.Errorf("%s: body %q", c.path, body)
+		}
+	}
+	if n := st.count(); n != passed {
+		t.Fatalf("%d requests reached Syncthing, %d passed", n, passed)
+	}
+	// The mask may come in any order; what was checked is what is sent.
+	rev := slices.Clone(stclient.EventMask)
+	slices.Reverse(rev)
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?events="+strings.Join(rev, ",")+"&since=3", token); code != 200 {
+		t.Fatalf("reversed mask: %d", code)
+	}
+	if q := st.last().URL.Query(); q.Get("events") != strings.Join(rev, ",") || q.Get("since") != "3" || len(q) != 2 {
+		t.Fatalf("forwarded query %q", st.last().URL.RawQuery)
+	}
+}
+
+// browse lists only directories under the parents of Syncthing's folders
+// and under the extra roots; the path is cleaned before it is checked and
+// the cleaned path is what Syncthing gets.
+func TestGateBrowseRoots(t *testing.T) {
+	st, g, gs := setup(t)
+	st.set("/", []string{"/s/LIVE-F", "/srv/data/x", "/top", "rel", "~/Sync", "/"})
+	g.o.BrowseRoots = []string{"/extra", " "}
+	type tc struct {
+		current, fwd string
+		want         int
+	}
+	run := func(cases []tc) {
+		t.Helper()
+		for _, c := range cases {
+			reached := st.countPath("/rest/system/browse")
+			code, body := get(t, gs, http.MethodGet, "/rest/system/browse?current="+url.QueryEscape(c.current), token)
+			if code != c.want {
+				t.Errorf("current=%q: %d %s, want %d", c.current, code, strings.TrimSpace(body), c.want)
+				continue
+			}
+			if c.want != 200 {
+				if st.countPath("/rest/system/browse") != reached {
+					t.Errorf("current=%q: refused but reached Syncthing", c.current)
+				}
+				continue
+			}
+			if got := st.last().URL.Query().Get("current"); got != c.fwd {
+				t.Errorf("current=%q: Syncthing got %q, want %q", c.current, got, c.fwd)
+			}
+			if !strings.Contains(body, "sub") {
+				t.Errorf("current=%q: answer %q", c.current, body)
+			}
+		}
+	}
+	run([]tc{
+		{"/s/", "/s/", 200},
+		{"/s/LIVE-F/", "/s/LIVE-F/", 200},
+		{"/s/LIVE-F/deep/er/", "/s/LIVE-F/deep/er/", 200},
+		{"/s//LIVE-F//", "/s/LIVE-F/", 200},
+		{"/s/./LIVE-F/../LIVE-G/", "/s/LIVE-G/", 200},
+		{"/srv/data/", "/srv/data/", 200},
+		{"/extra/", "/extra/", 200},
+		{"/extra/a/", "/extra/a/", 200},
+		{"~/", "~/", 200},
+		{"~/x/", "~/x/", 200},
+		{"~/../~/x/", "~/x/", 200},
+		{`/s/a\b/`, `/s/a\b/`, 200}, // a backslash is an ordinary character here
+		{"/", "", 403},
+		{"//", "", 403},
+		{"/s/../", "", 403},
+		{"/s/LIVE-F/../../etc/", "", 403},
+		{"/s/LIVE-F/../../../", "", 403},
+		{"/srv/", "", 403},
+		{"/S/", "", 403},
+		{"/top/", "", 403}, // a folder directly under /: its parent is never listed
+		{"/extra2/", "", 403},
+		{`/s\..\..\`, "", 403}, // ends with a separator only on Windows
+		{"rel/", "", 403},
+		{"./", "", 403},
+		{"../s/", "", 403},
+		{"~", "", 400},
+		{"/s", "", 400},
+		{"/s/LIVE", "", 400},
+		{"", "", 400},
+	})
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/browse", token); code != 400 {
+		t.Errorf("no current: %d", code)
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/&filesystem=fake", token); code != 400 {
+		t.Errorf("filesystem parameter: %d", code)
+	}
+
+	// A Windows Syncthing: both separators, no case, drives and UNC paths.
+	st, g, gs = setup(t)
+	st.set(`\`, []string{`D:\Shares\LIVE-F`, `\\nas\share\x`, `C:\`, `E:\Sync\`})
+	g.o.BrowseRoots = []string{`F:/extra`}
+	run([]tc{
+		{`D:\Shares\`, `D:\Shares\`, 200},
+		{`d:/shares/live-f/`, `d:\shares\live-f\`, 200},
+		{`D:\Shares\LIVE-F\sub/`, `D:\Shares\LIVE-F\sub\`, 200},
+		{`D:\Shares\..\Shares\.\LIVE-G\`, `D:\Shares\LIVE-G\`, 200},
+		{`\\nas\share\`, `\\nas\share\`, 200},
+		{`//nas/share/x/y/`, `\\nas\share\x\y\`, 200},
+		{`C:\anything\at\all\`, `C:\anything\at\all\`, 200}, // the folder is the drive root
+		{`E:\`, `E:\`, 200},
+		{`F:\extra\sub\`, `F:\extra\sub\`, 200},
+		{`D:\`, "", 403},
+		{`D:\Shares\..\`, "", 403},
+		{`D:\Shares\LIVE-F\..\..\Private\`, "", 403},
+		{`D:\Shares2\`, "", 403},
+		{`\\nas\`, "", 403},
+		{`\\nas\other\`, "", 403},
+		{`\\?\D:\Shares\`, "", 403},
+		{`D:Shares\`, "", 403},
+		{`\Shares\`, "", 403},
+		{`/Shares/`, "", 403},
+		{`~\`, "", 403},
+		{`D:\Shares`, "", 400},
+	})
+}
+
+// The folder list is read on the first browse request and again after ten
+// minutes, or after one minute when a directory isn't under it.
+func TestGateBrowseRootsRefresh(t *testing.T) {
+	st, g, gs := setup(t)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	browse := func(dir string) int {
+		t.Helper()
+		code, _ := get(t, gs, http.MethodGet, "/rest/system/browse?current="+url.QueryEscape(dir), token)
+		return code
+	}
+	reads := func() int { return st.countPath("/rest/config/folders") }
+	if code := browse("/s/"); code != 200 || reads() != 1 {
+		t.Fatalf("first browse: %d, folder list read %d times", code, reads())
+	}
+	st.set("/", []string{"/s/LIVE-F", "/t/X"})
+	if code := browse("/t/"); code != 403 || reads() != 1 {
+		t.Fatalf("new folder within a minute: %d, reads %d", code, reads())
+	}
+	now = now.Add(61 * time.Second)
+	if code := browse("/t/"); code != 200 || reads() != 2 {
+		t.Fatalf("new folder after a minute: %d, reads %d", code, reads())
+	}
+	now = now.Add(5 * time.Minute)
+	if code := browse("/s/"); code != 200 || reads() != 2 {
+		t.Fatalf("within ten minutes: %d, reads %d", code, reads())
+	}
+	now = now.Add(5 * time.Minute)
+	if code := browse("/s/"); code != 200 || reads() != 3 {
+		t.Fatalf("after ten minutes: %d, reads %d", code, reads())
+	}
+	// Misses don't make it read the list more than once a minute.
+	for i := 0; i < 3; i++ {
+		if code := browse("/nowhere/"); code != 403 {
+			t.Fatalf("miss: %d", code)
+		}
+	}
+	if reads() != 3 {
+		t.Fatalf("misses read the list %d times", reads()-3)
+	}
+}
+
+// While Syncthing's folder list can't be read, browse answers 502 (not
+// 403, not a listing); the read is retried after a while.
+func TestGateBrowseWithoutFolderList(t *testing.T) {
+	st, g, gs := setup(t)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	st.down = true
+	for i := 0; i < 2; i++ {
+		code, body := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/", token)
+		if code != http.StatusBadGateway || !strings.Contains(body, "folder list") {
+			t.Fatalf("down: %d %s", code, body)
+		}
+	}
+	if n := st.countPath("/rest/system/status"); n != 1 {
+		t.Fatalf("read attempts within the retry wait: %d", n)
+	}
+	st.mu.Lock()
+	st.down = false
+	st.mu.Unlock()
+	now = now.Add(31 * time.Second)
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/", token); code != 200 {
+		t.Fatalf("after Syncthing came back: %d", code)
+	}
+	if st.countPath("/rest/system/browse") != 1 {
+		t.Fatal("a browse reached Syncthing while its folder list was unknown")
 	}
 }
 
