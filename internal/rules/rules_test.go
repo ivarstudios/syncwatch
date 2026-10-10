@@ -472,22 +472,33 @@ func TestCleanup(t *testing.T) {
 	f.Completion[pcID] = &model.Completion{Percent: 0, RemoteState: "notSharing"}
 	akka.Folders["old"] = f
 	akka.Folders["new"] = folder("new", "LIVE-NEW", "/s/AKKA-LIVE-1SOURCE/LIVE-NEW")
-	fs := run(t, c, akka)
+	// VENUS has connected to SOL but never to AKKA, which shares a folder with it.
+	sol := server("sol", "SOL", solID)
+	sol.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS", LastSeen: now.Add(-time.Hour)}
+	akka.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS"}
+	akka.Folders["old"].SharedWith = append(akka.Folders["old"].SharedWith, pc2ID)
+	fs := run(t, c, akka, sol)
 	mustFind(t, fs, "C1", "LIVE-OLD")
 	mustNot(t, fs, "C1", "LIVE-NEW")
-	c3 := mustFind(t, fs, "C3", "never connected")
+	c3 := mustFind(t, fs, "C3", "VENUS, which has never connected to AKKA")
 	if c3.MinDuration != 30*24*time.Hour {
 		t.Fatal("C3 min duration")
 	}
 	mustFind(t, fs, "C3", "doesn't share it back")
+	// A device no server has ever seen gets C2 alone: not H7 (it was never
+	// online) and not one C3 per folder on top.
 	c2 := mustFind(t, fs, "C2", "NEWPC")
-	if c2.MinDuration != 90*24*time.Hour {
-		t.Fatal("C2 never-seen uses min duration")
+	if c2.MinDuration != 90*24*time.Hour || !strings.Contains(c2.Message, "has never connected since syncwatch started watching it, over 90 days ago") {
+		t.Fatalf("C2 never-seen: %v %s", c2.MinDuration, c2.Message)
 	}
-	h7 := mustFind(t, fs, "H7", "NEWPC")
-	if h7.MinDuration != 7*24*time.Hour {
-		t.Fatal("H7 never-seen uses min duration")
-	}
+	mustNot(t, fs, "H7", "NEWPC")
+	mustNot(t, fs, "C3", "NEWPC")
+	// Without C2, C3 says it per folder again.
+	off := false
+	c.Checks["C2"] = config.Check{Enabled: &off}
+	fs = run(t, c, akka, sol)
+	mustFind(t, fs, "C3", "NEWPC, which has never connected to AKKA")
+	mustNot(t, fs, "H7", "NEWPC")
 }
 
 // C1 uses the newest of lastFile.at (pulled files only) and the local changes

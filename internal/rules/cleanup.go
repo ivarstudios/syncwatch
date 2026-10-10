@@ -88,7 +88,8 @@ func (e *evaluator) oldDevices() {
 			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
 		}
 		if dv.LastSeen.IsZero() {
-			f.Message = fmt.Sprintf("%s has never connected but is still configured on %s; consider removing it", dv.Name, strings.Join(e.names(dv.SeenBy), ", "))
+			// Opens once the device has been watched for the threshold.
+			f.Message = fmt.Sprintf("%s has never connected since syncwatch started watching it, over %s ago, but is still configured on %s; consider removing it", dv.Name, Ago(th), strings.Join(e.names(dv.SeenBy), ", "))
 			f.MinDuration = th
 		} else {
 			off := e.Now.Sub(dv.LastSeen)
@@ -105,6 +106,16 @@ func (e *evaluator) oldDevices() {
 // C3: a folder shared to a device that never connected or doesn't share it back.
 func (e *evaluator) deadShares() {
 	th := e.Config.Thresholds.DeadShare.D()
+	// A device no server has ever seen is C2's business; one C3 per folder
+	// on top of it would only repeat that.
+	neverSeen := map[string]bool{}
+	if e.Config.CheckEnabled("C2") {
+		for _, dv := range e.Snapshot.Devices() {
+			if !dv.IsServer && !dv.Connected && dv.LastSeen.IsZero() {
+				neverSeen[dv.ID] = true
+			}
+		}
+	}
 	for _, sv := range e.Snapshot.Servers {
 		if !sv.Loaded {
 			continue
@@ -113,7 +124,7 @@ func (e *evaluator) deadShares() {
 			f := sv.Folders[fid]
 			for _, dev := range f.SharedWith {
 				d, ok := sv.Devices[dev]
-				if !ok {
+				if !ok || neverSeen[dev] {
 					continue
 				}
 				dn := e.devName(dev)

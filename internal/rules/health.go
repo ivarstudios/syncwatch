@@ -402,33 +402,28 @@ func (e *evaluator) versions() {
 	}
 }
 
-// H7 (offline 7–90 days); beyond the old-device threshold C2 takes over.
+// H7 (offline 7–90 days); beyond the old-device threshold C2 takes over. A
+// device that never connected at all isn't "offline": only C2 reports it.
 func (e *evaluator) offlinePCs() {
 	th := e.Config.Thresholds
 	for _, dv := range e.Snapshot.Devices() {
-		if dv.IsServer || dv.Connected || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) {
+		if dv.IsServer || dv.Connected || dv.LastSeen.IsZero() || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) {
 			continue
 		}
-		f := model.Finding{
+		off := e.Now.Sub(dv.LastSeen)
+		if off < th.PCOffline.D() {
+			continue
+		}
+		if off >= th.OldDevice.D() && e.Config.CheckEnabled("C2") {
+			continue
+		}
+		e.add("H7", "", "device:"+dv.ID, model.Finding{
 			Subject: dv.Name,
+			Message: fmt.Sprintf("%s has been offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.Format("2006-01-02")),
+			Since:   dv.LastSeen,
 			Related: dv.SeenBy,
 			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
-		}
-		if dv.LastSeen.IsZero() {
-			f.Message = fmt.Sprintf("%s has not connected since syncwatch started watching it", dv.Name)
-			f.MinDuration = th.PCOffline.D()
-		} else {
-			off := e.Now.Sub(dv.LastSeen)
-			if off < th.PCOffline.D() {
-				continue
-			}
-			if off >= th.OldDevice.D() && e.Config.CheckEnabled("C2") {
-				continue
-			}
-			f.Message = fmt.Sprintf("%s has been offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.Format("2006-01-02"))
-			f.Since = dv.LastSeen
-		}
-		e.add("H7", "", "device:"+dv.ID, f)
+		})
 	}
 }
 
