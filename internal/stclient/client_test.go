@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -252,6 +253,39 @@ func TestUnauthorized(t *testing.T) {
 	var se *StatusError
 	if !errors.As(err, &se) || se.Code != 403 {
 		t.Fatalf("expected 403 StatusError, got %v", err)
+	}
+}
+
+// A 401 or 403 from Syncthing itself keeps the API key hint. A gate says
+// what it refused, so its own text replaces the hint: a wrong gate token
+// is not the same fault as a directory outside the browse roots of the
+// gate. The text always has "HTTP 401" or "HTTP 403" for H1.
+func TestStatusErrorTexts(t *testing.T) {
+	long := "syncwatch gate: " + strings.Repeat("x", 300)
+	for _, c := range []struct {
+		code       int
+		body, want string
+	}{
+		{401, "", "/rest/system/status: HTTP 401 (check the API key)"},
+		{403, "Forbidden", "/rest/system/status: HTTP 403 (check the API key)"},
+		{403, "syncwatch gate: gate token missing or not correct",
+			"/rest/system/status: HTTP 403: syncwatch gate: gate token missing or not correct"},
+		{403, "syncwatch gate: directory not in a permitted browse root",
+			"/rest/system/status: HTTP 403: syncwatch gate: directory not in a permitted browse root (add the directory to SYNCWATCH_GATE_BROWSE_ROOTS on the gate)"},
+		{502, "syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key",
+			"/rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key"},
+		{400, "syncwatch gate: query not permitted\nsecond line", "/rest/system/status: HTTP 400: syncwatch gate: query not permitted"},
+		{502, long, "/rest/system/status: HTTP 502: " + long[:200]},
+		{500, "boom", "/rest/system/status: HTTP 500 boom"},
+	} {
+		got := (&StatusError{Endpoint: "/rest/system/status", Code: c.code, Body: c.body}).Error()
+		if got != c.want {
+			t.Errorf("%d %q:\n got %q\nwant %q", c.code, c.body, got, c.want)
+		}
+		// H1 finds a refused API key or gate token with this expression.
+		if refused := regexp.MustCompile(`HTTP 40[13]\b`).MatchString(got); refused != (c.code == 401 || c.code == 403) {
+			t.Errorf("%d %q: refused key %v in %q", c.code, c.body, refused, got)
+		}
 	}
 }
 
