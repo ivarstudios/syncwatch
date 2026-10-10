@@ -21,7 +21,7 @@ import (
 type problemRow struct {
 	ID, Check, Checks, Severity, SeverityLabel, Icon, Category string
 	Server, ServerName, Subject, Message, Title                string
-	Urgent, Stale, Snoozed                                     bool
+	Urgent, Stale, Snoozed, Ignored                            bool
 	SnoozeLabel, OpenFor, Since, OpenedAt, Pinged              string
 	Details                                                    []model.Detail
 	Paths                                                      []string
@@ -41,7 +41,7 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 	for _, r := range recs {
 		row := problemRow{
 			ID: r.ID, Check: r.Check, Checks: strings.Join(r.Checks, "+"), Severity: r.Severity.Lower(),
-			SeverityLabel: r.Severity.String(), Icon: notify.Icon(r.Severity), Category: r.Category,
+			SeverityLabel: r.Severity.Label(), Icon: notify.Icon(r.Severity), Category: r.Category,
 			Server: r.Server, Subject: r.Subject, Message: r.Message, Urgent: r.Urgent, Stale: r.Stale,
 			Details: r.Details, Paths: r.Paths, Link: r.Link,
 			Title: config.CatalogByID[r.Check].Title,
@@ -62,6 +62,7 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 		if z, ok := v.Snoozed(r.ID, now); ok {
 			row.Snoozed = true
 			if z.Kind == store.IgnoreKind {
+				row.Ignored = true
 				row.SnoozeLabel = "ignored: " + z.Reason
 			} else {
 				row.SnoozeLabel = "snoozed until " + s.fmtTime(z.Until)
@@ -78,14 +79,14 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 // Overview
 
 type serverTile struct {
-	ID, Name, Status, StatusLabel, StatusIcon, Version, Uptime, Link string
-	Folders, Idle, Syncing, Errors, Paused, Problems                 int
-	CertExpires                                                      string
-	CertWarn                                                         bool
-	LastContact, Mode, LastError                                     string
-	ShareErrors                                                      []string
-	Shares                                                           int
-	LastScan, ScanCost                                               string
+	ID, Name, Status, StatusLabel, StatusIcon, Version, Uptime, Link        string
+	Folders, Idle, Syncing, Scanning, Errors, WatchErrors, Paused, Problems int
+	CertExpires                                                             string
+	CertWarn                                                                bool
+	LastContact, Mode, LastError                                            string
+	ShareErrors                                                             []string
+	Shares                                                                  int
+	LastScan, ScanCost                                                      string
 }
 
 type overviewVM struct {
@@ -95,6 +96,7 @@ type overviewVM struct {
 	PCOffLabel               string
 	Top                      []problemRow
 	OpenCount, UrgentOpen    int
+	SnoozedCount             int // open findings hidden by a snooze or ignore
 	Evaluated                string
 }
 
@@ -119,6 +121,7 @@ func (s *Server) overview(v *engine.View) overviewVM {
 	var visible []*store.Record
 	for _, r := range v.Open {
 		if _, ok := v.Snoozed(r.ID, now); ok {
+			vm.SnoozedCount++
 			continue
 		}
 		visible = append(visible, r)
@@ -142,12 +145,16 @@ func (s *Server) overview(v *engine.View) overviewVM {
 		}
 		for _, f := range sv.Folders {
 			t.Folders++
-			switch {
-			case f.Paused:
+			switch f.FolderSync() {
+			case model.SyncPaused:
 				t.Paused++
-			case f.State == "error" || f.Error != "" || f.Errors > 0 || f.PullErrors > 0:
+			case model.SyncError:
 				t.Errors++
-			case f.State == "idle" && f.NeedItems == 0:
+			case model.SyncWatchError:
+				t.WatchErrors++
+			case model.SyncScanning:
+				t.Scanning++
+			case model.SyncUpToDate:
 				t.Idle++
 			default:
 				t.Syncing++
@@ -161,7 +168,7 @@ func (s *Server) overview(v *engine.View) overviewVM {
 			t.Shares = len(sv.Structure.Shares)
 			t.LastScan = s.fmtTime(sv.Structure.ScannedAt)
 			if n := sv.Structure.ScanListings; n > 0 {
-				t.ScanCost = fmt.Sprintf("%d directory listings in %s", n, sv.Structure.ScanTook.Round(100*time.Millisecond))
+				t.ScanCost = fmt.Sprintf("%s in %s", plural(n, "directory listing", "directory listings"), sv.Structure.ScanTook.Round(100*time.Millisecond))
 			}
 			for _, sh := range sv.Structure.Shares {
 				if sh.Error != "" {
@@ -252,23 +259,33 @@ func pct(p float64) string {
 }
 
 func serverCell(f *model.Folder) gridCell {
-	switch {
-	case f.Paused:
+	switch f.FolderSync() {
+	case model.SyncPaused:
 		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the server", Problem: true}
-	case f.State == "error" || f.Error != "" || f.Errors > 0 || f.PullErrors > 0 || f.WatchError != "":
+	case model.SyncError:
 		msg := f.Error
 		if msg == "" {
-			msg = fmt.Sprintf("%d failing items", max(f.Errors, f.PullErrors))
-		}
-		if f.WatchError != "" && f.Error == "" {
-			msg = "watcher: " + f.WatchError
+			msg = plural(max(f.Errors, f.PullErrors), "failing item", "failing items")
 		}
 		return gridCell{Class: "err", Icon: "✖", Text: "error", Title: msg, Problem: true}
-	case f.State == "idle" && f.NeedItems == 0:
+	case model.SyncWatchError:
+		return gridCell{Class: "warn", Icon: "⚠", Text: "watch error", Title: "watcher: " + f.WatchError, Problem: true}
+	case model.SyncScanning:
+		return gridCell{Class: "sync", Icon: "⟳", Text: "scanning", Title: "Scanning"}
+	case model.SyncUpToDate:
 		return gridCell{Class: "ok", Icon: "✔", Text: "100%", Title: "Up to date"}
 	default:
-		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %d items left", f.State, f.NeedItems)}
+		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %s left", f.State, plural(int(f.NeedItems), "item", "items"))}
 	}
+}
+
+// plural formats a count with its noun: plural(1, "folder", "folders") is
+// "1 folder", plural(3, ...) is "3 folders".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 func (s *Server) grid(v *engine.View) gridVM {
@@ -459,25 +476,40 @@ type historyRow struct {
 
 type problemsVM struct {
 	Rows             []problemRow
+	Snoozed          []problemRow // hidden by a snooze or ignore, shown in their own list
 	Hidden           int
 	Filter           problemFilter
 	Query            string
+	Today            string // in the configured zone, for the snooze date field
 	Checks           []config.CheckInfo
 	Servers          []*model.Server
+	Severities       []severityOption
 	Errors, Warns    int
 	Infos            int
 	NewThisWeek      int
-	ResolvedThisWeek []historyRow
+	ResolvedCount    int          // resolved in the last 7 days
+	ResolvedThisWeek []historyRow // the latest of those, newest first
+}
+
+// severityOption is one choice of the severity filter: the value in the
+// URL and the word shown.
+type severityOption struct {
+	Value, Label string
+}
+
+var severityOptions = []severityOption{
+	{model.Error.Lower(), model.Error.Label()}, {model.Warn.Lower(), model.Warn.Label()}, {model.Info.Lower(), model.Info.Label()},
 }
 
 func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 	now := s.now()
-	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers}
-	var recs []*store.Record
+	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions,
+		Today: now.In(s.cfg.Get().Location()).Format("2006-01-02")}
+	var recs, hidden []*store.Record
 	for _, r := range v.Open {
 		_, snoozed := v.Snoozed(r.ID, now)
 		if snoozed && !f.ShowSnoozed {
-			vm.Hidden++
+			hidden = append(hidden, r)
 			continue
 		}
 		if f.Severity != "" && r.Severity.Lower() != f.Severity {
@@ -503,18 +535,27 @@ func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 		recs = append(recs, r)
 	}
 	vm.Rows = s.problemRows(v, recs)
+	vm.Snoozed = s.problemRows(v, hidden)
+	vm.Hidden = len(hidden)
 	if hist, err := s.st.HistoryBetween(now.Add(-7*24*time.Hour), now.Add(time.Second)); err == nil {
 		from := now.Add(-7 * 24 * time.Hour)
-		for i := len(hist) - 1; i >= 0; i-- {
-			h := hist[i]
+		var resolved []store.HistoryEntry
+		for _, h := range hist {
 			if !h.OpenedAt.Before(from) {
 				vm.NewThisWeek++
 			}
-			if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) && len(vm.ResolvedThisWeek) < 30 {
-				vm.ResolvedThisWeek = append(vm.ResolvedThisWeek, historyRow{Icon: "✔", Check: h.Check, Message: h.Message, When: s.fmtTime(h.ResolvedAt)})
+			if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) {
+				resolved = append(resolved, h)
 			}
 		}
-		sort.SliceStable(vm.ResolvedThisWeek, func(a, b int) bool { return vm.ResolvedThisWeek[a].When > vm.ResolvedThisWeek[b].When })
+		vm.ResolvedCount = len(resolved)
+		sort.SliceStable(resolved, func(a, b int) bool { return resolved[a].ResolvedAt.After(resolved[b].ResolvedAt) })
+		if len(resolved) > 30 {
+			resolved = resolved[:30]
+		}
+		for _, h := range resolved {
+			vm.ResolvedThisWeek = append(vm.ResolvedThisWeek, historyRow{Icon: "✔", Check: h.Check, Message: h.Message, When: s.fmtTime(h.ResolvedAt)})
+		}
 	}
 	return vm
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -636,5 +637,299 @@ func TestLoginPageWithStaleViewerSession(t *testing.T) {
 	}
 	if r, _ := e.get("/settings"); r.StatusCode != http.StatusOK {
 		t.Fatalf("/settings after the admin login: %d", r.StatusCode)
+	}
+}
+
+// The grid, the overview tile, /api/v1/status and /api/v1/ha count folders
+// by the same state function: a watcher error is a warning everywhere and a
+// scanning folder is never "syncing".
+func TestFolderStateAgreesEverywhere(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID = model.StatusUp, true, "AAAAAAA-BBBBBBB"
+		s.Folders = map[string]*model.Folder{
+			"f1": {ID: "f1", Label: "idle-folder", State: "idle"},
+			"f2": {ID: "f2", Label: "sync-folder", State: "syncing", NeedItems: 4},
+			"f3": {ID: "f3", Label: "scan-folder", State: "scanning"},
+			"f4": {ID: "f4", Label: "err-folder", State: "error", Error: "folder marker missing"},
+			"f5": {ID: "f5", Label: "watch-folder", State: "idle", WatchError: "inotify limit"},
+			"f6": {ID: "f6", Label: "paused-folder", Paused: true},
+		}
+	})
+	e.eng.Evaluate()
+	_, ov := e.get("/frag/overview")
+	for _, want := range []string{"✔ 1 idle", "⟳ 1 syncing", "⟳ 1 scanning", "✖ 1 error", "⚠ 1 watch error", "⏸ 1 paused"} {
+		if !strings.Contains(ov, want) {
+			t.Errorf("overview tile lacks %q", want)
+		}
+	}
+	_, grid := e.get("/frag/grid")
+	if !strings.Contains(grid, `c-warn" title="watcher: inotify limit"`) || !strings.Contains(grid, "watch error</span>") {
+		t.Error("grid: the watcher error is not shown as a warning cell")
+	}
+	if n := strings.Count(grid, `cell c-err" title=`); n != 2 { // one per view (wide table and narrow list)
+		t.Errorf("grid: %d error cells, want 2 (the folder error only)", n)
+	}
+	if !strings.Contains(grid, `c-sync" title="Scanning"`) {
+		t.Error("grid: the scanning folder is not shown as scanning")
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, _ := http.DefaultClient.Do(req)
+	var st struct {
+		Servers []struct {
+			ID      string         `json:"id"`
+			Folders map[string]int `json:"folders"`
+		} `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st)
+	resp.Body.Close()
+	wantCounts := map[string]int{"total": 6, "idle": 1, "syncing": 1, "scanning": 1, "error": 1, "watch_error": 1, "paused": 1}
+	for _, sv := range st.Servers {
+		if sv.ID != "akka" {
+			continue
+		}
+		for k, v := range wantCounts {
+			if sv.Folders[k] != v {
+				t.Errorf("status API folders.%s = %d, want %d", k, sv.Folders[k], v)
+			}
+		}
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/ha", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, _ = http.DefaultClient.Do(req)
+	var ha struct {
+		Servers map[string]map[string]any `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	akka := ha.Servers["akka"]
+	for k, v := range map[string]any{"status": "error", "folders": 6.0, "folders_syncing": 1.0, "folders_scanning": 1.0, "folders_error": 1.0, "folders_watch_error": 1.0, "folders_paused": 1.0} {
+		if akka[k] != v {
+			t.Errorf("HA %s = %v, want %v", k, akka[k], v)
+		}
+	}
+	// With the folder error gone, the watcher error is the server's status.
+	e.hub.Update("akka", func(s *model.Server) { delete(s.Folders, "f4") })
+	e.eng.Evaluate()
+	resp, _ = http.DefaultClient.Do(req)
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	if ha.Servers["akka"]["status"] != "watch error" {
+		t.Errorf("HA status with a watcher error = %v, want \"watch error\"", ha.Servers["akka"]["status"])
+	}
+}
+
+// Severity words are the same everywhere in the dashboard: badges, the
+// filter and the summary line say error, warning and suggestion. Counts
+// get their noun in the right number.
+func TestSeverityWordsAndPlurals(t *testing.T) {
+	e := adminEnv(t, twoServers) // two unreachable servers: two H1 errors
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID = model.StatusUp, true, "AAAAAAA-BBBBBBB"
+		s.Folders = map[string]*model.Folder{"f1": {ID: "f1", Label: "only-folder", State: "idle"}}
+	})
+	e.eng.Evaluate()
+	_, body := e.get("/problems")
+	for _, want := range []string{"🔴 error</span>", `<option value="warn" >warning</option>`, `<option value="info" >suggestion</option>`,
+		"🔴 1 error</span>", "🟠 0 warnings</span>", "🔵 0 suggestions</span>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("problems page lacks %q", want)
+		}
+	}
+	for _, old := range []string{"ERROR", "WARN", "INFO", ">warn<", ">info<", "1 errors"} {
+		if strings.Contains(body, old) {
+			t.Errorf("problems page still says %q", old)
+		}
+	}
+	if _, grid := e.get("/grid"); !strings.Contains(grid, "1 folder</span>") || strings.Contains(grid, "1 folders") {
+		t.Error("grid: a group with one folder says folders")
+	}
+	for n, want := range map[int]string{0: "0 errors", 1: "1 error", 2: "2 errors"} {
+		if got := plural(n, "error", "errors"); got != want {
+			t.Errorf("plural(%d) = %q, want %q", n, got, want)
+		}
+	}
+	if model.Error.Label() != "error" || model.Warn.Label() != "warning" || model.Info.Label() != "suggestion" {
+		t.Error("severity labels")
+	}
+	if model.ParseSeverity("suggestion") != model.Info || model.ParseSeverity("warning") != model.Warn {
+		t.Error("ParseSeverity does not accept the dashboard words")
+	}
+}
+
+// "Snooze until date" covers the whole chosen day in the configured zone,
+// today included, and takes a reason like ignore does.
+func TestSnoozeUntilDate(t *testing.T) {
+	e := adminEnv(t, twoServers+"timezone: Pacific/Auckland\n")
+	auckland := e.cfg.Get().Location()
+	// 10:00 UTC is 23:00 in Auckland (NZDT): still 2026-10-10 there.
+	now := time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)
+	e.web.now = func() time.Time { return now }
+	id := e.eng.View().Open[0].ID
+	csrf := e.csrf("/problems")
+	msg, isErr := flash(e.post("/problems/"+id+"/snooze", url.Values{"csrf": {csrf}, "for": {"date"}, "until": {"2026-10-10"}, "reason": {"waiting for the disk"}}))
+	if isErr {
+		t.Fatalf("snoozing until today refused: %s", msg)
+	}
+	z, ok := e.eng.View().Snoozes[id]
+	if want := time.Date(2026, 10, 11, 0, 0, 0, 0, auckland); !ok || !z.Until.Equal(want) || z.Reason != "waiting for the disk" {
+		t.Fatalf("snooze = %+v, want until %v with the reason", z, want)
+	}
+	if msg != "Snoozed until 2026-10-11 00:00." {
+		t.Errorf("flash %q", msg)
+	}
+	if msg, isErr := flash(e.post("/problems/"+id+"/snooze", url.Values{"csrf": {csrf}, "for": {"date"}, "until": {"2026-10-09"}})); !isErr {
+		t.Errorf("yesterday accepted: %q", msg)
+	}
+	_, body := e.get("/problems")
+	if !strings.Contains(body, `name="until" min="2026-10-10"`) {
+		t.Error("the date field does not start at today")
+	}
+	i := strings.Index(body, "/snooze\"")
+	if j := strings.Index(body[i:], "/ignore\""); i < 0 || j < 0 || !strings.Contains(body[i:i+j], `name="reason"`) {
+		t.Error("the snooze form has no reason field")
+	}
+}
+
+// "Resolved this week" counts every resolution of the last 7 days and
+// lists the latest 30, newest first.
+func TestResolvedThisWeekCountAndOrder(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	now := time.Now()
+	e.web.now = func() time.Time { return now }
+	// Opened in order 00..34 three weeks ago; 00 resolved most recently.
+	for i := 0; i < 35; i++ {
+		r := &store.Record{Finding: model.Finding{ID: fmt.Sprintf("h%02d", i), Check: "H7", Severity: model.Warn, Message: fmt.Sprintf("resolved-%02d", i)},
+			OpenedAt: now.Add(-21*24*time.Hour + time.Duration(i)*time.Hour)}
+		if err := e.st.HistoryOpen(r); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.HistoryResolve(r.ID, now.Add(-time.Duration(i+1)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, body := e.get("/problems")
+	if !strings.Contains(body, "35 resolved this week") || !strings.Contains(body, "Resolved this week (35") {
+		t.Error("the summary does not show the real count")
+	}
+	first, second, dropped := strings.Index(body, "resolved-00"), strings.Index(body, "resolved-01"), strings.Index(body, "resolved-30")
+	if first < 0 || second < first || dropped >= 0 {
+		t.Errorf("list order: resolved-00 at %d, resolved-01 at %d, resolved-30 at %d (want newest first, oldest five dropped)", first, second, dropped)
+	}
+}
+
+// Ignored and snoozed findings stay visible: a collapsed list on the
+// problems page with a way back, and a count on the overview.
+func TestSnoozedAndIgnoredStayVisible(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	id := e.eng.View().Open[0].ID
+	csrf := e.csrf("/problems")
+	e.post("/problems/"+id+"/ignore", url.Values{"csrf": {csrf}, "reason": {"known and harmless"}})
+	_, body := e.get("/problems")
+	for _, want := range []string{"Snoozed and ignored (1)", "ignored: known and harmless", "/problems/" + id + "/unsnooze", "Stop ignoring", `id="f-` + id + `"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("problems page lacks %q", want)
+		}
+	}
+	if _, ov := e.get("/"); !strings.Contains(ov, "1 snoozed or ignored") {
+		t.Error("overview does not mention the ignored finding")
+	}
+	// With "Show snoozed and ignored" on, the rows are inline and the block is gone.
+	_, body = e.get("/problems?snoozed=1")
+	if strings.Contains(body, "Snoozed and ignored (") || !strings.Contains(body, "ignored: known and harmless") {
+		t.Error("snoozed=1: want the ignored finding inline, no separate block")
+	}
+}
+
+// A live update must not wipe an ignore reason or snooze date someone is
+// typing: the shipped script cancels the swap while a form inside the
+// updated section is in use. The behaviour itself was checked in a headless
+// browser (see docs/changes/r0-k.md); this pins the asset.
+func TestLiveUpdateGuardShipped(t *testing.T) {
+	e := newEnv(t, twoServers)
+	_, js := e.get("/assets/app.js")
+	for _, want := range []string{`"htmx:beforeSwap"`, "shouldSwap = false", `htmx.trigger(t, "sse:update")`, `"focusout"`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %s", want)
+		}
+	}
+	if _, css := e.get("/assets/app.css"); !strings.Contains(css, ".updates-paused") {
+		t.Error("app.css has no style for a paused section")
+	}
+}
+
+// The JSON status API and the Home Assistant endpoint count what the
+// dashboard counts: the overview's open, urgent and snoozed numbers, and
+// each tile's folder states.
+func TestAPICountsMatchOverview(t *testing.T) {
+	e := adminEnv(t, twoServers) // two unreachable servers: two H1 errors
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Folders = map[string]*model.Folder{
+			"f1": {ID: "f1", State: "idle"}, "f2": {ID: "f2", State: "syncing", NeedItems: 4},
+			"f3": {ID: "f3", State: "idle", WatchError: "inotify limit"}, "f4": {ID: "f4", Paused: true},
+		}
+	})
+	e.eng.Evaluate()
+	csrf := e.csrf("/problems")
+	e.post("/problems/"+e.eng.View().Open[0].ID+"/ignore", url.Values{"csrf": {csrf}, "reason": {"known"}})
+	vm := e.web.overview(e.eng.View())
+	if vm.OpenCount != 1 || vm.SnoozedCount != 1 {
+		t.Fatalf("overview open=%d snoozed=%d, want 1 and 1", vm.OpenCount, vm.SnoozedCount)
+	}
+	tiles := map[string]serverTile{}
+	for _, tile := range vm.Servers {
+		tiles[tile.ID] = tile
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Counts  map[string]int `json:"counts"`
+		Servers []struct {
+			ID      string         `json:"id"`
+			Folders map[string]int `json:"folders"`
+		} `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st)
+	resp.Body.Close()
+	if open := st.Counts["error"] + st.Counts["warn"] + st.Counts["info"]; open != vm.OpenCount || st.Counts["urgent"] != vm.UrgentOpen || st.Counts["snoozed"] != vm.SnoozedCount {
+		t.Errorf("status API counts %v; overview says open=%d urgent=%d snoozed=%d", st.Counts, vm.OpenCount, vm.UrgentOpen, vm.SnoozedCount)
+	}
+	for _, sv := range st.Servers {
+		tile := tiles[sv.ID]
+		for k, n := range map[string]int{"total": tile.Folders, "idle": tile.Idle, "syncing": tile.Syncing, "scanning": tile.Scanning, "error": tile.Errors, "watch_error": tile.WatchErrors, "paused": tile.Paused} {
+			if sv.Folders[k] != n {
+				t.Errorf("status API %s folders.%s = %d, the tile says %d", sv.ID, k, sv.Folders[k], n)
+			}
+		}
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/ha", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ha struct {
+		Servers map[string]map[string]any `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	for id, tile := range tiles {
+		for k, n := range map[string]int{"folders": tile.Folders, "folders_syncing": tile.Syncing, "folders_scanning": tile.Scanning, "folders_error": tile.Errors, "folders_watch_error": tile.WatchErrors, "folders_paused": tile.Paused} {
+			if ha.Servers[id][k] != float64(n) {
+				t.Errorf("HA %s %s = %v, the tile says %d", id, k, ha.Servers[id][k], n)
+			}
+		}
+	}
+	if tile := tiles["akka"]; tile.Folders != 4 || tile.Idle != 1 || tile.Syncing != 1 || tile.WatchErrors != 1 || tile.Paused != 1 {
+		t.Errorf("akka tile: %+v", tile)
 	}
 }

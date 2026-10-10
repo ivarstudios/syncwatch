@@ -22,11 +22,13 @@ type apiServer struct {
 	CertExpires *time.Time `json:"cert_expires,omitempty"`
 	Error       string     `json:"error,omitempty"`
 	Folders     struct {
-		Total   int `json:"total"`
-		Idle    int `json:"idle"`
-		Syncing int `json:"syncing"`
-		Error   int `json:"error"`
-		Paused  int `json:"paused"`
+		Total      int `json:"total"`
+		Idle       int `json:"idle"`
+		Syncing    int `json:"syncing"`
+		Scanning   int `json:"scanning"`
+		Error      int `json:"error"`
+		WatchError int `json:"watch_error"`
+		Paused     int `json:"paused"`
 	} `json:"folders"`
 }
 
@@ -128,12 +130,16 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, f := range sv.Folders {
 			a.Folders.Total++
-			switch {
-			case f.Paused:
+			switch f.FolderSync() { // the same states as the dashboard
+			case model.SyncPaused:
 				a.Folders.Paused++
-			case f.State == "error" || f.Error != "" || f.Errors > 0 || f.PullErrors > 0:
+			case model.SyncError:
 				a.Folders.Error++
-			case f.State == "idle" && f.NeedItems == 0:
+			case model.SyncWatchError:
+				a.Folders.WatchError++
+			case model.SyncScanning:
+				a.Folders.Scanning++
+			case model.SyncUpToDate:
 				a.Folders.Idle++
 			default:
 				a.Folders.Syncing++

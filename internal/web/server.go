@@ -429,6 +429,7 @@ func (s *Server) funcs() template.FuncMap {
 		"severityName": func(sev any) string { return fmt.Sprint(sev) },
 		"plus1":        func(i int) int { return i + 1 },
 		"list":         func(s ...string) []string { return s },
+		"plural":       plural,
 	}
 }
 
@@ -670,9 +671,13 @@ func (s *Server) handleSnooze(w http.ResponseWriter, r *http.Request, info reque
 	case "1w":
 		until = now.Add(7 * 24 * time.Hour)
 	case "date":
+		// The snooze lasts to the end of the chosen day, so today is fine.
 		d, err := time.ParseInLocation("2006-01-02", r.FormValue("until"), s.cfg.Get().Location())
+		if err == nil {
+			d = d.AddDate(0, 0, 1)
+		}
 		if err != nil || !d.After(now) {
-			s.redirect(w, r, backTo(r), "Pick a date in the future.", true)
+			s.redirect(w, r, backTo(r), "Pick today or a later date.", true)
 			return
 		}
 		until = d
