@@ -38,6 +38,7 @@ type Options struct {
 	TLSHosts      []string // extra names for the self-signed certificate
 	Version       string
 	Log           *slog.Logger
+	OnListen      func(addr string) // for tests
 }
 
 // OpenStore opens the database in a data directory.
@@ -320,40 +321,54 @@ func Run(ctx context.Context, o Options) error {
 	if tc != nil {
 		ln = tls.NewListener(ln, tc)
 	}
+	// Requests, the dashboard's event streams among them, end with reqCtx:
+	// shutdown cancels it first, so open tabs don't hold Shutdown back.
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
 	hs := &http.Server{
 		Handler:           srvWeb,
+		BaseContext:       func(net.Listener) context.Context { return reqCtx },
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan struct{}, 4)
-	go func() { mgr.Run(ctx); done <- struct{}{} }()
-	go func() { eng.Run(ctx); done <- struct{}{} }()
-	go func() { ntf.Run(ctx); done <- struct{}{} }()
-	go func() { watcher.run(ctx); done <- struct{}{} }()
+	var workers sync.WaitGroup
+	for _, run := range []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run} {
+		workers.Add(1)
+		go func() { defer workers.Done(); run(ctx) }()
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
+	if o.OnListen != nil {
+		o.OnListen(ln.Addr().String())
+	}
 	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers))
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+			serveErr = err
+			log.Error("the web server stopped", "err", err)
 		}
 	}
 	log.Info("shutting down")
+	reqCancel()
 	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shCancel()
 	_ = hs.Shutdown(shCtx)
+	// The workers stop before the store closes under them, whatever ended
+	// the run.
 	cancel()
-	for i := 0; i < 4; i++ {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-		}
+	stopped := make(chan struct{})
+	go func() { workers.Wait(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		log.Warn("not all workers stopped in time")
 	}
-	return nil
+	return serveErr
 }

@@ -2,11 +2,14 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,6 +249,64 @@ func TestConfigReloadedAfterExternalImport(t *testing.T) {
 	}
 	if key, _, _ := st.ServerKey("b"); key != "key-b" {
 		t.Fatalf("B's key: %q", key)
+	}
+}
+
+// Stopping with a dashboard tab open: its event stream is closed first, so
+// shutdown doesn't sit out the 5 s Shutdown budget (Docker kills at 10 s).
+func TestShutdownClosesEventStreams(t *testing.T) {
+	dir := t.TempDir()
+	// viewer: open lets the stream be opened without a login.
+	boot := filepath.Join(dir, "syncwatch.yaml")
+	if err := os.WriteFile(boot, []byte("access:\n  viewer: open\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addr := make(chan string, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Options{DataDir: dir, Listen: "127.0.0.1:0", ConfigFile: boot,
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil)), OnListen: func(a string) { addr <- a }})
+	}()
+	var a string
+	select {
+	case a = <-addr:
+	case err := <-done:
+		t.Fatalf("Run returned: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("no listener")
+	}
+	resp, err := http.Get("http://" + a + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("HTTP %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	if _, err := resp.Body.Read(make([]byte, 64)); err != nil { // the handler is in its loop
+		t.Fatal(err)
+	}
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("shutdown took %v with an event stream open", d)
+	}
+	ended := make(chan struct{})
+	go func() { _, _ = io.ReadAll(resp.Body); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the event stream was not closed")
 	}
 }
 
