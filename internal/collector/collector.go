@@ -107,7 +107,11 @@ func (c *Collector) Run(ctx context.Context) {
 	defer c.client.Close()
 	go c.trafficLoop(ctx)
 	for ctx.Err() == nil {
-		err := c.session(ctx)
+		// The session's context also bounds the structure scan it starts,
+		// so a scan stops when the server goes down.
+		sctx, cancel := context.WithCancel(ctx)
+		err := c.session(sctx)
+		cancel()
 		if ctx.Err() != nil {
 			return
 		}

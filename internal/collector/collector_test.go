@@ -930,3 +930,52 @@ func TestStaleWakeDoesNotSkipBackoff(t *testing.T) {
 		return requests >= 2
 	})
 }
+
+// A structure scan runs in the background with the session's context: when
+// the session fails (the server went away) the scan's listings are
+// cancelled instead of running on, each to its own timeout.
+func TestScanStopsWhenSessionEnds(t *testing.T) {
+	fake := newFakeST(t)
+	var mu sync.Mutex
+	hung, finished := 0, 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/system/browse" {
+			mu.Lock()
+			hung++
+			mu.Unlock()
+			<-r.Context().Done() // the listing never answers
+			mu.Lock()
+			finished++
+			mu.Unlock()
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	hub, _, _, stop := startManager(t, srv, rulesYAML+"collector: {event_timeout: 5s, down_after_failures: 1}", nil, nil)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	waitUntil(t, "the scan to start listing", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return hung > 0
+	})
+	// Cut the event long-poll: the session fails and the server is marked down.
+	fake.mu.Lock()
+	fake.dropEvents = 1
+	fake.mu.Unlock()
+	waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	deadline := time.Now().Add(slow(3 * time.Second))
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := finished == hung
+		mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("%d of %d hung listings still running 3 s after the session ended", hung-finished, hung)
+}
