@@ -40,7 +40,9 @@
     {{if $vm.Hidden}}<span class="muted">· <a class="muted" href="#snoozed">{{$vm.Hidden}} hidden (snoozed or ignored)</a></span>{{end}}
     <span class="muted">· {{$vm.NewThisWeek}} new and {{$vm.ResolvedCount}} resolved this week</span>
   </p>
-  {{if not $vm.Rows}}<p class="card c-ok">✔ No findings match the filter.</p>{{end}}
+  {{if not $vm.Rows}}{{if or $vm.Filter.Severity $vm.Filter.Check $vm.Filter.Server $vm.Filter.Category}}<p class="card c-ok">✔ No findings match the filter.</p>
+  {{- else if $vm.Hidden}}<p class="card c-ok">✔ There are no open findings. <a href="#snoozed">{{plural $vm.Hidden "finding is" "findings are"}} hidden (snoozed or ignored).</a></p>
+  {{- else}}<p class="card c-ok">✔ There are no open findings.</p>{{end}}{{end}}
   <ul class="plist">
   {{range $vm.Rows}}
     <li id="f-{{.ID}}" class="sev-row-{{.Severity}}{{if .Snoozed}} snoozed{{end}}">
@@ -58,9 +60,9 @@
             <tr><th>Check</th><td>{{.Checks}} — {{.Title}} ({{.Category}})</td></tr>
             <tr><th>Subject</th><td>{{.Subject}}</td></tr>
             {{if .ServerName}}<tr><th>Server</th><td>{{.ServerName}}</td></tr>{{end}}
-            <tr><th>Start</th><td>{{.Since}}</td></tr>
-            <tr><th>Opened</th><td>{{.OpenedAt}}{{if .Pinged}} · urgent message sent at {{.Pinged}}{{end}}</td></tr>
-            {{range .Details}}{{if .Value}}<tr><th>{{.Key}}</th><td class="mono">{{.Value}}</td></tr>{{end}}{{end}}
+            <tr><th title="The time when the condition started">Started</th><td>{{.Since}}</td></tr>
+            <tr><th title="The time when syncwatch opened the finding">Reported</th><td>{{.OpenedAt}}{{if .Pinged}} · urgent message sent at {{.Pinged}}{{end}}</td></tr>
+            {{range .Details}}<tr><th>{{.Label}}</th><td class="mono">{{.Value}}</td></tr>{{end}}
           </table>
           {{if .Paths}}<p><strong>Failed items</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
           <p class="mono small muted">Finding ID {{.ID}}</p>

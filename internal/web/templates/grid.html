@@ -14,7 +14,7 @@
   <div class="grid-wide">
   {{range $gi, $g := $vm.Groups}}
     <details class="group" id="g-{{$gi}}" data-key="group:{{$g.Name}}" {{if $g.Open}}open{{end}}>
-      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{else}} · <span class="c-ok">✔ no faults</span>{{end}}</summary>
+      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{end}}{{if $g.Stale}} · <span class="muted" title="A server of these folders is not up: the grid shows its last known state">○ {{$g.Stale}} with an unknown state</span>{{end}}{{if not (or $g.Problems $g.Stale)}} · <span class="c-ok">✔ no faults</span>{{end}}</summary>
       <div class="scroll">
       <table class="grid">
         <thead><tr><th scope="col" class="fcol">Folder</th>{{range $vm.Devices}}<th scope="col" class="dcol {{if .Server}}srv{{end}}" title="{{.ID}}">{{.Name}}{{if .Server}}<span class="muted"> (server)</span>{{end}}</th>{{end}}</tr></thead>

@@ -720,6 +720,47 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 	if ha.Servers["akka"]["status"] != "watch error" {
 		t.Errorf("HA status with a watcher error = %v, want \"watch error\"", ha.Servers["akka"]["status"])
 	}
+
+	// Unreachable, and never contacted (sol): the tile, the grid and the
+	// status API show the last known state as such, and HA says unknown.
+	e.hub.Update("akka", func(s *model.Server) { s.Status, s.LastContact = model.StatusDown, time.Now() })
+	e.hub.Update("sol", func(s *model.Server) { s.Status = model.StatusUnknown })
+	e.eng.Evaluate()
+	_, ov = e.get("/frag/overview")
+	if strings.Contains(ov, "✔ 1 idle") || !strings.Contains(ov, "5 folders · last known ") || !strings.Contains(ov, "<dt>Folders</dt><dd>—</dd>") {
+		t.Error("overview: the tiles of an unreachable and a not-contacted server show current folder states")
+	}
+	_, grid = e.get("/frag/grid")
+	if strings.Contains(grid, `c-ok" title=`) || strings.Count(grid, `cell c-off" title="AKKA unreachable, last known state `) != 10 { // 5 folders, two views
+		t.Error("grid: the cells of the unreachable server are not grey with their last known state")
+	}
+	req, _ = http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, _ = http.DefaultClient.Do(req)
+	var st2 struct {
+		Servers []struct {
+			ID      string         `json:"id"`
+			Folders map[string]any `json:"folders"`
+		} `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st2)
+	resp.Body.Close()
+	for _, sv := range st2.Servers {
+		if sv.Folders["stale"] != true {
+			t.Errorf("status API %s: folders.stale = %v, want true", sv.ID, sv.Folders["stale"])
+		}
+		if sv.ID == "akka" && (sv.Folders["total"] != 5.0 || sv.Folders["idle"] != 1.0) {
+			t.Errorf("status API akka: %v, want the last known counts", sv.Folders)
+		}
+	}
+	req, _ = http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/ha", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, _ = http.DefaultClient.Do(req)
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	if ha.Servers["akka"]["status"] != "unknown" || ha.Servers["sol"]["status"] != "unknown" {
+		t.Errorf("HA status of unreachable servers: %v, %v", ha.Servers["akka"]["status"], ha.Servers["sol"]["status"])
+	}
 }
 
 // Severity words are the same everywhere in the dashboard: badges, the
@@ -872,6 +913,7 @@ func TestAPICountsMatchOverview(t *testing.T) {
 			"f3": {ID: "f3", State: "idle", WatchError: "inotify limit"}, "f4": {ID: "f4", Paused: true},
 		}
 	})
+	e.hub.Update("sol", func(s *model.Server) { s.Status = model.StatusUnknown }) // not contacted
 	e.eng.Evaluate()
 	csrf := e.csrf("/problems")
 	e.post("/problems/"+e.eng.View().Open[0].ID+"/ignore", url.Values{"csrf": {csrf}, "reason": {"known"}})
@@ -891,10 +933,11 @@ func TestAPICountsMatchOverview(t *testing.T) {
 		t.Fatal(err)
 	}
 	var st struct {
-		Counts  map[string]int `json:"counts"`
-		Servers []struct {
+		Counts       map[string]int `json:"counts"`
+		HealthCounts map[string]int `json:"health_counts"`
+		Servers      []struct {
 			ID      string         `json:"id"`
-			Folders map[string]int `json:"folders"`
+			Folders map[string]any `json:"folders"`
 		} `json:"servers"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&st)
@@ -902,12 +945,19 @@ func TestAPICountsMatchOverview(t *testing.T) {
 	if open := st.Counts["error"] + st.Counts["warn"] + st.Counts["info"]; open != vm.OpenCount || st.Counts["urgent"] != vm.UrgentOpen || st.Counts["snoozed"] != vm.SnoozedCount {
 		t.Errorf("status API counts %v; overview says open=%d urgent=%d snoozed=%d", st.Counts, vm.OpenCount, vm.UrgentOpen, vm.SnoozedCount)
 	}
+	if hc := st.HealthCounts; hc["pcs"] != vm.PCTotal || hc["pcs_online"] != vm.PCOnline || hc["pcs_offline"] != vm.PCOff || hc["pcs_unknown"] != vm.PCUnknown || hc["servers"] != len(vm.Servers) {
+		t.Errorf("status API health_counts %v; the overview has %d servers and PCs %d/%d/%d/%d", hc, len(vm.Servers), vm.PCTotal, vm.PCOnline, vm.PCOff, vm.PCUnknown)
+	}
 	for _, sv := range st.Servers {
 		tile := tiles[sv.ID]
 		for k, n := range map[string]int{"total": tile.Folders, "idle": tile.Idle, "syncing": tile.Syncing, "scanning": tile.Scanning, "error": tile.Errors, "watch_error": tile.WatchErrors, "paused": tile.Paused} {
-			if sv.Folders[k] != n {
-				t.Errorf("status API %s folders.%s = %d, the tile says %d", sv.ID, k, sv.Folders[k], n)
+			if sv.Folders[k] != float64(n) {
+				t.Errorf("status API %s folders.%s = %v, the tile says %d", sv.ID, k, sv.Folders[k], n)
 			}
+		}
+		// Down (akka) and not contacted (sol): the counts are the last known state.
+		if sv.Folders["stale"] != tile.FoldersStale || !tile.FoldersStale {
+			t.Errorf("status API %s folders.stale = %v, the tile says %v", sv.ID, sv.Folders["stale"], tile.FoldersStale)
 		}
 	}
 
