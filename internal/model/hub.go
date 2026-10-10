@@ -77,8 +77,12 @@ func (h *Hub) Update(id string, fn func(*Server)) bool {
 	h.mu.Lock()
 	s, ok := h.servers[id]
 	if ok {
+		was := s.Status
 		fn(s)
 		ensureMaps(s)
+		if s.Status == StatusUp && was != StatusUp {
+			s.UpSince = h.now()
+		}
 		s.RememberRemoteStates()
 		h.signal()
 	}

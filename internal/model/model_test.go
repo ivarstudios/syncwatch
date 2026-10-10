@@ -144,3 +144,31 @@ func TestLastCompletionRemembered(t *testing.T) {
 		t.Fatal("an unshared folder is still remembered")
 	}
 }
+
+// The hub records when a server became up: after the start of syncwatch,
+// and after a failure. H2 gives a link that can form again some time.
+func TestHubRecordsUpSince(t *testing.T) {
+	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	h := NewHub(func() time.Time { return at })
+	h.SetServers([]*Server{{ID: "a"}})
+	up := func() time.Time { return h.Snapshot().Server("a").UpSince }
+	if !up().IsZero() {
+		t.Fatal("not contacted yet")
+	}
+	h.Update("a", func(s *Server) { s.Status = StatusUp })
+	if !up().Equal(at) {
+		t.Fatalf("first contact: %v", up())
+	}
+	start := at
+	at = at.Add(time.Hour)
+	h.Update("a", func(s *Server) { s.LastContact = at })
+	if !up().Equal(start) {
+		t.Fatalf("still up: %v", up())
+	}
+	h.Update("a", func(s *Server) { s.Status = StatusDown })
+	at = at.Add(time.Hour)
+	h.Update("a", func(s *Server) { s.Status = StatusUp })
+	if !up().Equal(at) {
+		t.Fatalf("back after a failure: %v", up())
+	}
+}

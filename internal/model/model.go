@@ -82,6 +82,7 @@ type Server struct {
 	LastError   string
 	LastContact time.Time
 	DownSince   time.Time
+	UpSince     time.Time // when the status last became up (after the start of syncwatch or a failure); set by the hub
 	Cert        CertInfo
 	CertChange  *CertChange
 	Mode        string // "events" or "polled"

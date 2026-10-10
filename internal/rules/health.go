@@ -362,6 +362,11 @@ func (e *evaluator) relays(sv *model.Server) {
 	}
 }
 
+// linkGrace is how long two servers can be without a connection to each
+// other after a start before H2 opens: Syncthing needs some seconds to
+// connect, and a short reconnect is no fault.
+const linkGrace = 2 * time.Minute
+
 // H2: two polled servers that have each other configured should always be connected.
 func (e *evaluator) links() {
 	ss := e.Snapshot.Servers
@@ -387,15 +392,22 @@ func (e *evaluator) links() {
 			if (ca != nil && ca.Connected) || (cb != nil && cb.Connected) {
 				continue
 			}
+			// The condition starts when the link dropped, or when it could
+			// form again: a start of Syncthing on a server, or syncwatch
+			// reaching a server again. A link that dropped before that
+			// opens at once, a new one after linkGrace.
 			since := da.LastSeen
-			if db.LastSeen.After(since) {
-				since = db.LastSeen
+			for _, t := range []time.Time{db.LastSeen, a.StartTime, b.StartTime, a.UpSince, b.UpSince} {
+				if t.After(since) {
+					since = t
+				}
 			}
 			e.add("H2", a.ID, "link:"+b.ID, model.Finding{
-				Subject: fmt.Sprintf("%s ↔ %s", a.Name, b.Name),
-				Message: fmt.Sprintf("Servers %s and %s are not connected to each other", a.Name, b.Name),
-				Related: []string{b.ID},
-				Since:   since,
+				Subject:     fmt.Sprintf("%s ↔ %s", a.Name, b.Name),
+				Message:     fmt.Sprintf("Servers %s and %s are not connected to each other", a.Name, b.Name),
+				Related:     []string{b.ID},
+				Since:       since,
+				MinDuration: linkGrace,
 				Details: []model.Detail{
 					timeDetail(a.Name+" last saw "+b.Name, da.LastSeen),
 					timeDetail(b.Name+" last saw "+a.Name, db.LastSeen),
