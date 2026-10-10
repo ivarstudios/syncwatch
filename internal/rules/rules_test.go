@@ -762,3 +762,33 @@ func TestDisabledServerIsNotAPC(t *testing.T) {
 	snap.Disabled = nil
 	mustFind(t, Evaluate(in), "C3", "SOL-NAS, which never connected to AKKA")
 }
+
+// A server that refuses the API key or the gate token answers: H1 says so
+// and tells what to do, and keeps "unreachable" for the other reasons.
+func TestServerRefusesKey(t *testing.T) {
+	c := ivarConfig(t)
+	sol := server("sol", "SOL", solID)
+	sol.Status, sol.DownSince = model.StatusDown, now.Add(-10*time.Minute)
+	for _, tc := range []struct {
+		err, msg string
+		refused  bool
+	}{
+		{"/rest/system/status: HTTP 403 (check the API key)", "Server SOL refuses the API key or the gate token: /rest/system/status: HTTP 403 (check the API key)", true},
+		{"/rest/system/status: HTTP 401 (check the API key)", "Server SOL refuses the API key or the gate token: /rest/system/status: HTTP 401 (check the API key)", true},
+		{"timeout", "Server SOL is unreachable: timeout", false},
+		{"/rest/system/status: HTTP 4031 nonsense", "Server SOL is unreachable: /rest/system/status: HTTP 4031 nonsense", false},
+		{"/rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the gate's API key", "Server SOL is unreachable: /rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the gate's API key", false},
+	} {
+		sol.LastError = tc.err
+		h1 := mustFind(t, run(t, c, sol), "H1", "SOL")
+		if h1.Message != tc.msg {
+			t.Errorf("%q: message %q, want %q", tc.err, h1.Message, tc.msg)
+		}
+		if got := h1.DetailValue("What to do") != ""; got != tc.refused {
+			t.Errorf("%q: 'What to do' row %v, want %v", tc.err, got, tc.refused)
+		}
+		if !h1.Urgent || h1.Check != "H1" {
+			t.Errorf("%q: H1 must stay the urgent check: %+v", tc.err, h1)
+		}
+	}
+}

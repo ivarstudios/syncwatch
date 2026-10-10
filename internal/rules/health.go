@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,11 +29,26 @@ func (e *evaluator) health() {
 	e.offlinePCs()
 }
 
+// refusedKey matches the error of a server that refuses the API key or the
+// gate token: the client keeps "HTTP 401" or "HTTP 403" in its text.
+var refusedKey = regexp.MustCompile(`HTTP 40[13]\b`)
+
 // H1, H3
 func (e *evaluator) serverReachability(sv *model.Server) {
 	switch sv.Status {
 	case model.StatusDown:
 		msg := fmt.Sprintf("Server %s is unreachable", sv.Name)
+		details := []model.Detail{
+			detail("URL", sv.URL),
+			timeDetail("Down since", sv.DownSince),
+			timeDetail("Last contact", sv.LastContact),
+			detail("Error", sv.LastError),
+		}
+		if refusedKey.MatchString(sv.LastError) {
+			// The server answers: it is not unreachable.
+			msg = fmt.Sprintf("Server %s refuses the API key or the gate token", sv.Name)
+			details = append(details, detail("What to do", "Type the API key or the gate token again in Settings → Servers."))
+		}
 		if sv.LastError != "" {
 			msg += ": " + sv.LastError
 		}
@@ -40,12 +56,7 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			Subject: sv.Name,
 			Message: msg,
 			Since:   sv.DownSince,
-			Details: []model.Detail{
-				detail("URL", sv.URL),
-				timeDetail("Down since", sv.DownSince),
-				timeDetail("Last contact", sv.LastContact),
-				detail("Error", sv.LastError),
-			},
+			Details: details,
 		})
 	case model.StatusCertChanged:
 		cc := sv.CertChange
