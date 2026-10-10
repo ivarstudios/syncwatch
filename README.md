@@ -181,7 +181,7 @@ collector:
   poll_interval: 15m        # polled mode
   structure_interval: 1h    # structure scan of the top level of each share
   baseline_interval: 7d     # baseline scan of each project folder (in events mode, events report the Syncthing folders between scans)
-  concurrency: 3            # parallel requests for each server
+  concurrency: 3            # parallel requests of each activity (full check, structure scan)
   request_timeout: 30s
   down_after_failures: 2
 checks:                     # custom values for each check
@@ -231,6 +231,8 @@ shares:
 | `structure.nested_scan_depth` | 1 to 10 | 3 |
 | `notifications.weekly_top` | 1 to 50 (the form: 1 to 25) | 10 |
 | `access.session_ttl` | 1h to 365d | 30d |
+
+**Parallel requests.** `collector.concurrency` limits each activity separately: the full check and the structure scan. The 2 can run at the same time, together with the event long-poll and the traffic sample of each minute. Thus up to 2 times `concurrency` plus 2 requests can reach one server at the same time.
 
 **Clock values.** `quiet_hours`, `reminder_time` and `weekly_time` use `HH:MM` (24-hour clock, 1 or 2 digits for the hour, 2 digits for the minutes). The value `off` in any case sets the feature to off. An empty value is the default. The 2 ends of `quiet_hours` must be different. A `reminder_time` in the evening part of the quiet hours is an error, because syncwatch can never send that reminder. The same applies to a time more than 12 hours after the end of the quiet hours.
 
