@@ -843,7 +843,7 @@ func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry
 			}
 		}
 	}
-	summary := HealthLine(cfg, v, now)
+	summary := escapeMD(HealthLine(cfg, v, now)) // server names
 	if cfg.PublicURL != "" {
 		summary += "\n[Open the dashboard](" + dashboard(cfg) + ")"
 	}

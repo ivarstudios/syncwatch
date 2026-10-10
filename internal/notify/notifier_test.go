@@ -409,7 +409,7 @@ func TestWeeklyReport(t *testing.T) {
 	if weekly == nil {
 		t.Fatal("no weekly report")
 	}
-	if !strings.Contains(weekly.Summary, "1/2 servers OK (SOL down)") || !strings.Contains(weekly.Summary, "1 errors") {
+	if !strings.Contains(weekly.Summary, `1/2 servers OK \(SOL down\)`) || !strings.Contains(weekly.Summary, "1 errors") {
 		t.Fatalf("health line: %s", weekly.Summary)
 	}
 	if len(weekly.Sections[2].Lines) != 1 {
@@ -439,7 +439,7 @@ func TestDiscordEscapesNames(t *testing.T) {
 			t.Errorf("%s keeps markdown from a name: %s", where, s)
 		}
 	}
-	if !strings.Contains(p.Content, `\[Open the dashboard\]\(https://evil.example\)`) {
+	if !strings.Contains(p.Content, `\[Open the dashboard\]\(https:`+zwsp+`//evil.example\)`) {
 		t.Errorf("content: %s", p.Content)
 	}
 	// syncwatch's own link survives.
@@ -546,6 +546,7 @@ func TestFailedNoticeIsRetried(t *testing.T) {
 // Replies from a host that isn't Discord's aren't relayed to the settings
 // page.
 func TestDiscordErrorBodyOnlyFromDiscord(t *testing.T) {
+	allowAnyWebhook(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal admin page: secret=hunter2", http.StatusInternalServerError)
 	}))
@@ -566,6 +567,7 @@ func TestDiscordErrorMessage(t *testing.T) {
 }
 
 func TestDiscordPayload(t *testing.T) {
+	allowAnyWebhook(t)
 	var got []DiscordPayload
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
