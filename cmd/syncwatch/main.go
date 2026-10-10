@@ -23,6 +23,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/probe"
 	"github.com/ivarstudios/syncwatch/internal/settings"
+	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/web"
 )
 
@@ -213,7 +214,7 @@ func runProbe(args []string) error {
 	fs.StringVar(&o.Record, "record", "", "directory to save raw (secret-free) responses as test fixtures")
 	fs.DurationVar(&o.EventTimeout, "event-timeout", 50*time.Second, "long-poll timeout to test against the VPN idle timeout")
 	fs.DurationVar(&o.EventWait, "event-wait", 2*time.Minute, "how long to listen for events")
-	fs.StringVar(&o.Pin, "pin", "", "expected certificate fingerprint (hex SHA-256), if known")
+	fs.StringVar(&o.Pin, "pin", "", "expected certificate fingerprint (SHA-256 hex; upper case and colons are fine), if known")
 	fs.Var(&shares, "share", "share root to browse (repeatable); default: parents of folder paths")
 	fs.StringVar(&o.ProjectPattern, "project-pattern", "", "project_pattern from your structure rules, to estimate the structure scan's load")
 	fs.IntVar(&o.ScanDepth, "scan-depth", 3, "nested_scan_depth for the estimate")
@@ -223,6 +224,11 @@ func runProbe(args []string) error {
 	if o.URL == "" || o.APIKey == "" {
 		return fmt.Errorf("probe needs --url and --api-key")
 	}
+	pin, err := stclient.NormalizePin(o.Pin)
+	if err != nil {
+		return fmt.Errorf("--pin: %w", err)
+	}
+	o.Pin = pin
 	log := newLogger("info", "text")
 	return probe.Run(context.Background(), o, log)
 }

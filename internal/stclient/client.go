@@ -87,7 +87,7 @@ type Options struct {
 	Name    string // server name, used in errors
 	URL     string // base URL of the Syncthing GUI, e.g. https://192.168.1.10:8384
 	APIKey  string
-	Pin     string          // pinned SHA-256 certificate fingerprint (hex), or "" for none yet
+	Pin     string          // pinned SHA-256 certificate fingerprint (any form NormalizePin takes), or "" for none yet
 	OnPin   func(fp string) // called with the fingerprint to store whenever the pin is set or replaced
 	Timeout time.Duration   // per-request timeout (default 30 s); events use their own
 	Retries int             // extra attempts for failed requests (default 2)
@@ -165,7 +165,11 @@ func New(o Options) (*Client, error) {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	c := &Client{opts: o, base: u, host: u.Hostname(), pin: o.Pin}
+	pin, err := NormalizePin(o.Pin)
+	if err != nil {
+		return nil, fmt.Errorf("pinned fingerprint: %w", err)
+	}
+	c := &Client{opts: o, base: u, host: u.Hostname(), pin: pin}
 	tr := &http.Transport{
 		Proxy: nil,
 		DialContext: (&net.Dialer{
@@ -204,6 +208,9 @@ func (c *Client) Pin() string {
 
 // SetPin replaces the pinned fingerprint, e.g. after an admin accepts a new certificate.
 func (c *Client) SetPin(fp string) {
+	if p, err := NormalizePin(fp); err == nil {
+		fp = p
+	}
 	c.mu.Lock()
 	c.pin = fp
 	c.mu.Unlock()
@@ -224,6 +231,25 @@ func (c *Client) Close() { c.hc.CloseIdleConnections() }
 func Fingerprint(cert *x509.Certificate) string {
 	sum := sha256.Sum256(cert.Raw)
 	return hex.EncodeToString(sum[:])
+}
+
+// NormalizePin brings a fingerprint typed or pasted by a person into the form
+// pins are compared in: 64 lowercase hex characters. Upper case, colons or
+// spaces between the pairs (as openssl and browsers show them) and a
+// "sha256:" or "SHA256 Fingerprint=" prefix are fine. "" means no pin.
+func NormalizePin(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	for _, p := range []string{"sha256 fingerprint=", "sha-256 fingerprint=", "sha256:", "sha-256:", "sha256=", "sha-256="} {
+		s = strings.TrimPrefix(s, p)
+	}
+	s = strings.NewReplacer(":", "", " ", "", "\t", "").Replace(s)
+	if s == "" {
+		return "", nil
+	}
+	if b, err := hex.DecodeString(s); err != nil || len(b) != sha256.Size {
+		return "", errors.New("not a SHA-256 fingerprint (64 hex characters)")
+	}
+	return s, nil
 }
 
 // ShortFP formats a fingerprint for display: the first 16 hex characters in pairs.

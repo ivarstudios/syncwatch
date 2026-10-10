@@ -229,11 +229,18 @@ func TestSelfSignedToCASignedAccepted(t *testing.T) {
 }
 
 // A self-signed certificate that matches the pin is accepted without any
-// callback or log line.
+// callback or log line, whatever form the pin was given in.
 func TestPinnedSelfSignedUnchanged(t *testing.T) {
 	srv, _, _ := fakeSyncthing(t)
 	fp := Fingerprint(srv.Certificate())
-	for _, pin := range []string{fp} {
+	var upper strings.Builder
+	for i := 0; i < len(fp); i += 2 {
+		if i > 0 {
+			upper.WriteByte(':')
+		}
+		upper.WriteString(strings.ToUpper(fp[i : i+2]))
+	}
+	for _, pin := range []string{fp, upper.String(), " sha256:" + upper.String() + "\n"} {
 		var logs pinLog
 		c, err := New(Options{Name: "t", URL: srv.URL, APIKey: "k", Pin: pin, Log: slog.New(slog.NewTextHandler(&logs, nil)),
 			OnPin: func(string) { t.Errorf("pin %q: OnPin called for an unchanged certificate", pin) }})
@@ -249,5 +256,49 @@ func TestPinnedSelfSignedUnchanged(t *testing.T) {
 		if logs.String() != "" {
 			t.Fatalf("pin %q: unexpected log: %s", pin, logs.String())
 		}
+	}
+}
+
+func TestNormalizePin(t *testing.T) {
+	fp := strings.Repeat("0a", 32)
+	var colons strings.Builder
+	for i := 0; i < 32; i++ {
+		if i > 0 {
+			colons.WriteByte(':')
+		}
+		colons.WriteString("0A")
+	}
+	for _, c := range []struct {
+		in, want string
+		bad      bool
+	}{
+		{"", "", false},
+		{"  \n", "", false},
+		{fp, fp, false},
+		{strings.ToUpper(fp), fp, false},
+		{colons.String(), fp, false},
+		{strings.ReplaceAll(colons.String(), ":", " "), fp, false},
+		{"sha256:" + colons.String(), fp, false},
+		{"SHA256 Fingerprint=" + colons.String(), fp, false},
+		{"sha-256 Fingerprint=" + colons.String() + "\r\n", fp, false},
+		{"deadbeef", "", true},
+		{fp[:63], "", true},
+		{fp + "0", "", true},
+		{strings.Repeat("0g", 32), "", true},
+		{"md5:" + fp, "", true},
+	} {
+		got, err := NormalizePin(c.in)
+		if c.bad {
+			if err == nil {
+				t.Errorf("NormalizePin(%q) = %q, want an error", c.in, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("NormalizePin(%q) = %q, %v; want %q", c.in, got, err, c.want)
+		}
+	}
+	if _, err := New(Options{URL: "https://127.0.0.1:1", Pin: "not-a-fingerprint"}); err == nil {
+		t.Fatal("New accepted a pin that can never match")
 	}
 }
