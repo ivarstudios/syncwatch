@@ -593,7 +593,9 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 	c := old.Clone()
 	c.Structure, c.Shares = doc.Structure, doc.Shares
 	if c.Structure.IgnoreDirs == nil {
-		c.Structure.IgnoreDirs = []string{}
+		// Left out of the YAML: keep the current list rather than start
+		// scanning recycle bins and snapshots. An explicit [] clears it.
+		c.Structure.IgnoreDirs = old.Structure.IgnoreDirs
 	}
 	s.save(w, r, old, c, "structure", "Structure rules changed", "Structure rules saved. The next structure scan uses them.")
 }

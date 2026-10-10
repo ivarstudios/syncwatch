@@ -257,3 +257,41 @@ func TestImportCannotLockEveryoneOut(t *testing.T) {
 		t.Fatal("mode not changed")
 	}
 }
+
+// YAML pasted into the Structure form without ignore_dirs keeps the current
+// list; an explicit empty list clears it. The form shows the current list,
+// so what it renders can be saved back unchanged.
+func TestStructureFormKeepsIgnoreDirs(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	save := func(yaml string) {
+		t.Helper()
+		if msg, isErr := flash(e.post("/settings/structure", url.Values{"csrf": {csrf}, "yaml": {yaml}})); isErr {
+			t.Fatalf("structure %q: %s", yaml, msg)
+		}
+	}
+	want := strings.Join(config.DefaultIgnoreDirs, ",")
+	save("structure: {project_pattern: '^LIVE-'}")
+	if got := strings.Join(e.cfg.Get().Structure.IgnoreDirs, ","); got != want {
+		t.Fatalf("ignore_dirs after a save without the key: %q, want %q", got, want)
+	}
+	save("structure: {project_pattern: '^LIVE-', ignore_dirs: ['@*']}")
+	if got := strings.Join(e.cfg.Get().Structure.IgnoreDirs, ","); got != "@*" {
+		t.Fatalf("ignore_dirs after an explicit list: %q", got)
+	}
+	save("structure: {project_pattern: '^LIVE-'}")
+	if got := strings.Join(e.cfg.Get().Structure.IgnoreDirs, ","); got != "@*" {
+		t.Fatalf("ignore_dirs after another save without the key: %q", got)
+	}
+	save("structure: {project_pattern: '^LIVE-', ignore_dirs: []}")
+	if got := e.cfg.Get().Structure.IgnoreDirs; len(got) != 0 {
+		t.Fatalf("ignore_dirs after an explicit empty list: %q", got)
+	}
+	save("")
+	if got := e.cfg.Get().Structure.IgnoreDirs; len(got) != 0 {
+		t.Fatalf("ignore_dirs after an empty form: %q", got)
+	}
+	if _, body := e.get("/settings"); !strings.Contains(body, "ignore_dirs: []") {
+		t.Fatal("the form doesn't show the current ignore_dirs")
+	}
+}
