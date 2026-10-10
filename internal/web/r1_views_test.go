@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"html"
@@ -382,6 +383,82 @@ func TestAPIHygieneAndRefusalLogs(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "login rate limit reached"); n != 1 {
 		t.Errorf("%d log lines for 4 refused logins in a minute, want 1", n)
+	}
+}
+
+// The event stream sends "ping" as an event that the page can see (an SSE
+// comment never reaches the page), and an update after a change.
+func TestEventStreamPing(t *testing.T) {
+	old := ssePing
+	ssePing = 50 * time.Millisecond
+	t.Cleanup(func() { ssePing = old })
+	e := adminEnv(t, twoServers)
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/events", nil)
+	resp, err := e.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type %q", ct)
+	}
+	lines := make(chan string, 100)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	wait := func(want string) {
+		t.Helper()
+		timeout := time.After(5 * time.Second)
+		for {
+			select {
+			case l, ok := <-lines:
+				if !ok {
+					t.Fatalf("stream ended before %q", want)
+				}
+				if strings.HasPrefix(l, ":") {
+					t.Fatalf("comment line %q: the page cannot see it", l)
+				}
+				if l == want {
+					return
+				}
+			case <-timeout:
+				t.Fatalf("no %q", want)
+			}
+		}
+	}
+	wait("event: ping")
+	e.hub.Update("akka", func(s *model.Server) { s.Status, s.Loaded = model.StatusUp, true })
+	e.eng.Evaluate()
+	wait("event: update")
+}
+
+// The page shows when it has no live stream and fetches its sections again
+// when the stream works again. The behaviour runs in the browser; this pins
+// the shipped script, styles and banner.
+func TestConnectionLossShipped(t *testing.T) {
+	e := adminEnv(t, twoServers+"timezone: Asia/Kolkata\n")
+	_, js := e.get("/assets/app.js")
+	for _, want := range []string{`"htmx:sseError"`, `"htmx:sseOpen"`, `"visibilitychange"`, `"sw-offline"`, `"ping"`, `[hx-trigger~='sse:update']`, "s.onerror(new Event(\"error\"))"} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %s", want)
+		}
+	}
+	_, css := e.get("/assets/app.css")
+	for _, want := range []string{".sw-offline .live-on", ".sw-offline .health", "unicode-bidi: isolate"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("app.css lacks %s", want)
+		}
+	}
+	_, page := e.get("/")
+	for _, want := range []string{`id="sw-conn"`, `role="status" hidden`, "No connection to syncwatch</strong> from <span class=\"sw-conn-since\"></span>. The page shows old data.",
+		`data-tz-offset="330"`, `<span class="live-on">Real-time view</span>`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("overview page lacks %s", want)
+		}
 	}
 }
 

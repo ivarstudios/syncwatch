@@ -121,6 +121,105 @@
     if (msg && !window.confirm(msg)) e.preventDefault();
   }, true);
 
+  // The live stream. When it stops for more than 30 s, the page says so: a
+  // banner with the time, a grey health line, no "Real-time view". When it
+  // works again, or when the page shows again after more than a minute in
+  // the background, every live section is fetched again (the guard above
+  // still keeps a form that is in use).
+  var conn = { source: null, errorAt: 0, offline: false, timer: null, lastEvent: Date.now(), hiddenAt: 0 };
+
+  // clock writes a time as HH:MM in the configured time zone of syncwatch.
+  function clock(ms) {
+    var off = parseInt(document.body.getAttribute("data-tz-offset") || "0", 10) || 0;
+    return new Date(ms + off * 60000).toISOString().slice(11, 16);
+  }
+
+  function showOffline(since) {
+    if (conn.offline) return;
+    conn.offline = true;
+    document.body.classList.add("sw-offline");
+    var b = document.getElementById("sw-conn");
+    if (b) {
+      var t = b.querySelector(".sw-conn-since");
+      if (t) t.textContent = clock(since);
+      b.hidden = false;
+    }
+  }
+
+  // backOnline clears the "no connection" state. It reports whether the
+  // page missed updates since the last time it was connected.
+  function backOnline() {
+    clearTimeout(conn.timer);
+    conn.timer = null;
+    var missed = conn.errorAt !== 0 || conn.offline;
+    conn.errorAt = 0;
+    if (conn.offline) {
+      conn.offline = false;
+      document.body.classList.remove("sw-offline");
+      var b = document.getElementById("sw-conn");
+      if (b) b.hidden = true;
+    }
+    return missed;
+  }
+
+  function refreshAll() {
+    document.querySelectorAll("[hx-trigger~='sse:update']").forEach(function (el) {
+      htmx.trigger(el, "sse:update");
+    });
+  }
+
+  function watchSource(source) {
+    if (!source || source === conn.source) return;
+    conn.source = source;
+    var seen = function () { conn.lastEvent = Date.now(); };
+    source.addEventListener("ping", seen);
+    source.addEventListener("update", seen);
+  }
+
+  document.addEventListener("htmx:sseOpen", function (e) {
+    watchSource(e.detail && e.detail.source);
+    conn.lastEvent = Date.now();
+    if (backOnline()) refreshAll();
+  });
+
+  document.addEventListener("htmx:sseError", function (e) {
+    watchSource(e.detail && e.detail.source);
+    if (conn.errorAt === 0) conn.errorAt = Date.now();
+    if (!conn.timer && !conn.offline) {
+      conn.timer = setTimeout(function () {
+        conn.timer = null;
+        if (conn.errorAt !== 0) showOffline(conn.errorAt);
+      }, 30000);
+    }
+  });
+
+  // A connection can stop without an error (a VPN or a phone network that
+  // stops sending). The server sends a "ping" event every 25 s: after 60 s
+  // without an event, the page shows that its data is old and opens the
+  // stream again through the sse extension (close, then its own error path).
+  setInterval(function () {
+    var s = conn.source;
+    if (!s || document.hidden || Date.now() - conn.lastEvent < 60000) return;
+    if (conn.errorAt === 0) conn.errorAt = conn.lastEvent;
+    showOffline(conn.lastEvent);
+    conn.lastEvent = Date.now(); // the next try in a minute
+    if (s.readyState === EventSource.OPEN && typeof s.onerror === "function") {
+      s.close();
+      s.onerror(new Event("error"));
+    }
+  }, 10000);
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      conn.hiddenAt = Date.now();
+      return;
+    }
+    var away = conn.hiddenAt !== 0 && Date.now() - conn.hiddenAt > 60000;
+    conn.hiddenAt = 0;
+    conn.lastEvent = Date.now(); // a page in the background can get no events
+    if (away) refreshAll();
+  });
+
   document.addEventListener("DOMContentLoaded", function () {
     var q = document.getElementById("grid-search");
     var p = document.getElementById("grid-problems");

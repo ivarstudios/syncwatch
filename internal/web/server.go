@@ -316,6 +316,7 @@ type pageData struct {
 	Flash    string
 	FlashErr string
 	Alert    *deliveryAlert
+	TZOffset int // minutes east of UTC in the configured zone, for times that the browser writes
 	Data     any
 }
 
@@ -342,6 +343,8 @@ func (s *Server) alert(info requestInfo) *deliveryAlert {
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, info requestInfo, data any) {
 	pd := pageData{Role: info.Role, LoggedIn: info.Session != nil, CSRF: info.CSRF, Version: s.version, Proxy: s.cfg.Get().Access.Mode == config.AccessProxy, Alert: s.alert(info), Data: data}
+	_, off := s.now().In(s.cfg.Get().Location()).Zone()
+	pd.TZOffset = off / 60
 	if m, ok := data.(map[string]any); ok {
 		if t, ok := m["Title"].(string); ok {
 			pd.Title = t
@@ -623,7 +626,13 @@ func (s *Server) fragAlert(w http.ResponseWriter, r *http.Request, info requestI
 	s.fragment(w, "alert", info, nil)
 }
 
-// SSE: one "update" event whenever the visible state changes, at most every 3 s.
+// ssePing is how often the event stream sends a "ping" event. The page
+// marks its data as old when no event comes for a minute (app.js).
+var ssePing = 25 * time.Second
+
+// SSE: one "update" event whenever the visible state changes, at most every
+// 3 s, and a "ping" event every ssePing. A ping is an event, not a comment:
+// comments do not reach the page, and the page must see that the stream works.
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
@@ -639,7 +648,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestI
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "retry: 5000\n\n")
 	fl.Flush()
-	ping := time.NewTicker(25 * time.Second)
+	ping := time.NewTicker(ssePing)
 	defer ping.Stop()
 	var last time.Time
 	pending := false
@@ -649,7 +658,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestI
 		case <-r.Context().Done():
 			return
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
+			fmt.Fprint(w, "event: ping\ndata: 1\n\n")
 			fl.Flush()
 		case <-ch:
 			if time.Since(last) < 3*time.Second {

@@ -79,6 +79,11 @@ form.inline { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; m
 /* Names and messages from Syncthing and the file system: a direction control in them stays inside its own text. */
 .msg, a.plain, .kv td, .tile h2, table.grid th, .group > summary strong, .dlist li > span:first-child { unicode-bidi: isolate; }
 .msg { overflow-wrap: anywhere; }
+/* No connection to syncwatch (app.js): the banner shows, the data is grey. */
+.live-off { display: none; }
+.sw-offline .live-on { display: none; } .sw-offline .live-off { display: inline; }
+.sw-offline .health { color: var(--muted); }
+.sw-offline .tiles, .sw-offline .plist, .sw-offline .grid-wide, .sw-offline .grid-narrow, .sw-offline .summary { opacity: .6; }
 .toolbar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: end; margin-bottom: 1rem; }
 label { display: block; font-size: .9rem; color: var(--muted); }
 label.check { display: flex; gap: .4rem; align-items: center; color: var(--text); }
