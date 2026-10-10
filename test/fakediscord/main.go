@@ -1,6 +1,9 @@
 // Command fakediscord is a stand-in Discord webhook for the Compose tests.
 // It accepts POST /api/webhooks/{id}/{token} and lists what it received at
-// GET /messages.
+// GET /messages. POST /mode {"mode": "fail404:3"} (or MODE at the start)
+// selects an error answer, with the mode names of the kit's fake Discord:
+// ok (the default), fail500[:N], fail400[:N], fail404[:N] and
+// ratelimit[:RETRY_AFTER[:N]]. GET /mode shows the current mode.
 package main
 
 import (
@@ -21,7 +24,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("fake Discord webhook listening on %s", addr)
+	if m := os.Getenv("MODE"); m != "" {
+		if err := fd.SetMode(m); err != nil {
+			log.Fatal(err)
+		}
+	}
+	log.Printf("fake Discord webhook listening on %s, mode %s", addr, fd.Mode())
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	<-ch
