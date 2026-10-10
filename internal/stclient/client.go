@@ -124,11 +124,32 @@ type StatusError struct {
 }
 
 func (e *StatusError) Error() string {
+	if strings.HasPrefix(e.Body, gatePrefix) {
+		// A gate says what it refused: a wrong gate token, a directory
+		// outside its browse roots, or its own API key that Syncthing
+		// refused. That text replaces the API key hint.
+		msg, _, _ := strings.Cut(e.Body, "\n")
+		msg = strings.TrimSpace(msg)
+		if len(msg) > 200 {
+			msg = msg[:200]
+		}
+		if strings.Contains(msg, gateBrowseRoot) {
+			msg += " (add the directory to SYNCWATCH_GATE_BROWSE_ROOTS on the gate)"
+		}
+		return fmt.Sprintf("%s: HTTP %d: %s", e.Endpoint, e.Code, msg)
+	}
 	if e.Code == http.StatusUnauthorized || e.Code == http.StatusForbidden {
 		return fmt.Sprintf("%s: HTTP %d (check the API key)", e.Endpoint, e.Code)
 	}
 	return fmt.Sprintf("%s: HTTP %d %s", e.Endpoint, e.Code, e.Body)
 }
+
+// What a syncwatch gate puts at the start of the answers it makes itself,
+// and the reason it gives for a browse outside its roots.
+const (
+	gatePrefix     = "syncwatch gate:"
+	gateBrowseRoot = "directory not in a permitted browse root"
+)
 
 // Client talks to one Syncthing instance.
 type Client struct {

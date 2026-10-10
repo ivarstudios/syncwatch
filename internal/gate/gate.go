@@ -48,6 +48,10 @@ const (
 // maxBody caps an answer that has to be read to be cleaned.
 const maxBody = 64 << 20
 
+// maxErrBody caps the body of an error answer that the gate forwards.
+// syncwatch's client keeps 200 bytes of it.
+const maxErrBody = 4 << 10
+
 // Limits on what a request may ask for, and how long the gate keeps
 // Syncthing's folder list.
 const (
@@ -57,6 +61,12 @@ const (
 	rootsRetry      = 30 * time.Second // wait after a failed read of the folder list
 	logInterval     = time.Minute      // one log line per client, reason and minute about refused requests
 	maxRefusals     = 4096             // refusal counters kept (client × reason)
+
+	// Parallel requests per client address. syncwatch holds 1 event
+	// long-poll and sends at most 2 × 16 (collector.concurrency, full check
+	// and structure scan) + 2 other requests at the same time.
+	maxEventsPerClient = 4
+	maxOtherPerClient  = 64
 )
 
 // Timeouts toward Syncthing. Event long-polls go through their own
@@ -128,6 +138,9 @@ type Gate struct {
 
 	lmu      sync.Mutex
 	refusals map[string]*refusal // per client and reason
+
+	imu      sync.Mutex
+	inflight map[string]*inflight // per client address
 }
 
 // refusal counts one client's refused requests for one reason since the
@@ -136,6 +149,9 @@ type refusal struct {
 	n  int
 	at time.Time // when they were last logged
 }
+
+// inflight counts one client's requests that the gate serves now.
+type inflight struct{ events, other int }
 
 // New creates a gate. It does not contact Syncthing.
 func New(o Options) (*Gate, error) {
@@ -154,7 +170,7 @@ func New(o Options) (*Gate, error) {
 	}
 	ip := net.ParseIP(u.Hostname())
 	g := &Gate{o: o, base: u, pin: o.Pin, allowed: map[string]bool{}, now: time.Now, refusals: map[string]*refusal{},
-		loopback: u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())}
+		inflight: map[string]*inflight{}, loopback: u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())}
 	for _, p := range stclient.Allowlist() {
 		g.allowed[p] = true
 	}
@@ -230,8 +246,23 @@ func (g *Gate) verify(cs tls.ConnectionState) error {
 // more when there is more to say. Refusals are logged once a minute per
 // client and reason, with a count, so a scanner can't fill the log.
 func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why, detail string) {
-	ip, now := clientIP(r), g.now()
+	ip := clientIP(r)
+	if n := g.due(ip + " " + why); n > 0 {
+		g.o.Log.Warn("gate refused a request", "why", why, "detail", detail, "method", r.Method, "path", r.URL.Path, "ip", ip, "count", n)
+	}
+	if detail != "" {
+		why += ": " + detail
+	}
+	http.Error(w, "syncwatch gate: "+why, code)
+}
+
+// due counts one refusal for key (a client and a reason) and returns how
+// many to log now: all since the last line for key, at most once a minute;
+// 0 in between.
+func (g *Gate) due(key string) int {
+	now := g.now()
 	g.lmu.Lock()
+	defer g.lmu.Unlock()
 	if len(g.refusals) >= maxRefusals {
 		for k, rf := range g.refusals {
 			if now.Sub(rf.at) >= logInterval {
@@ -242,24 +273,27 @@ func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why, detai
 			clear(g.refusals)
 		}
 	}
-	rf := g.refusals[ip+" "+why]
+	rf := g.refusals[key]
 	if rf == nil {
 		rf = &refusal{}
-		g.refusals[ip+" "+why] = rf
+		g.refusals[key] = rf
 	}
 	rf.n++
 	n := 0
 	if rf.at.IsZero() || now.Sub(rf.at) >= logInterval {
 		n, rf.n, rf.at = rf.n, 0, now
 	}
-	g.lmu.Unlock()
-	if n > 0 {
-		g.o.Log.Warn("gate refused a request", "why", why, "detail", detail, "method", r.Method, "path", r.URL.Path, "ip", ip, "count", n)
+	return n
+}
+
+// keyRefused answers a request that Syncthing refused with the API key of
+// the gate (the key changed after the gate read it): 502, so that syncwatch
+// can tell it from a wrong gate token, which the gate refuses with 403.
+func (g *Gate) keyRefused(w http.ResponseWriter, r *http.Request, status int) {
+	if n := g.due(errKeyRefused.Error()); n > 0 {
+		g.o.Log.Warn("Syncthing refused the API key of the gate: restart the gate with the current API key", "status", status, "path", r.URL.Path, "count", n)
 	}
-	if detail != "" {
-		why += ": " + detail
-	}
-	http.Error(w, "syncwatch gate: "+why, code)
+	http.Error(w, keyRefusedText, http.StatusBadGateway)
 }
 
 // ServeHTTP passes allowlisted GET requests with the right token on to
@@ -277,6 +311,18 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.deny(w, r, http.StatusForbidden, "gate token missing or not correct", "")
 		return
 	}
+	// Each request holds a goroutine here and in Syncthing, an event
+	// long-poll for minutes: a client gets only a few at the same time.
+	ip, events := clientIP(r), r.URL.Path == pathEvents
+	if !g.acquire(ip, events) {
+		why := "too many parallel requests"
+		if events {
+			why = "too many parallel long-polls"
+		}
+		g.deny(w, r, http.StatusTooManyRequests, why, "")
+		return
+	}
+	defer g.release(ip, events)
 	if r.Method != http.MethodGet {
 		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests are accepted", "")
 		return
@@ -331,11 +377,26 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && r.URL.Path != pathHealth {
+		g.keyRefused(w, r, resp.StatusCode)
+		return
+	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	clean := cleaner(r.URL.Path)
-	if clean == nil || resp.StatusCode/100 != 2 {
+	if resp.StatusCode/100 != 2 {
+		if clean != nil {
+			// An error answer isn't cleaned, and it can have the secrets
+			// that the cleaner removes: only its status is passed on.
+			http.Error(w, fmt.Sprintf("syncwatch gate: Syncthing answered HTTP %d", resp.StatusCode), resp.StatusCode)
+			return
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, maxErrBody))
+		return
+	}
+	if clean == nil {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, io.LimitReader(resp.Body, maxBody))
 		return
@@ -354,6 +415,43 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(out)
+}
+
+// acquire counts a request of the client at ip (an event long-poll or
+// not) and reports false, without a count, when the client is at its
+// limit. Each true needs a release.
+func (g *Gate) acquire(ip string, events bool) bool {
+	g.imu.Lock()
+	defer g.imu.Unlock()
+	in := g.inflight[ip]
+	if in == nil {
+		in = &inflight{}
+		g.inflight[ip] = in
+	}
+	n, limit := &in.other, maxOtherPerClient
+	if events {
+		n, limit = &in.events, maxEventsPerClient
+	}
+	if *n >= limit {
+		return false
+	}
+	*n++
+	return true
+}
+
+// release ends a request that acquire counted.
+func (g *Gate) release(ip string, events bool) {
+	g.imu.Lock()
+	defer g.imu.Unlock()
+	in := g.inflight[ip]
+	if events {
+		in.events--
+	} else {
+		in.other--
+	}
+	if in.events == 0 && in.other == 0 {
+		delete(g.inflight, ip)
+	}
 }
 
 // upstream is the URL of path at Syncthing.
@@ -620,6 +718,9 @@ func (g *Gate) getJSON(ctx context.Context, path string, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("%s: HTTP %d: %w", path, resp.StatusCode, errKeyRefused)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
 	}
@@ -678,12 +779,21 @@ func cleanFolders(body []byte) ([]byte, error) {
 // errCertChanged marks the verify error for a changed Syncthing certificate.
 var errCertChanged = errors.New("the certificate of Syncthing changed")
 
+// errKeyRefused marks a 401 or 403 from Syncthing to the API key of the
+// gate, and keyRefusedText is the body of the 502 the gate answers then.
+var errKeyRefused = errors.New("Syncthing refused the API key of the gate")
+
+const keyRefusedText = "syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key"
+
 // upstreamError is the body of a 502 for an error reaching Syncthing.
 // syncwatch's client keeps 200 bytes of it, so it stays under 150, and it
-// says what to do in the one case where the operator must act.
+// says what to do in the cases where the operator must act.
 func upstreamError(err error, what string) string {
 	if errors.Is(err, errCertChanged) || strings.Contains(err.Error(), errCertChanged.Error()) {
 		return "syncwatch gate: the certificate of Syncthing changed. Delete syncthing.pin in the data directory of the gate. Then restart the gate"
+	}
+	if errors.Is(err, errKeyRefused) {
+		return keyRefusedText
 	}
 	return "syncwatch gate: " + what + ": " + cleanErr(err)
 }

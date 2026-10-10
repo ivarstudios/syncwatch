@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -556,6 +557,235 @@ func TestGateLogsRefusalsOnceAMinute(t *testing.T) {
 	refused("/rest/system/status", "", http.StatusForbidden)
 	if n := strings.Count(logs.String(), "gate refused a request"); n != 4 || !strings.Contains(logs.String(), "count=50") {
 		t.Fatalf("after a minute: %d lines, want 4 with count=50:\n%s", n, logs.String())
+	}
+}
+
+// When Syncthing refuses the API key of the gate (it changed after the gate
+// started), the gate answers 502 with a short instruction, not Syncthing's
+// 403: syncwatch must not tell the administrator to check the gate token.
+// The gate logs it once a minute, with a count.
+func TestGateSyncthingRefusesKey(t *testing.T) {
+	st := &fakeSyncthing{}
+	up := httptest.NewTLSServer(st)
+	defer up.Close()
+	var logs syncBuffer
+	g, err := New(Options{Syncthing: up.URL, APIKey: "old-syncthing-api-key-0123", Token: token, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	const want = "syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key\n"
+	mask := strings.Join(stclient.EventMask, ",")
+	for _, path := range []string{"/rest/system/status", "/rest/events?since=0&timeout=1&events=" + mask, "/rest/config/folders",
+		"/rest/db/status?folder=f", "/metrics", "/rest/system/browse?current=/s/"} {
+		if code, body := get(t, gs, http.MethodGet, path, token); code != http.StatusBadGateway || body != want {
+			t.Errorf("%s: %d %q", path, code, body)
+		}
+	}
+	if len(want) >= 150 {
+		t.Fatalf("the answer has %d bytes", len(want))
+	}
+	// Syncthing gets no API key for its health, so it cannot refuse one.
+	if code, _ := get(t, gs, http.MethodGet, "/rest/noauth/health", token); code != 200 {
+		t.Fatalf("health: %d", code)
+	}
+	// A wrong gate token is still the 403 of the gate itself.
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", "wrong"); code != http.StatusForbidden || !strings.Contains(body, "gate token") {
+		t.Fatalf("wrong gate token: %d %q", code, body)
+	}
+	const line = "Syncthing refused the API key of the gate: restart the gate with the current API key"
+	if n := strings.Count(logs.String(), line); n != 1 || !strings.Contains(logs.String(), "status=403") {
+		t.Fatalf("%d log lines in a minute, want 1 with status=403:\n%s", n, logs.String())
+	}
+	now = now.Add(61 * time.Second)
+	get(t, gs, http.MethodGet, "/rest/system/version", token)
+	if n := strings.Count(logs.String(), line); n != 2 || !strings.Contains(logs.String(), "count=5") {
+		t.Fatalf("after a minute: %d lines, want 2, the second with count=5:\n%s", n, logs.String())
+	}
+}
+
+// An error answer from Syncthing on a path that the gate cleans is not
+// forwarded: it can have the secrets that the cleaner removes from a 200.
+// The other paths forward the status and the start of the body, which
+// syncwatch reads (404 "folder is paused").
+func TestGateDoesNotForwardUncleanedErrors(t *testing.T) {
+	long := strings.Repeat("x", 100<<10)
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/rest/events":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`[{"id":1,"type":"ConfigSaved","data":{"gui":{"apiKey":"` + realKey + `","password":"$2a$10$hash"}}}]`))
+		case "/rest/config/folders":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`[{"id":"f","devices":[{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]}]`))
+		case "/rest/db/status":
+			http.Error(w, "folder is paused", http.StatusNotFound)
+		default:
+			http.Error(w, long, http.StatusInternalServerError)
+		}
+	}))
+	defer up.Close()
+	g, err := New(Options{Syncthing: up.URL, APIKey: realKey, Token: token, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	mask := strings.Join(stclient.EventMask, ",")
+	for path, want := range map[string]int{"/rest/events?since=0&timeout=1&events=" + mask: 500, "/rest/config/folders": 503} {
+		code, body := get(t, gs, http.MethodGet, path, token)
+		if code != want || body != "syncwatch gate: Syncthing answered HTTP "+strconv.Itoa(want)+"\n" {
+			t.Errorf("%s: %d %q", path, code, body)
+		}
+		if strings.Contains(body, realKey) || strings.Contains(body, "hash") || strings.Contains(body, "untrusted-secret") {
+			t.Errorf("%s: a secret was forwarded: %q", path, body)
+		}
+	}
+	if code, body := get(t, gs, http.MethodGet, "/rest/db/status?folder=f", token); code != 404 || body != "folder is paused\n" {
+		t.Errorf("paused folder: %d %q", code, body)
+	}
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/version", token); code != 500 || len(body) != maxErrBody || !strings.HasPrefix(body, "xxx") {
+		t.Errorf("long error answer: %d, %d bytes", code, len(body))
+	}
+	// syncwatch's client still finds the paused folder.
+	cl, err := stclient.New(stclient.Options{Name: "NAS", URL: gs.URL, APIKey: token, Timeout: 5 * time.Second, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var se *stclient.StatusError
+	if _, err := cl.DBStatus(context.Background(), "f"); !errors.As(err, &se) || se.Code != 404 || se.Body != "folder is paused" {
+		t.Errorf("db/status through the gate: %v", err)
+	}
+}
+
+// A client gets at most 4 parallel event long-polls and 64 other parallel
+// requests; more get 429 and a log line once a minute. syncwatch needs 1
+// long-poll and at most 34 other requests at the same time. A different
+// client address has its own limits.
+func TestGateLimitsParallelRequests(t *testing.T) {
+	arrived, release := make(chan string, 100), make(chan struct{})
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/events" || r.URL.Path == "/rest/system/version" {
+			arrived <- r.URL.Path
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer up.Close()
+	var logs syncBuffer
+	g, err := New(Options{Syncthing: up.URL, APIKey: realKey, Token: token, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	var wg sync.WaitGroup
+	codes := make(chan int, 100)
+	hold := func(path string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest(http.MethodGet, gs.URL+path, nil)
+				req.Header.Set("X-API-Key", token)
+				resp, err := gs.Client().Do(req)
+				if err != nil {
+					codes <- 0
+					return
+				}
+				resp.Body.Close()
+				codes <- resp.StatusCode
+			}()
+		}
+		for i := 0; i < n; i++ {
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s: %d of %d requests reached Syncthing", path, i, n)
+			}
+		}
+	}
+	hold("/rest/events", 4)
+	if code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=60", token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel long-polls\n" {
+		t.Fatalf("5th long-poll: %d %q", code, body)
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/status", token); code != 200 {
+		t.Fatalf("a request during 4 long-polls: %d", code)
+	}
+	hold("/rest/system/version", 64)
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel requests\n" {
+		t.Fatalf("65th request: %d %q", code, body)
+	}
+	// Another client address is not at the limit.
+	req := httptest.NewRequest(http.MethodGet, "/rest/system/status", nil)
+	req.RemoteAddr = "127.0.0.2:40000"
+	req.Header.Set("X-API-Key", token)
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("another client: %d %s", rec.Code, rec.Body)
+	}
+	once.Do(func() { close(release) })
+	wg.Wait()
+	close(codes)
+	for code := range codes {
+		if code != 200 {
+			t.Fatalf("a held request ended with %d", code)
+		}
+	}
+	// The ended requests free their places.
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1", token); code != 200 {
+		t.Fatalf("a long-poll after the others ended: %d", code)
+	}
+	g.imu.Lock()
+	left := len(g.inflight)
+	g.imu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d clients still counted", left)
+	}
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 2 || !strings.Contains(logs.String(), `why="too many parallel long-polls"`) {
+		t.Fatalf("%d log lines, want 2:\n%s", n, logs.String())
+	}
+}
+
+// syncwatch's client shows what the gate refused: H1 finds a refused gate
+// token by "HTTP 403", a key that Syncthing refused is a 502, and a share
+// outside the browse roots gets the name of the setting.
+func TestClientThroughGateErrors(t *testing.T) {
+	st, g, gs := setup(t)
+	client := func(tok string) *stclient.Client {
+		cl, err := stclient.New(stclient.Options{Name: "NAS", URL: gs.URL, APIKey: tok, Timeout: 5 * time.Second, Retries: -1,
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cl
+	}
+	ctx := context.Background()
+	refused := regexp.MustCompile(`HTTP 40[13]\b`)
+	_, err := client("wrong-gate-token").SystemStatus(ctx)
+	if err == nil || !refused.MatchString(err.Error()) || !strings.Contains(err.Error(), "gate token missing or not correct") || strings.Contains(err.Error(), "check the API key") {
+		t.Errorf("wrong gate token: %v", err)
+	}
+	_, err = client(token).Browse(ctx, "/elsewhere", "/")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || !strings.Contains(err.Error(), "SYNCWATCH_GATE_BROWSE_ROOTS") {
+		t.Errorf("browse outside the roots: %v", err)
+	}
+	if st.countPath("/rest/system/browse") != 0 {
+		t.Fatal("the refused browse reached Syncthing")
+	}
+	g.o.APIKey = "old-syncthing-api-key-0123"
+	_, err = client(token).SystemStatus(ctx)
+	if err == nil || refused.MatchString(err.Error()) || !strings.Contains(err.Error(), "HTTP 502: syncwatch gate: Syncthing refused the API key of the gate") {
+		t.Errorf("key refused by Syncthing: %v", err)
 	}
 }
 
