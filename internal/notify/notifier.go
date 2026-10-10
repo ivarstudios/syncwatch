@@ -54,6 +54,7 @@ type Notifier struct {
 	failures  int                        // failed ticks in a row, for the back-off
 	retryAt   time.Time
 	state     Delivery
+	missed    time.Time         // first failure since the last catch-up; see missedBlips
 	lastErr   map[string]string // channel → error already in the notification log
 	notices   []pendingNotice   // settings notices that couldn't be delivered yet
 	noticeSeq int
@@ -125,6 +126,11 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 		n.state.Failing, n.state.Since = true, now
 	}
 	n.state.Error = err.Error()
+	// Kept until the catch-up went out: a new webhook or a successful test
+	// message clears the banner, not what the channel missed.
+	if n.missed.IsZero() {
+		n.missed = now
+	}
 }
 
 // New creates a notifier that builds its senders from the stored secrets.
@@ -325,16 +331,69 @@ func ids(rs []*store.Record) []string {
 
 func (n *Notifier) urgent(ctx context.Context, cfg *config.Config, v *engine.View, now time.Time) error {
 	due := dueRecords(cfg, v, now)
-	if len(due) == 0 {
+	n.dmu.Lock()
+	since, failing := n.missed, n.state.Failing
+	n.dmu.Unlock()
+	var missed []store.HistoryEntry
+	if !since.IsZero() {
+		var err error
+		if missed, err = n.missedBlips(cfg, v, since, now); err != nil {
+			return err
+		}
+		if len(missed) == 0 && !failing {
+			n.clearMissed(since) // delivery works and nothing was missed
+		}
+	}
+	if len(due) == 0 && len(missed) == 0 {
 		return nil
 	}
-	m := UrgentMessage(cfg, due)
+	// The catch-up goes with the urgent findings, or alone: then it is also
+	// the next try of a failing channel.
+	m := MissedMessage(cfg, due, missed, since, now)
 	m.Key = "urgent:" + strings.Join(ids(due), ",")
+	for _, h := range missed {
+		m.Key += fmt.Sprintf(";%s@%d", h.FindingID, h.ResolvedAt.UnixMilli())
+	}
 	if err := n.send(ctx, now, m); err != nil {
 		return err
 	}
 	n.src.MarkPinged(ids(due), now)
+	if !since.IsZero() {
+		n.remember(now, listedRuns(missed))
+		n.clearMissed(since)
+	}
 	return nil
+}
+
+// missedBlips are the urgent findings that resolved after notifications
+// started to fail (since), were due before they resolved and were never
+// announced: nobody heard of them. Snoozed and ignored ones are left out,
+// as in the overnight summary, and so are the ones it listed.
+func (n *Notifier) missedBlips(cfg *config.Config, v *engine.View, since, now time.Time) ([]store.HistoryEntry, error) {
+	hist, err := n.st.HistoryBetween(since, now.Add(time.Second))
+	if err != nil {
+		return nil, err
+	}
+	var out []store.HistoryEntry
+	for _, h := range hist {
+		if !h.Urgent || h.ResolvedAt.IsZero() || h.ResolvedAt.Before(since) {
+			continue
+		}
+		if h.ResolvedAt.Before(h.OpenedAt.Add(cfg.Debounce(h.Check))) || n.announced(h) || hidden(v, h, now) {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// clearMissed ends the catch-up period that started at since.
+func (n *Notifier) clearMissed(since time.Time) {
+	n.dmu.Lock()
+	defer n.dmu.Unlock()
+	if n.missed.Equal(since) {
+		n.missed = time.Time{}
+	}
 }
 
 func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Time) error {
@@ -953,7 +1012,7 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 		resL = append(resL, resolvedLine(r))
 	}
 	for _, h := range blips {
-		blipL = append(blipL, historyLine(h, true)+fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04")))
+		blipL = append(blipL, blipLine(cfg, h))
 	}
 	for _, r := range day {
 		dayL = append(dayL, findingLine(r, dashboard(cfg)))
@@ -972,6 +1031,44 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 			{Title: fmt.Sprintf("Opened and resolved during the night (%d)", len(blips)), Lines: limitLines(blipL, 20)},
 			{Title: fmt.Sprintf("New after the end of quiet hours (%d)", len(day)), Lines: limitLines(dayL, 20)},
 		}}
+}
+
+// blipLine is an occurrence that opened and resolved without a message,
+// with its times.
+func blipLine(cfg *config.Config, h store.HistoryEntry) string {
+	return historyLine(h, true) + fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04"))
+}
+
+// MissedMessage reports the urgent findings that opened and resolved while
+// notifications failed, from since to now, without a mention. With new
+// urgent findings rs it is their urgent message with one more section.
+func MissedMessage(cfg *config.Config, rs []*store.Record, missed []store.HistoryEntry, since, now time.Time) Message {
+	var m Message
+	switch {
+	case len(rs) > 0:
+		m = UrgentMessage(cfg, rs)
+	case len(missed) == 1:
+		m = Message{Kind: KindResolved, Title: "✅ Resolved while the notifications failed: " + config.CatalogByID[missed[0].Check].Title + ": " + missed[0].Subject}
+	default:
+		m = Message{Kind: KindResolved, Title: fmt.Sprintf("✅ %d urgent findings resolved while the notifications failed", len(missed))}
+	}
+	if len(rs) == 0 {
+		m.Color, m.URL = ColorResolved, dashboard(cfg)
+	}
+	if len(missed) == 0 {
+		return m
+	}
+	var lines []string
+	for _, h := range missed {
+		lines = append(lines, blipLine(cfg, h))
+	}
+	from, to := since.In(cfg.Location()), now.In(cfg.Location())
+	span := from.Format("15:04") + "–" + to.Format("15:04")
+	if from.Format("2006-01-02") != to.Format("2006-01-02") {
+		span = from.Format("2006-01-02 15:04") + "–" + to.Format("15:04")
+	}
+	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span + ")", Lines: limitLines(lines, 20)})
+	return m
 }
 
 // HealthLine summarises the deployment in one line.

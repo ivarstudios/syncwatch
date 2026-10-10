@@ -149,6 +149,8 @@ func TestHostileNamesAreNeutralised(t *testing.T) {
 			"reminder":  ReminderMessage(cfg, []*store.Record{rec}, now),
 			"overnight": OvernightMessage(cfg, []*store.Record{rec}, []*store.Record{&res}, []store.HistoryEntry{h}, []*store.Record{rec}),
 			"weekly":    WeeklyMessage(cfg, v, []store.HistoryEntry{h}, now),
+			"missed":    MissedMessage(cfg, nil, []store.HistoryEntry{h, h}, now.Add(-time.Hour), now),
+			"missed1":   MissedMessage(cfg, nil, []store.HistoryEntry{h}, now.Add(-time.Hour), now),
 		}
 		for kind, m := range msgs {
 			p := d.Payload(m)

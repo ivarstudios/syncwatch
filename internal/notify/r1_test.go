@@ -127,3 +127,111 @@ func TestTestMessageMentionsTheRole(t *testing.T) {
 		}
 	}
 }
+
+// Urgent findings that became due and resolved while the notifications failed
+// are reported once the channel works again, in one message without a
+// mention; a finding shorter than its debounce is not (ops-chaos OC-03).
+func TestCatchUpAfterFailure(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 10, 0), "AKKA", "SOL")
+	r.sender.fail(&httpError{code: 502})
+	r.setDown("AKKA", true)
+	r.at(local(2026, 10, 6, 10, 0))
+	r.at(local(2026, 10, 6, 10, 5)) // due: the urgent message fails
+	r.now = local(2026, 10, 6, 10, 20)
+	r.setDown("AKKA", false) // resolved before anybody heard of it
+	r.at(r.now)
+	r.now = local(2026, 10, 6, 10, 30)
+	r.setDown("SOL", true)
+	r.at(r.now)
+	r.now = local(2026, 10, 6, 10, 32)
+	r.setDown("SOL", false) // shorter than its debounce
+	r.at(r.now)
+	r.sender.fail(nil)
+	r.at(local(2026, 10, 6, 10, 45))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Mention || msgs[0].Kind != KindResolved || !strings.Contains(msgs[0].Title, "Server unreachable: AKKA") {
+		t.Fatalf("catch-up message: %+v", msgs)
+	}
+	s := msgs[0].Sections
+	if len(s) != 1 || s[0].Title != "Opened and resolved while the notifications failed (10:05–10:45)" {
+		t.Fatalf("catch-up section: %+v", s)
+	}
+	if len(s[0].Lines) != 1 || !strings.Contains(s[0].Lines[0], "AKKA") || !strings.Contains(s[0].Lines[0], "(10:00–10:20)") {
+		t.Fatalf("catch-up lines: %q", s[0].Lines)
+	}
+	if d := r.n.Delivery(); d.Failing {
+		t.Fatalf("still failing after the catch-up went out: %+v", d)
+	}
+	r.at(local(2026, 10, 6, 11, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("catch-up sent twice: %s", m[0].Title)
+	}
+}
+
+// A new webhook gets the catch-up too, in the same message as an urgent
+// finding that is due now (with the mention for that finding).
+func TestCatchUpWithUrgentAfterNewWebhook(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 10, 0), "AKKA", "SOL")
+	dead := &fakeSender{}
+	dead.fail(&httpError{code: 404, text: "Unknown Webhook"})
+	r.n.SetSenders(func() []Sender { return []Sender{dead} })
+	r.setDown("AKKA", true)
+	r.at(local(2026, 10, 6, 10, 0))
+	r.at(local(2026, 10, 6, 10, 5))
+	r.now = local(2026, 10, 6, 10, 10)
+	r.setDown("AKKA", false)
+	r.setDown("SOL", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 10, 16)) // SOL due, still failing
+	r.n.SetSenders(func() []Sender { return []Sender{r.sender} })
+	r.n.ChannelsChanged() // the administrator saved a new webhook
+	r.at(local(2026, 10, 6, 10, 17))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || !msgs[0].Mention || msgs[0].Kind != KindUrgent || !strings.Contains(msgs[0].Title, "SOL") {
+		t.Fatalf("urgent message with the catch-up: %+v", msgs)
+	}
+	s := msgs[0].Sections
+	if len(s) != 2 || !strings.HasPrefix(s[1].Title, "Opened and resolved while the notifications failed (10:05–") ||
+		len(s[1].Lines) != 1 || !strings.Contains(s[1].Lines[0], "AKKA") {
+		t.Fatalf("sections: %+v", s)
+	}
+}
+
+// When a failure lasts through quiet hours, the overnight summary lists the
+// night's occurrences and the catch-up only the others: none twice.
+func TestCatchUpAndOvernightListEachOccurrenceOnce(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 21, 0), "AKKA", "SOL")
+	r.sender.fail(&httpError{code: 500})
+	r.setDown("AKKA", true)
+	r.at(local(2026, 10, 6, 21, 0))
+	r.at(local(2026, 10, 6, 21, 5)) // due: fails
+	r.now = local(2026, 10, 6, 21, 30)
+	r.setDown("AKKA", false)
+	r.at(r.now)
+	r.now = local(2026, 10, 6, 23, 0)
+	r.setDown("SOL", true) // inside quiet hours
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 23, 10))
+	r.now = local(2026, 10, 6, 23, 30)
+	r.setDown("SOL", false)
+	r.at(r.now)
+	r.sender.fail(nil) // Discord works again during the night
+	r.at(local(2026, 10, 7, 6, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent during quiet hours: %s", m[0].Title)
+	}
+	r.at(local(2026, 10, 7, 7, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 2 || msgs[0].Kind != KindOvernight || msgs[1].Kind != KindResolved {
+		t.Fatalf("overnight summary and catch-up: %+v", msgs)
+	}
+	if text := messageText(msgs[0]); !strings.Contains(text, "SOL") || strings.Contains(text, "AKKA") {
+		t.Fatalf("overnight summary lists:\n%s", text)
+	}
+	if text := messageText(msgs[1]); !strings.Contains(text, "AKKA") || strings.Contains(text, "SOL") {
+		t.Fatalf("catch-up lists:\n%s", text)
+	}
+	if title := msgs[1].Sections[0].Title; title != "Opened and resolved while the notifications failed (2026-10-06 21:05–07:00)" {
+		t.Fatalf("catch-up section title: %s", title)
+	}
+}
