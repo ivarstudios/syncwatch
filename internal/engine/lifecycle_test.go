@@ -376,3 +376,49 @@ func TestResolvedMarkDoesNotTouchReopenedFinding(t *testing.T) {
 		t.Fatal("the mark on a resolved row must stick")
 	}
 }
+
+// A finding that becomes urgent after it opened (the check switched to
+// urgent, or a directory gaining an urgent reason) records when that
+// happened, so the notifier's debounce counts from there instead of from
+// an OpenedAt that may be days old.
+func TestUrgentSinceFollowsUrgency(t *testing.T) {
+	r := newRig(t)
+	r.hub.Update("a", func(s *model.Server) {
+		s.PendingDevices = []model.PendingDevice{{DeviceID: "NEW-ID", Name: "newpc", Time: r.now}}
+	})
+	h9 := find(r.at(0), "H9", "newpc")
+	if h9 == nil || h9.Urgent || !h9.UrgentSince.IsZero() {
+		t.Fatalf("H9 should open as not urgent: %+v", h9)
+	}
+	yes := true
+	setUrgent := func(v *bool) {
+		c := r.cfg.Get().Clone()
+		c.Checks["H9"] = config.Check{Urgent: v}
+		if err := r.cfg.Set(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setUrgent(&yes)
+	got := find(r.at(time.Hour), "H9", "newpc")
+	if got == nil || !got.Urgent || !got.UrgentSince.Equal(r.now) || !got.OpenedAt.Equal(h9.OpenedAt) {
+		t.Fatalf("UrgentSince should be set when the finding becomes urgent: %+v", got)
+	}
+	if !got.UrgentFrom().Equal(r.now) {
+		t.Fatalf("the debounce should count from %v, got %v", r.now, got.UrgentFrom())
+	}
+	// It survives a restart and doesn't move on later evaluations.
+	r.restart(t)
+	if g := find(r.at(time.Minute), "H9", "newpc"); g == nil || !g.UrgentSince.Equal(got.UrgentSince) {
+		t.Fatalf("UrgentSince not restored: %+v", g)
+	}
+	// Switching urgency off clears it; a finding opened urgent counts
+	// from its opening.
+	setUrgent(nil)
+	if g := find(r.at(time.Minute), "H9", "newpc"); g == nil || g.Urgent || !g.UrgentSince.IsZero() {
+		t.Fatalf("UrgentSince should be cleared: %+v", g)
+	}
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
+	if g := find(r.at(time.Minute), "H1", "B"); g == nil || !g.UrgentSince.Equal(g.OpenedAt) {
+		t.Fatalf("an urgent finding counts from its opening: %+v", g)
+	}
+}

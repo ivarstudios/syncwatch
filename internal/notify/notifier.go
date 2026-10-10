@@ -250,7 +250,7 @@ func activeUrgent(v *engine.View, r *store.Record, now time.Time) bool {
 func dueRecords(cfg *config.Config, v *engine.View, now time.Time) []*store.Record {
 	var out []*store.Record
 	for _, r := range v.Open {
-		if activeUrgent(v, r, now) && r.PingedAt.IsZero() && now.Sub(r.OpenedAt) >= debounce(cfg, r) {
+		if activeUrgent(v, r, now) && r.PingedAt.IsZero() && now.Sub(r.UrgentFrom()) >= debounce(cfg, r) {
 			out = append(out, r)
 		}
 	}

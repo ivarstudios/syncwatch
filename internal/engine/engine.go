@@ -353,6 +353,9 @@ func (e *Engine) Evaluate() {
 		rec := e.open[id]
 		if rec == nil {
 			rec = &store.Record{Finding: f, Since: e.obs[id].Since, OpenedAt: now, LastSeen: now}
+			if f.Urgent {
+				rec.UrgentSince = now
+			}
 			if old, err := e.st.Record(id); err == nil && old != nil && !old.Open() && !old.PingedAt.IsZero() && old.ResolvedNotifiedAt.IsZero() {
 				// It flapped back before its "resolved" message went out:
 				// carry on as the same, already-announced problem.
@@ -371,6 +374,15 @@ func (e *Engine) Evaluate() {
 		upd := sameContent(rec.Finding, f)
 		rec.LastSeen = now
 		if !upd || rec.Stale {
+			// A finding that becomes urgent later (a check switched to
+			// urgent, a directory gaining an urgent reason) gets its own
+			// debounce from that moment rather than pinging at once.
+			switch {
+			case f.Urgent && !rec.Urgent:
+				rec.UrgentSince = now
+			case !f.Urgent:
+				rec.UrgentSince = time.Time{}
+			}
 			rec.Finding = f
 			rec.Stale = false
 			e.save(rec)
