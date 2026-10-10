@@ -286,3 +286,74 @@ func TestScanTimerStartsDueScans(t *testing.T) {
 	hub.Update("akka", func(s *model.Server) { s.Status = model.StatusUp })
 	waitFor(t, hub, "the timer's second scan", func(s *model.Server) bool { return s.Structure.ScannedAt.After(first.Structure.ScannedAt) })
 }
+
+// A gap in the event IDs (Syncthing's 1000-event buffer overflowed, which
+// per-file events do during any big sync) no longer chains full re-checks:
+// the top-level project folders of the folders in the batch are re-scanned,
+// and a gap-caused full re-check runs at most once per gapFullEvery, with one
+// deferred re-check catching up.
+func TestMissedEventsRescansFoldersAndLimitsFullChecks(t *testing.T) {
+	defer func(a, b, c time.Duration) { gapFullEvery, gapScanAfter, gapScanMax = a, b, c }(gapFullEvery, gapScanAfter, gapScanMax)
+	gapFullEvery, gapScanAfter, gapScanMax = 400*time.Millisecond, 50*time.Millisecond, time.Second
+	alpha := `D:\tmp\swsim\st\akka\share\AKKA-LIVE-2PROJECTFILES\LIVE-ALPHA-2PROJECTFILES`
+	fake := newFakeST(t)
+	bl := &browseLog{fail: map[string]bool{}, extra: map[string][]string{alpha + `\`: {alphaRenders}, alphaRenders + `\`: {alphaRenders + `\LIVE-NESTED-2PROJECTFILES`}}}
+	c, hub, _, stop := startCollector(t, bl.wrap(fake), "")
+	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// A regular scan in events mode leaves synced project folders to events.
+	if err := c.scan(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(structureOf(hub).Nested); n != 0 {
+		t.Fatalf("%d nested entries after a regular scan", n)
+	}
+	nested := func() int { return len(structureOf(hub).Nested) }
+	batch := []stclient.Event{{ID: 1010, Type: "LocalChangeDetected", Data: json.RawMessage(`{"folder":"p-alpha","folderID":"p-alpha","type":"file","action":"modified","path":"x.blend"}`)}}
+
+	// The first gap asks for a full re-check at once and re-scans the folder's
+	// top-level project folder: the nested folder whose event was lost appears.
+	bl.reset()
+	c.missedEvents(ctx, 5, 1010, batch)
+	if len(c.fullNow) != 1 {
+		t.Fatal("first gap: no full re-check requested")
+	}
+	<-c.fullNow
+	waitFor(t, hub, "the re-scan after the gap", func(s *model.Server) bool { return len(s.Structure.Nested) == 1 })
+	if bl.count("LIVE-BETA-1SOURCE")+bl.count("LIVE-GAMMA-1SOURCE") != 0 || bl.count("LIVE-ALPHA-2PROJECTFILES") != 1 {
+		t.Fatalf("re-scan listed %v; want only the affected project folder", bl.listed)
+	}
+
+	// A second gap soon after: no full re-check now, one deferred catches up.
+	c.missedEvents(ctx, 1010, 2020, batch)
+	if len(c.fullNow) != 0 {
+		t.Fatal("a second gap within gapFullEvery requested a full re-check at once")
+	}
+	waitUntil(t, "the deferred full re-check", func() bool { return len(c.fullNow) == 1 })
+	<-c.fullNow
+
+	// The re-scan drops an entry whose directory went away during the gap...
+	bl.mu.Lock()
+	bl.extra[alphaRenders+`\`] = []string{}
+	bl.mu.Unlock()
+	c.missedEvents(ctx, 2020, 3030, batch)
+	waitFor(t, hub, "the entry removed by the re-scan", func(s *model.Server) bool { return len(s.Structure.Nested) == 0 })
+
+	// ...but not when a listing of the walk failed.
+	bl.mu.Lock()
+	bl.extra[alphaRenders+`\`] = []string{alphaRenders + `\LIVE-NESTED-2PROJECTFILES`}
+	bl.mu.Unlock()
+	c.missedEvents(ctx, 3030, 4040, batch)
+	waitFor(t, hub, "the entry back", func(s *model.Server) bool { return len(s.Structure.Nested) == 1 })
+	bl.mu.Lock()
+	bl.fail[alphaRenders+`\`] = true
+	bl.mu.Unlock()
+	before := bl.count("LIVE-ALPHA-2PROJECTFILES")
+	c.missedEvents(ctx, 4040, 5050, batch)
+	waitUntil(t, "a re-scan with a failing listing", func() bool { return bl.count("LIVE-ALPHA-2PROJECTFILES") > before })
+	time.Sleep(100 * time.Millisecond)
+	if nested() != 1 {
+		t.Fatal("a failed listing removed the nested entry")
+	}
+}

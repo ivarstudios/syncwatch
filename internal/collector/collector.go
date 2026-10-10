@@ -41,6 +41,7 @@ type Collector struct {
 	scanMu      sync.Mutex
 	scanning    bool
 	scanTimerOn bool // scanTimer runs (events mode)
+	gaps        gapState
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
@@ -295,8 +296,7 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 			continue
 		}
 		if c.lastEventID > 0 && evs[0].ID > c.lastEventID+1 {
-			c.log.Info("missed events; running a full re-check", "from", c.lastEventID, "to", evs[0].ID)
-			c.FullCheckNow()
+			c.missedEvents(ctx, c.lastEventID, evs[0].ID, evs)
 		}
 		for _, e := range evs {
 			if e.ID <= c.lastEventID {

@@ -75,6 +75,130 @@ type folderRef struct {
 	id, path string
 }
 
+// browser returns a directory lister throttled to the configured concurrency,
+// and the counter of listings made through it.
+func (c *Collector) browser(ctx context.Context, st pathx.Style) (func(string) ([]string, error), *atomic.Int64) {
+	sem := make(chan struct{}, max(1, c.cfg.Get().Collector.Concurrency))
+	listings := new(atomic.Int64)
+	return func(dir string) ([]string, error) {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		defer func() { <-sem }()
+		listings.Add(1)
+		return c.client.Browse(ctx, dir, st.Sep)
+	}, listings
+}
+
+// rescanFolders walks the top-level project folders that hold the given
+// Syncthing folders, as a baseline scan does, and replaces the nested
+// entries under them. It runs after a gap in the event stream, when
+// directory events of those folders may have been lost. Entries are only
+// removed when every listing of the walk succeeded.
+func (c *Collector) rescanFolders(ctx context.Context, ids map[string]bool) {
+	var sv *model.Server
+	c.hub.View(c.id, func(s *model.Server) { sv = s.Clone() })
+	cs := c.cfg.Structure()
+	if sv == nil || !sv.Loaded || !cs.HasProjectPattern() {
+		return
+	}
+	cfg := c.cfg.Get()
+	st := pathx.StyleFor(sv.PathSep)
+	var add, exclude []string
+	if sc, ok := cfg.ServerByKey(sv.ID); ok {
+		add, exclude = cfg.SharesFor(sc)
+	}
+	refs := rules.DetectShares(sv, add, exclude, cs)
+	var folders []folderRef
+	for _, f := range sv.Folders {
+		if f.Path != "" {
+			folders = append(folders, folderRef{f.ID, f.Path})
+		}
+	}
+	type topRef struct{ share, top string }
+	tops := map[string]topRef{}
+	for id := range ids {
+		f := sv.Folders[id]
+		if f == nil || f.Path == "" {
+			continue
+		}
+		share := rules.ShareOf(refs, f.Path, st)
+		if share == nil {
+			continue
+		}
+		rel := st.Split(st.Rel(f.Path, share.Path))
+		if len(rel) == 0 || cs.Ignored(rel[0]) || !cs.IsProject(rel[0]) {
+			continue
+		}
+		top := st.Join(share.Path, rel[0])
+		tops[nestedKey(st, top)] = topRef{share.Path, top}
+	}
+	if len(tops) == 0 {
+		return
+	}
+
+	browse, listings := c.browser(ctx, st)
+	var failed atomic.Int64
+	list := func(dir string) ([]string, error) {
+		out, err := browse(dir)
+		if err != nil {
+			failed.Add(1)
+		}
+		return out, err
+	}
+	now := time.Now()
+	found := map[string]*model.NestedDir{}
+	var fmu sync.Mutex
+	var wg sync.WaitGroup
+	for _, t := range tops {
+		t := t
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.descend(ctx, list, st, cs, &model.Share{Path: t.share}, &model.Dir{Path: t.top}, t.top, 1, cs.Depth, folders, now, func(n *model.NestedDir) {
+				fmu.Lock()
+				found[nestedKey(st, n.Path)] = n
+				fmu.Unlock()
+			})
+		}()
+	}
+	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
+	c.update(func(s *model.Server) {
+		if s.Structure == nil {
+			s.Structure = &model.Structure{}
+		}
+		if s.Structure.Nested == nil {
+			s.Structure.Nested = map[string]*model.NestedDir{}
+		}
+		for k, n := range s.Structure.Nested {
+			if failed.Load() > 0 || found[k] != nil || n.FoundAt.After(now) {
+				continue
+			}
+			for _, t := range tops {
+				if st.Within(n.Path, t.top) {
+					delete(s.Structure.Nested, k)
+					break
+				}
+			}
+		}
+		for k, n := range found {
+			if old := s.Structure.Nested[k]; old != nil {
+				n.FoundAt = old.FoundAt
+				if old.Source == "event" {
+					n.Source = old.Source
+				}
+			}
+			s.Structure.Nested[k] = n
+		}
+	})
+	c.log.Info("project folders re-scanned after missed events", "folders", len(tops), "listings", listings.Load(), "failed", failed.Load(), "took", time.Since(now).Round(time.Millisecond))
+}
+
 // scan lists every share's top level and searches project folders for
 // nested project folders: folders not in Syncthing on every scan, synced
 // folders only on a baseline scan (events cover them in between) except in
@@ -100,18 +224,7 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 		}
 	}
 
-	sem := make(chan struct{}, max(1, cfg.Collector.Concurrency))
-	var listings atomic.Int64
-	browse := func(dir string) ([]string, error) {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		defer func() { <-sem }()
-		listings.Add(1)
-		return c.client.Browse(ctx, dir, st.Sep)
-	}
+	browse, listings := c.browser(ctx, st)
 
 	// The previous results. A share that can't be listed now keeps its last
 	// directory list, marked stale by the error and the old ScannedAt, so

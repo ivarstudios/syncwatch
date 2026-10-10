@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/model"
@@ -140,6 +141,111 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// gapState is what missedEvents keeps between gaps in the event stream.
+type gapState struct {
+	mu          sync.Mutex
+	folders     map[string]bool // Syncthing folders with events since the last re-scan
+	first       time.Time       // when the pending folders were first noted
+	timer       *time.Timer     // the pending re-scan
+	rescanning  bool
+	lastFull    time.Time // the last full re-check caused by a gap
+	fullPending bool      // a deferred one is scheduled
+}
+
+// Gaps in the event IDs: a full re-check at most every gapFullEvery, and a
+// re-scan of the affected folders gapScanAfter after the last gap, or at the
+// latest gapScanMax after the first pending one.
+var (
+	gapFullEvery = 10 * time.Minute
+	gapScanAfter = 30 * time.Second
+	gapScanMax   = 10 * time.Minute
+)
+
+// missedEvents handles a gap in the event IDs: Syncthing's buffer of 1000
+// events overflowed, which the per-file disk events do during any big sync
+// (20,000 new files over a 100 ms link gave a gap after every re-check). A
+// full re-check holds the event stream for seconds and so causes the next
+// gap, which chained re-checks for as long as the sync ran. A gap-caused
+// re-check therefore runs at most every gapFullEvery (one deferred re-check
+// catches up), and the folders in the batch, whose directory events may be
+// among the lost ones, are re-scanned once the gaps stop.
+func (c *Collector) missedEvents(ctx context.Context, from, to int64, evs []stclient.Event) {
+	g := &c.gaps
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := time.Now()
+	if g.folders == nil {
+		g.folders = map[string]bool{}
+	}
+	for _, e := range evs {
+		if id := eventFolder(e); id != "" {
+			g.folders[id] = true
+		}
+	}
+	if g.first.IsZero() {
+		g.first = now
+	}
+	if g.timer != nil {
+		g.timer.Stop()
+	}
+	g.timer = time.AfterFunc(min(gapScanAfter, g.first.Add(gapScanMax).Sub(now)), func() { c.rescanAfterGap(ctx) })
+
+	if now.Sub(g.lastFull) >= gapFullEvery {
+		g.lastFull = now
+		c.log.Info("missed events; running a full re-check", "from", from, "to", to)
+		c.FullCheckNow()
+		return
+	}
+	c.log.Info("missed events; a full re-check ran recently, deferring the next", "from", from, "to", to)
+	if !g.fullPending {
+		g.fullPending = true
+		time.AfterFunc(g.lastFull.Add(gapFullEvery).Sub(now), func() {
+			g.mu.Lock()
+			g.fullPending, g.lastFull = false, time.Now()
+			g.mu.Unlock()
+			if ctx.Err() == nil {
+				c.FullCheckNow()
+			}
+		})
+	}
+}
+
+// rescanAfterGap runs rescanFolders for the folders noted by missedEvents,
+// one run at a time.
+func (c *Collector) rescanAfterGap(ctx context.Context) {
+	g := &c.gaps
+	g.mu.Lock()
+	if g.rescanning {
+		g.timer = time.AfterFunc(gapScanAfter, func() { c.rescanAfterGap(ctx) })
+		g.mu.Unlock()
+		return
+	}
+	ids := g.folders
+	g.folders, g.first, g.rescanning = nil, time.Time{}, true
+	g.mu.Unlock()
+	if ctx.Err() == nil && len(ids) > 0 {
+		c.rescanFolders(ctx, ids)
+	}
+	g.mu.Lock()
+	g.rescanning = false
+	g.mu.Unlock()
+}
+
+// eventFolder returns the Syncthing folder an event concerns, or "".
+func eventFolder(e stclient.Event) string {
+	var d struct{ Folder, FolderID, ID string }
+	if json.Unmarshal(e.Data, &d) != nil {
+		return ""
+	}
+	switch e.Type {
+	case "FolderPaused", "FolderResumed":
+		return d.ID
+	case "LocalChangeDetected", "RemoteChangeDetected":
+		return firstNonEmpty(d.FolderID, d.Folder)
+	}
+	return d.Folder
 }
 
 func (c *Collector) withFolder(id string, fn func(*model.Folder)) {
