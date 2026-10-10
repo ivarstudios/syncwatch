@@ -502,3 +502,35 @@ func TestEmptyListWithHiddenFindings(t *testing.T) {
 		t.Error("filtered empty list")
 	}
 }
+
+// In the grid, a PC that is not connected is "offline" only when every
+// server that knows it is up; else its state is unknown (the PCs tile rule).
+func TestGridPCUnknownWhileServerDown(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	shared := func() map[string]*model.Folder {
+		return map[string]*model.Folder{"f1": {ID: "f1", Label: "projects", State: "idle", SharedWith: []string{"PCBOTHS-1", "PCAKKAO-2"},
+			Completion: map[string]*model.Completion{"PCBOTHS-1": {Percent: 100, RemoteState: "valid"}, "PCAKKAO-2": {Percent: 100, RemoteState: "valid"}}}}
+	}
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID, s.LastContact = model.StatusUp, true, "AKKAAAA-1111111", time.Now()
+		s.Devices = map[string]*model.Device{"PCBOTHS-1": {ID: "PCBOTHS-1", Name: "BOTH"}, "PCAKKAO-2": {ID: "PCAKKAO-2", Name: "AKKA-ONLY"}}
+		s.Folders = shared()
+	})
+	e.hub.Update("sol", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID, s.LastContact = model.StatusDown, true, "SOLLLLL-2222222", time.Now().Add(-time.Hour)
+		s.Devices = map[string]*model.Device{"PCBOTHS-1": {ID: "PCBOTHS-1", Name: "BOTH"}}
+		s.Folders = shared()
+	})
+	e.eng.Evaluate()
+	vm := e.web.grid(e.eng.View())
+	cells := map[string]gridCell{}
+	for i, d := range vm.Devices {
+		cells[d.Name] = vm.Groups[0].Items[0].Cells[i]
+	}
+	if c := cells["BOTH"]; c.Text != "unknown" || !strings.Contains(c.Title, "not up") {
+		t.Errorf("PC seen by a server that is down: %+v", c)
+	}
+	if c := cells["AKKA-ONLY"]; c.Text != "offline 100%" {
+		t.Errorf("PC seen only by a server that is up: %+v", c)
+	}
+}

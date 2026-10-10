@@ -430,6 +430,14 @@ func (s *Server) pcCell(snap *model.Snapshot, on map[string]*model.Folder, d *mo
 		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the device", Problem: true}
 	case best.RemoteState == "notSharing":
 		return gridCell{Class: "warn", Icon: "⊘", Text: "not shared back", Title: "The server shares the folder, but the device does not share it back", Problem: true}
+	case !d.Connected && !serversKnown(snap, d.SeenBy):
+		// A server that knows the device is not up: the device can be
+		// connected to it. The same rule as the PCs tile.
+		title := "A server of this device is not up: last known " + pct(best.Percent)
+		if !d.LastSeen.IsZero() {
+			title += ", last seen " + s.fmtTime(d.LastSeen)
+		}
+		return gridCell{Class: "off", Icon: "?", Text: "unknown", Title: title}
 	case !d.Connected:
 		title := "Offline"
 		if !d.LastSeen.IsZero() {
