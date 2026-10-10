@@ -246,3 +246,43 @@ func TestPolledScanWalksSyncedFolders(t *testing.T) {
 		}
 	}
 }
+
+// In events mode the loop sits in a long-poll for up to event_timeout, so a
+// scan falling due meanwhile started up to that late. scanTimer starts it
+// on time, and only while the server is up.
+func TestScanTimerStartsDueScans(t *testing.T) {
+	old := scanTimerEvery
+	scanTimerEvery = 50 * time.Millisecond
+	defer func() { scanTimerEvery = old }()
+	fake := newFakeST(t)
+	c, hub, _, stop := startCollector(t, fake, "collector: {structure_interval: 1m}\n")
+	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	due := func(in time.Duration) {
+		c.scanMu.Lock()
+		c.lastScan, c.lastBase = time.Now().Add(in-time.Minute), time.Now()
+		c.scanMu.Unlock()
+	}
+	due(300 * time.Millisecond)
+	c.maybeScan(ctx) // what the loop does before its long-poll: not due yet
+	if st := structureOf(hub); st != nil {
+		t.Fatal("scan started before it was due")
+	}
+	first := waitFor(t, hub, "the timer's scan", func(s *model.Server) bool { return s.Structure != nil })
+	if first.Structure.ScanBaseline {
+		t.Fatal("regular scan expected")
+	}
+
+	// Not while the server is down.
+	hub.Update("akka", func(s *model.Server) { s.Status = model.StatusDown })
+	due(0)
+	time.Sleep(300 * time.Millisecond)
+	if st := structureOf(hub); st.ScannedAt.After(first.Structure.ScannedAt) {
+		t.Fatal("a scan ran while the server was down")
+	}
+
+	// The timer keeps going without the loop once the server is back.
+	hub.Update("akka", func(s *model.Server) { s.Status = model.StatusUp })
+	waitFor(t, hub, "the timer's second scan", func(s *model.Server) bool { return s.Structure.ScannedAt.After(first.Structure.ScannedAt) })
+}

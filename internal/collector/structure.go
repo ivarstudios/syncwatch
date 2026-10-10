@@ -16,19 +16,24 @@ import (
 
 func lowerKey(s string) string { return strings.ToLower(s) }
 
-// maybeScan starts a structure scan in the background when one is due.
+// scanTimerEvery is how often scanTimer checks whether a scan is due.
+var scanTimerEvery = 10 * time.Second
+
+// maybeScan starts a structure scan in the background when one is due. In
+// events mode the loop calls it between long-polls, which can be
+// event_timeout apart, so scanTimer also calls it when a scan falls due.
 func (c *Collector) maybeScan(ctx context.Context) {
 	cfg := c.cfg.Get().Collector
-	if time.Since(c.lastScan) < cfg.StructureInterval.D() {
-		return
-	}
 	c.scanMu.Lock()
-	if c.scanning {
-		c.scanMu.Unlock()
+	defer c.scanMu.Unlock()
+	if cfg.Mode == config.ModeEvents && !c.scanTimerOn {
+		c.scanTimerOn = true
+		go c.scanTimer(ctx)
+	}
+	if c.scanning || time.Since(c.lastScan) < cfg.StructureInterval.D() {
 		return
 	}
 	c.scanning = true
-	c.scanMu.Unlock()
 	baseline := time.Since(c.lastBase) >= cfg.BaselineInterval.D()
 	c.lastScan = time.Now()
 	if baseline {
@@ -44,6 +49,26 @@ func (c *Collector) maybeScan(ctx context.Context) {
 			c.log.Warn("structure scan failed", "err", shortErr(err))
 		}
 	}()
+}
+
+// scanTimer starts due structure scans in events mode, where the loop sits
+// in a long-poll for up to event_timeout and would start them that late. It
+// runs for the collector's lifetime and only scans while the server is up.
+func (c *Collector) scanTimer(ctx context.Context) {
+	t := time.NewTicker(scanTimerEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		up := false
+		c.hub.View(c.id, func(s *model.Server) { up = s.Status == model.StatusUp && s.Loaded })
+		if up {
+			c.maybeScan(ctx)
+		}
+	}
 }
 
 type folderRef struct {

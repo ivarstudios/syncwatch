@@ -40,6 +40,7 @@ type Collector struct {
 	lastBase    time.Time
 	scanMu      sync.Mutex
 	scanning    bool
+	scanTimerOn bool // scanTimer runs (events mode)
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
