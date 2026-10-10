@@ -122,8 +122,12 @@ failing by the map's experiments in `05-web-verify_test.go`).
 - Root cause: `deny()` put the request URI into `next` for every method, so a form sent after the session expired led to a GET of
   a POST-only URL (405) after login. `/login` showed the form even with a valid session.
 - Changed (`server.go`): `next` is set for GET/HEAD only (a POST goes to plain `/login`, then `/`); `/login` with a session
-  redirects to `next` (or `/`).
-- Tests: `TestLoginNextOnlyForPages`.
+  that still has a role redirects to `next` (or `/`). A viewer session left from before viewing was switched to `none` resolves
+  to no role (`resolve()` keeps the session but drops the role); it gets the login form as before, since sending it on would
+  bounce it between the page and `/login` without end (found while checking the resume; fixed in a commit of its own).
+- Not changed: with open viewing and no admin password, `/settings` still gives 403 instead of `/setup` (the hunch's second
+  part); the nav's "Log in" link reaches `/setup`, and the item asked only for the `next` and session cases.
+- Tests: `TestLoginNextOnlyForPages`, `TestLoginPageWithStaleViewerSession`.
 
 ## 10. Concurrent settings saves (map hunch 16)
 
@@ -179,3 +183,5 @@ in-flight attempts bounds it per address).
   absent. `grep` of `test/integration`, `test/compose`, `test/loadsim` and `test/harness` found no assertion on any of these.
 - `go test ./...`, `go vet ./...`, `gofmt -l .` (LF tree) and `GOOS=linux go build ./...` are clean on Windows; `-race` was not run
   here. The new limiter tests use goroutines (`TestParallelLoginsAreLimited`), worth a `-race` run.
+- The build-tagged suites compile against the branch: `go vet -tags integration ./test/integration/`, `-tags compose
+  ./test/compose/` and `-tags loadsim ./test/loadsim/` are clean (compile only; the suites were not run here).
