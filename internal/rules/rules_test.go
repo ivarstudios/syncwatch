@@ -792,3 +792,37 @@ func TestServerRefusesKey(t *testing.T) {
 		}
 	}
 }
+
+// A PC that cannot store 18 files (names that Windows does not permit) is
+// at 99.994 percent: H5 must not say 100 percent, and it names the count.
+// At exactly 100 percent with items left (only directories or empty files
+// missing) the device is stuck too.
+func TestStuckDevicePercentIsNeverRoundedUp(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-ANNA", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f := folder("f", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 99.99389790763612, NeedItems: 18, NeedBytes: 28, RemoteState: "valid"}
+	akka.Folders["f"] = f
+	h5 := mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+	if strings.Contains(h5.Message, "100") || strings.Contains(h5.DetailValue("Completion"), "100") {
+		t.Fatalf("rounded up to 100 percent: %q, %q", h5.Message, h5.DetailValue("Completion"))
+	}
+	if want := "Device PC-SHARED-ANNA is stuck at 99.9% of folder LIVE-FJORD-4FINALS for more than 24 hours (18 remaining items, seen from AKKA)"; h5.Message != want {
+		t.Fatalf("message %q, want %q", h5.Message, want)
+	}
+	if h5.DetailValue("Completion") != "99.9%" || h5.DetailValue("Items left") != "18" {
+		t.Fatalf("details %v", h5.Details)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 1, RemoteState: "valid"}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !strings.Contains(h5.Message, "stuck at 40% of folder") || !strings.Contains(h5.Message, "(1 remaining item,") || h5.DetailValue("Completion") != "40.0%" {
+		t.Fatalf("40 percent: %q %v", h5.Message, h5.Details)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 100, NeedItems: 3, RemoteState: "valid"}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !strings.Contains(h5.Message, "stuck at 100% of folder") || !strings.Contains(h5.Message, "3 remaining items") {
+		t.Fatalf("100 percent with items left: %q", h5.Message)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "valid"}
+	mustNot(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+}

@@ -16,7 +16,11 @@ func (r *rig) pc(connected bool, state string, percent float64) {
 			f = &model.Folder{ID: "f", Label: "LIVE-F", Path: "/s/X/LIVE-F", State: "idle", SharedWith: []string{"PC-ID"}, Completion: map[string]*model.Completion{}}
 			s.Folders["f"] = f
 		}
-		f.Completion["PC-ID"] = &model.Completion{Percent: percent, NeedItems: 18, RemoteState: state}
+		var need int64
+		if percent < 100 {
+			need = 18
+		}
+		f.Completion["PC-ID"] = &model.Completion{Percent: percent, NeedItems: need, RemoteState: state}
 		s.Devices["PC-ID"] = &model.Device{ID: "PC-ID", Name: "PC", LastSeen: r.now}
 		s.Connections["PC-ID"] = &model.Connection{Connected: connected}
 	})

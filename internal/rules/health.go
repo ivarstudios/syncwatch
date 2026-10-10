@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -202,7 +203,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 					Details:     []model.Detail{detail("Folder ID", f.ID), detail("Device ID", dev)},
 				})
 			case connected && c.RemoteState == "valid":
-				if c.Percent < 100 {
+				if stuck(*c) {
 					e.stuckDevice(sv, f, dev, *c, false)
 				}
 			case state == "valid" || state == "":
@@ -215,7 +216,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				if !ok {
 					last = *c
 				}
-				if last.Percent < 100 {
+				if stuck(last) {
 					e.stuckDevice(sv, f, dev, last, true)
 				}
 			}
@@ -223,18 +224,28 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 	}
 }
 
+// stuck reports whether a device still needs something of a folder.
+// Syncthing reports 100 percent when only directories, empty files or
+// deletions are missing, so the remaining items count too.
+func stuck(c model.Completion) bool { return c.Percent < 100 || c.NeedItems > 0 }
+
+// floorPercent cuts a percentage to one decimal, so that a device that
+// still needs some bytes never shows 100 percent (99.994 is 99.9).
+func floorPercent(p float64) float64 { return math.Floor(p*10) / 10 }
+
 // H5 for a device. held: the device is away and c is its last known
 // completion (see model.Finding.Held).
 func (e *evaluator) stuckDevice(sv *model.Server, f *model.Folder, dev string, c model.Completion, held bool) {
 	name, dn := f.DisplayName(), e.devName(dev)
+	pct := strconv.FormatFloat(floorPercent(c.Percent), 'f', -1, 64)
 	e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
 		Subject:     fmt.Sprintf("%s on %s", name, dn),
-		Message:     fmt.Sprintf("Device %s is stuck at %.0f%% of folder %s for more than %s (seen from %s)", dn, c.Percent, name, Ago(e.Config.Thresholds.StuckSync.D()), sv.Name),
+		Message:     fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), sv.Name),
 		MinDuration: e.Config.Thresholds.StuckSync.D(),
 		Held:        held,
 		Details: []model.Detail{
 			detail("Folder ID", f.ID), detail("Device ID", dev),
-			detail("Completion", fmt.Sprintf("%.1f%%", c.Percent)), detail("Items left", fmt.Sprint(c.NeedItems)),
+			detail("Completion", fmt.Sprintf("%.1f%%", floorPercent(c.Percent))), detail("Items left", fmt.Sprint(c.NeedItems)),
 		},
 	})
 }
