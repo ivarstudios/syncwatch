@@ -4,15 +4,16 @@ on:
   push:
     tags: ["v*"]
 
-# Each job gets only what it needs. Actions are pinned to commit SHAs (the
-# comment names the release) because this workflow can publish images. The
-# checkouts keep no credentials and the publishing jobs use no build cache,
-# so nothing written by other runs can end up in a release.
+# Each job gets only the permissions that it needs. The actions have commit
+# SHAs (the comment names the release) because this workflow can make images
+# available. The checkouts keep no secrets, and the jobs that make the
+# release use no build cache. Thus data from other runs cannot get into a
+# release.
 permissions:
   contents: read
 
 jobs:
-  # Nothing is published unless the tagged commit passes the tests.
+  # The release waits for the tests of the tagged commit.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -50,8 +51,8 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository }}
-          # "latest" moves only for final releases: a pre-release tag such
-          # as v1.2.0-rc1 (anything with a "-") gets its own tag only.
+          # "latest" moves only for final releases. A pre-release tag such
+          # as v1.2.0-rc1 (a tag with a "-") gets its own tag only.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -93,5 +94,5 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
-          # A pre-release tag (with a "-") is marked as such on GitHub.
+          # A tag with a "-" becomes a pre-release on GitHub.
           prerelease: ${{ contains(github.ref_name, '-') }}
