@@ -46,6 +46,7 @@ type Notifier struct {
 
 	dmu       sync.Mutex
 	delivered map[string]map[string]bool // message key → channels that already have it
+	gen       int                        // bumped by ChannelsChanged: a failure from before it is an old channel's
 	failures  int                        // failed ticks in a row, for the back-off
 	retryAt   time.Time
 	state     Delivery
@@ -87,19 +88,33 @@ func (n *Notifier) Delivery() Delivery {
 // old channel's failure no longer shows in the banner.
 func (n *Notifier) ChannelsChanged() {
 	n.dmu.Lock()
+	n.gen++
 	n.failures, n.retryAt = 0, time.Time{}
 	n.state = Delivery{}
+	n.lastErr = map[string]string{}
 	n.dmu.Unlock()
 	n.Wake()
 }
 
-// recordDelivery updates the delivery state after a send.
-func (n *Notifier) recordDelivery(now time.Time, err error) {
+// generation is the channel generation a send starts in; see gen.
+func (n *Notifier) generation() int {
+	n.dmu.Lock()
+	defer n.dmu.Unlock()
+	return n.gen
+}
+
+// recordDelivery updates the delivery state after a send that started in
+// generation gen. A failure of a channel replaced meanwhile is not the new
+// channel's.
+func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	n.dmu.Lock()
 	defer n.dmu.Unlock()
 	if err == nil {
 		n.state = Delivery{}
 		n.failures, n.retryAt = 0, time.Time{}
+		return
+	}
+	if gen != n.gen {
 		return
 	}
 	if !n.state.Failing {
@@ -132,9 +147,20 @@ func (n *Notifier) defaultSenders() []Sender {
 		out = append(out, &Discord{URL: u, RoleID: cfg.Notify.DiscordRoleID, HTTP: n.httpProxy})
 	} else if err != nil {
 		n.log.Error("reading Discord webhook", "err", err)
+		// Fails like a dead webhook, so the banner, the notification log
+		// and the test button all say why.
+		out = append(out, &brokenChannel{err: errors.New("the Discord webhook can't be decrypted (secret key changed?)")})
 	}
 	return out
 }
+
+// brokenChannel stands in for the Discord channel while its webhook can't
+// be read. Every send fails with the reason.
+type brokenChannel struct{ err error }
+
+func (b *brokenChannel) Name() string { return "discord" }
+
+func (b *brokenChannel) Send(context.Context, Message) error { return b.err }
 
 // Wake asks for a tick soon (after an evaluation).
 func (n *Notifier) Wake() {
@@ -164,16 +190,15 @@ func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.dmu.Lock()
-	wait := now.Before(n.retryAt)
+	wait, gen := now.Before(n.retryAt), n.gen
 	n.dmu.Unlock()
 	if wait {
 		return
 	}
-	// Settings notices go out at once, also during quiet hours.
-	if err := n.retryNotices(ctx, now); err != nil {
-		n.fail(now, err)
-		return
-	}
+	// Settings notices go out at once, also during quiet hours. One that
+	// can't be sent doesn't hold up the urgent messages: its failure counts
+	// once the rest of the tick is done.
+	nerr := n.retryNotices(ctx, now)
 	cfg := n.cfg.Get()
 	loc := cfg.Location()
 	local := now.In(loc)
@@ -183,38 +208,47 @@ func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 
 	if !quiet && q.enabled {
 		if err := n.overnight(ctx, cfg, v, q, now); err != nil {
-			n.fail(now, err)
+			n.fail(now, gen, err)
 			return
 		}
 		v = n.src.View()
 	}
 	if !quiet {
 		if err := n.urgent(ctx, cfg, v, now); err != nil {
-			n.fail(now, err)
+			n.fail(now, gen, err)
 			return
 		}
 		if err := n.resolved(ctx, cfg, now); err != nil {
-			n.fail(now, err)
+			n.fail(now, gen, err)
 			return
 		}
 		if err := n.reminder(ctx, cfg, n.src.View(), local, now); err != nil {
-			n.fail(now, err)
+			n.fail(now, gen, err)
 			return
 		}
 		if err := n.weekly(ctx, cfg, n.src.View(), local, now); err != nil {
-			n.fail(now, err)
+			n.fail(now, gen, err)
 			return
 		}
 	}
+	if nerr != nil {
+		n.fail(now, gen, nerr)
+	}
 }
 
-func (n *Notifier) fail(now time.Time, err error) {
+// fail backs off after a failed send in a tick that started in generation
+// gen. If the channels were replaced since, the new ones are tried at once.
+func (n *Notifier) fail(now time.Time, gen int, err error) {
 	if errors.Is(err, errNoChannel) {
 		// Nothing is marked as sent; it all goes out once a channel exists.
 		return
 	}
 	// Back off while a channel keeps failing: 1, 2, 4 … 30 minutes.
 	n.dmu.Lock()
+	if gen != n.gen {
+		n.dmu.Unlock()
+		return
+	}
 	n.failures++
 	d := min(time.Minute<<min(n.failures-1, 5), 30*time.Minute)
 	n.retryAt = now.Add(d)
@@ -422,6 +456,7 @@ func (n *Notifier) weekly(ctx context.Context, cfg *config.Config, v *engine.Vie
 func (n *Notifier) SendTest(ctx context.Context) error {
 	cfg := n.cfg.Get()
 	m := Message{Kind: KindTest, Title: "syncwatch test message", Summary: "Notifications from syncwatch reach this channel.", Color: ColorInfo, URL: cfg.PublicURL}
+	gen := n.generation()
 	senders := n.senders()
 	if len(senders) == 0 {
 		return errNoChannel
@@ -437,7 +472,7 @@ func (n *Notifier) SendTest(ctx context.Context) error {
 		}
 	}
 	delivered := deliveryErr(results)
-	n.recordDelivery(n.now(), delivered)
+	n.recordDelivery(n.now(), gen, delivered)
 	if delivered == nil {
 		n.Wake() // anything held back by a failing channel can go out now
 	}
@@ -467,12 +502,13 @@ func (n *Notifier) notice(senders []Sender, current bool, title, summary string)
 	n.dmu.Lock()
 	n.noticeSeq++
 	key := fmt.Sprintf("notice:%d:%d", now.UnixNano(), n.noticeSeq)
+	gen := n.gen
 	n.dmu.Unlock()
 	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: summary, Color: ColorWarn, URL: cfg.PublicURL, Key: key}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		if err := n.sendTo(ctx, now, m, senders, current); errors.Is(err, errNoChannel) {
+		if err := n.sendTo(ctx, now, m, senders, current, gen); errors.Is(err, errNoChannel) {
 			n.log.Info("settings notice not sent: no notification channel is configured", "title", title)
 		} else if err != nil {
 			n.log.Warn("sending settings notice failed; retrying with the next notifications", "title", title, "err", err)
@@ -497,7 +533,9 @@ func (n *Notifier) queueNotice(m Message, at time.Time) {
 
 // retryNotices sends held-back notices to the channels configured now (the
 // ones a notice first went to may be gone; a dead old webhook mustn't hold
-// up urgent messages). Notices older than noticeRetryFor are dropped.
+// up urgent messages). Notices older than noticeRetryFor, and notices the
+// channel rejects for good, are dropped. It stops at the first failure, so
+// a notice that can't be sent costs each tick one attempt.
 func (n *Notifier) retryNotices(ctx context.Context, now time.Time) error {
 	n.dmu.Lock()
 	pending := append([]pendingNotice(nil), n.notices...)
@@ -509,7 +547,12 @@ func (n *Notifier) retryNotices(ctx context.Context, now time.Time) error {
 			continue
 		}
 		if err := n.send(ctx, now, p.m); err != nil {
-			return err
+			if !rejected(err) {
+				return err
+			}
+			n.log.Warn("dropping a settings notice the channel rejected", "title", p.m.Title, "err", err)
+			n.dropNotice(p.m.Key)
+			continue
 		}
 		n.dropNotice(p.m.Key)
 	}
@@ -535,12 +578,14 @@ var errNoChannel = errors.New("no notification channel is configured")
 // there is no Discord channel and any other channel succeeds. When a keyed
 // message is retried, channels that got it on an earlier attempt are skipped.
 func (n *Notifier) send(ctx context.Context, now time.Time, m Message) error {
-	return n.sendTo(ctx, now, m, n.senders(), true)
+	gen := n.generation()
+	return n.sendTo(ctx, now, m, n.senders(), true, gen)
 }
 
 // sendTo delivers to the given channels. record says whether they are the
-// current channels, whose result is the delivery state the banner shows.
-func (n *Notifier) sendTo(ctx context.Context, now time.Time, m Message, senders []Sender, record bool) error {
+// current channels, whose result is the delivery state the banner shows;
+// gen is the channel generation they were built in.
+func (n *Notifier) sendTo(ctx context.Context, now time.Time, m Message, senders []Sender, record bool, gen int) error {
 	if len(senders) == 0 {
 		return errNoChannel
 	}
@@ -563,7 +608,7 @@ func (n *Notifier) sendTo(ctx context.Context, now time.Time, m Message, senders
 		n.forgetSent(m.Key)
 	}
 	if record {
-		n.recordDelivery(now, err)
+		n.recordDelivery(now, gen, err)
 	}
 	return err
 }
@@ -843,7 +888,7 @@ func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry
 			}
 		}
 	}
-	summary := HealthLine(cfg, v, now)
+	summary := escapeMD(HealthLine(cfg, v, now)) // server names
 	if cfg.PublicURL != "" {
 		summary += "\n[Open the dashboard](" + dashboard(cfg) + ")"
 	}
