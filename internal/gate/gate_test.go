@@ -491,6 +491,69 @@ func TestGateBrowseWithoutFolderList(t *testing.T) {
 	}
 }
 
+// syncBuffer is a log sink the gate's goroutines write to while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Refused requests are logged once a minute per client and reason, with
+// the number of refusals since the last line, so a scanner can't fill the log.
+func TestGateLogsRefusalsOnceAMinute(t *testing.T) {
+	up := httptest.NewTLSServer(&fakeSyncthing{})
+	defer up.Close()
+	var logs syncBuffer
+	g, err := New(Options{Syncthing: up.URL, APIKey: realKey, Token: token, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	refused := func(path, tok string, want int) {
+		t.Helper()
+		if code, _ := get(t, gs, http.MethodGet, path, tok); code != want {
+			t.Fatalf("%s: %d, want %d", path, code, want)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		refused("/rest/system/status", "", http.StatusForbidden)
+	}
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 1 || !strings.Contains(logs.String(), "count=1") {
+		t.Fatalf("50 refusals in a minute gave %d log lines:\n%s", n, logs.String())
+	}
+	// Another reason from the same client has its own line.
+	for i := 0; i < 5; i++ {
+		refused("/rest/config", token, http.StatusNotFound)
+		refused("/rest/system/status?x=1", token, http.StatusBadRequest)
+	}
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 3 {
+		t.Fatalf("two more reasons gave %d lines in all:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), `detail="parameter \"x\" not allowed"`) {
+		t.Fatalf("the first refusal's detail isn't logged:\n%s", logs.String())
+	}
+	// A minute later the next refusal is logged, with everything since counted.
+	now = now.Add(61 * time.Second)
+	refused("/rest/system/status", "", http.StatusForbidden)
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 4 || !strings.Contains(logs.String(), "count=50") {
+		t.Fatalf("after a minute: %d lines, want 4 with count=50:\n%s", n, logs.String())
+	}
+}
+
 // syncwatch's own client works through the gate with the gate token.
 func TestClientThroughGate(t *testing.T) {
 	_, _, gs := setup(t)

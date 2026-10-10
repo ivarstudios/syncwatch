@@ -56,6 +56,8 @@ const (
 	rootsMissAge    = time.Minute      // or sooner, when a directory isn't under it (a folder may just have been added)
 	rootsRetry      = 30 * time.Second // wait after a failed read of the folder list
 	rootsTimeout    = time.Minute      // for the gate's own requests to Syncthing
+	logInterval     = time.Minute      // one log line per client, reason and minute about refused requests
+	maxRefusals     = 4096             // refusal counters kept (client × reason)
 )
 
 // queryParams lists, per endpoint, the parameters syncwatch's client sends.
@@ -109,6 +111,16 @@ type Gate struct {
 	rootsAt time.Time
 	tryAt   time.Time
 	tryErr  error
+
+	lmu      sync.Mutex
+	refusals map[string]*refusal // per client and reason
+}
+
+// refusal counts one client's refused requests for one reason since the
+// last log line about them.
+type refusal struct {
+	n  int
+	at time.Time // when they were last logged
 }
 
 // New creates a gate. It does not contact Syncthing.
@@ -127,7 +139,7 @@ func New(o Options) (*Gate, error) {
 		o.Log = slog.Default()
 	}
 	ip := net.ParseIP(u.Hostname())
-	g := &Gate{o: o, base: u, pin: o.Pin, allowed: map[string]bool{}, now: time.Now,
+	g := &Gate{o: o, base: u, pin: o.Pin, allowed: map[string]bool{}, now: time.Now, refusals: map[string]*refusal{},
 		loopback: u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())}
 	for _, p := range stclient.Allowlist() {
 		g.allowed[p] = true
@@ -185,8 +197,39 @@ func (g *Gate) verify(cs tls.ConnectionState) error {
 		stclient.ShortFP(g.pin), stclient.ShortFP(fp))
 }
 
-func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why string) {
-	g.o.Log.Warn("gate refused a request", "why", why, "method", r.Method, "path", r.URL.Path, "ip", clientIP(r))
+// deny refuses a request. why is one of a few fixed reasons, detail says
+// more when there is more to say. Refusals are logged once a minute per
+// client and reason, with a count, so a scanner can't fill the log.
+func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why, detail string) {
+	ip, now := clientIP(r), g.now()
+	g.lmu.Lock()
+	if len(g.refusals) >= maxRefusals {
+		for k, rf := range g.refusals {
+			if now.Sub(rf.at) >= logInterval {
+				delete(g.refusals, k)
+			}
+		}
+		if len(g.refusals) >= maxRefusals {
+			clear(g.refusals)
+		}
+	}
+	rf := g.refusals[ip+" "+why]
+	if rf == nil {
+		rf = &refusal{}
+		g.refusals[ip+" "+why] = rf
+	}
+	rf.n++
+	n := 0
+	if rf.at.IsZero() || now.Sub(rf.at) >= logInterval {
+		n, rf.n, rf.at = rf.n, 0, now
+	}
+	g.lmu.Unlock()
+	if n > 0 {
+		g.o.Log.Warn("gate refused a request", "why", why, "detail", detail, "method", r.Method, "path", r.URL.Path, "ip", ip, "count", n)
+	}
+	if detail != "" {
+		why += ": " + detail
+	}
 	http.Error(w, "syncwatch gate: "+why, code)
 }
 
@@ -202,22 +245,22 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// client without it learns nothing, not even which paths exist.
 	tok := r.Header.Get("X-API-Key")
 	if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(g.o.Token)) != 1 {
-		g.deny(w, r, http.StatusForbidden, "wrong or missing token")
+		g.deny(w, r, http.StatusForbidden, "wrong or missing token", "")
 		return
 	}
 	if r.Method != http.MethodGet {
-		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests pass")
+		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests pass", "")
 		return
 	}
 	// Exact paths only: no prefixes, no dot segments, no encoded slashes.
 	if !g.allowed[r.URL.Path] || (r.URL.RawPath != "" && r.URL.RawPath != r.URL.Path) {
-		g.deny(w, r, http.StatusNotFound, "endpoint not allowed")
+		g.deny(w, r, http.StatusNotFound, "endpoint not allowed", "")
 		return
 	}
 	// Only the parameters syncwatch's client sends, and only what it asks for.
 	q, err := checkQuery(r.URL.Path, r.URL.RawQuery)
 	if err != nil {
-		g.deny(w, r, http.StatusBadRequest, "query not allowed: "+err.Error())
+		g.deny(w, r, http.StatusBadRequest, "query not allowed", err.Error())
 		return
 	}
 	if r.URL.Path == pathBrowse {
@@ -227,7 +270,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !ok {
-			g.deny(w, r, http.StatusForbidden, "directory not under a Syncthing folder's parent")
+			g.deny(w, r, http.StatusForbidden, "directory not under a Syncthing folder's parent", "")
 			return
 		}
 		q.Set("current", dir)
