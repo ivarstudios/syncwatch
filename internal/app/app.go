@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/collector"
@@ -48,6 +49,33 @@ func OpenStore(dataDir, secretKey string) (*store.Store, error) {
 		return nil, err
 	}
 	return store.Open(filepath.Join(dataDir, "syncwatch.db"), key)
+}
+
+// OpenExistingStore opens the database of an instance that exists already,
+// for the maintenance commands. Unlike OpenStore it creates nothing: with a
+// wrong --data they would otherwise set up a fresh, empty instance there and
+// report success, and import-config would encrypt with a key the server
+// doesn't have.
+func OpenExistingStore(dataDir, secretKey string) (*store.Store, error) {
+	dataDir = absPath(dataDir)
+	if _, err := os.Stat(filepath.Join(dataDir, "syncwatch.db")); err != nil {
+		return nil, fmt.Errorf("no syncwatch data in %s", dataDir)
+	}
+	if strings.TrimSpace(secretKey) == "" {
+		if _, err := os.Stat(filepath.Join(dataDir, "secret.key")); err != nil {
+			return nil, fmt.Errorf("no secret.key in %s and SYNCWATCH_SECRET_KEY is not set; use the key the server runs with", dataDir)
+		}
+	}
+	return OpenStore(dataDir, secretKey)
+}
+
+// absPath resolves a relative path (the default data directory is ./data) so
+// logs and errors say where it really is.
+func absPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }
 
 // LoadConfig returns the stored configuration, importing the bootstrap file
@@ -127,6 +155,7 @@ func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
 // Run serves until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
 	log := o.Log
+	o.DataDir = absPath(o.DataDir)
 	st, err := OpenStore(o.DataDir, o.SecretKey)
 	if err != nil {
 		return err
