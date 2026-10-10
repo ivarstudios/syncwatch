@@ -114,5 +114,14 @@ Items that the review found and did not do. The source is in parentheses.
 ## 5. Later ideas (not in v1)
 
 - **Registration of new project folders** as paused, unshared Syncthing folders with `.stignore` present. A migration from a different sync tool then becomes: resume, compare, share for each folder. It needs the full Syncthing API key, thus it is a separate tool next to the gate, never a part of syncwatch. The author tested the API behavior that it depends on with 2.1.5 (`docs/api-findings.md`, "Folders added paused through the API").
-- A tree view of the folder structure · trend graphs or a Prometheus `/metrics` endpoint · an optional PC agent · disk space through SNMP · an HTML email report.
-- A heartbeat watchdog · repair hints for each finding type · settings drift checks · a Windows service · translations · Syncthing 1.x.
+- A tree view of the folder structure.
+- Trend graphs or a Prometheus `/metrics` endpoint.
+- An optional PC agent.
+- Disk space through SNMP.
+- An HTML email report.
+- A heartbeat watchdog.
+- Repair hints for each finding type.
+- Settings drift checks.
+- A Windows service.
+- Translations.
+- Syncthing 1.x.
