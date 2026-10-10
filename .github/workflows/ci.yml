@@ -56,6 +56,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -tags compose -v -count=1 -timeout 30m ./test/compose
+        env:
+          KEEP_COMPOSE: "1" # leave the stack up for the log step below
       - name: Logs on failure
         if: failure()
-        run: docker compose -f test/compose/docker-compose.yml logs --no-color | tail -n 300
+        run: docker compose -f test/compose/docker-compose.yml logs --no-color --timestamps --tail 400
+      - name: Stack down
+        if: always()
+        run: docker compose -f test/compose/docker-compose.yml down -v --remove-orphans
