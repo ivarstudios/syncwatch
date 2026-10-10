@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -421,6 +422,66 @@ func TestCLIChangesAnnounced(t *testing.T) {
 	noMoreNotices(t, got)
 	if left, _ := st.SettingsWithPrefix(keyCLINotice); len(left) != 0 {
 		t.Fatalf("notices left in the store: %v", left)
+	}
+}
+
+// A lost secret.key (or a changed SYNCWATCH_SECRET_KEY) makes the stored
+// secrets unreadable. syncwatch still starts and still makes a new key, but
+// the log says why at start. SYNCWATCH_SECRET_KEY next to a secret.key gets
+// a warning: syncwatch does not use the file.
+func TestSecretKeyProblemsLogged(t *testing.T) {
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "secret.key")
+	st, err := openServeStore(dir, "", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `level=INFO msg="new secret key made"`) {
+		t.Fatalf("first start:\n%s", logs.String())
+	}
+	if err := st.SetSecret(store.SecretDiscordWebhook, "https://discord.com/api/webhooks/1/x"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	logs.Reset()
+	if st, err = openServeStore(dir, "", log); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	if logs.Len() != 0 {
+		t.Fatalf("a normal start logged:\n%s", logs.String())
+	}
+
+	if err := os.Remove(keyFile); err != nil {
+		t.Fatal(err)
+	}
+	logs.Reset()
+	if st, err = openServeStore(dir, "", log); err != nil {
+		t.Fatalf("a start without secret.key failed: %v", err)
+	}
+	st.Close()
+	for _, want := range []string{`level=ERROR msg="cannot decrypt the stored secrets: restore the old secret.key"`, "secret.key was missing", store.SecretDiscordWebhook} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("no %q in the log:\n%s", want, logs.String())
+		}
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		t.Fatalf("no new secret.key: %v", err)
+	}
+
+	logs.Reset()
+	env := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+	if st, err = openServeStore(dir, env, log); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	for _, want := range []string{`level=WARN msg="SYNCWATCH_SECRET_KEY is set, syncwatch does not use secret.key"`, `level=ERROR msg="cannot decrypt the stored secrets: restore the old secret key" key=SYNCWATCH_SECRET_KEY`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("no %q in the log:\n%s", want, logs.String())
+		}
 	}
 }
 

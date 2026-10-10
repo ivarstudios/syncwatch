@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"net"
@@ -73,6 +74,40 @@ func OpenExistingStore(dataDir, secretKey string) (*store.Store, error) {
 		}
 	}
 	return OpenStore(dataDir, secretKey)
+}
+
+// openServeStore opens the database for serve and logs the secret key
+// problems at start. Without this they show only later, as API keys and a
+// webhook that syncwatch cannot read. A missing secret.key is still made
+// new, as before.
+func openServeStore(dataDir, secretKey string, log *slog.Logger) (*store.Store, error) {
+	keyFile := filepath.Join(dataDir, "secret.key")
+	_, statErr := os.Stat(keyFile)
+	fromEnv := strings.TrimSpace(secretKey) != ""
+	st, err := OpenStore(dataDir, secretKey)
+	if err != nil {
+		return nil, err
+	}
+	made := !fromEnv && errors.Is(statErr, fs.ErrNotExist)
+	if fromEnv && statErr == nil {
+		log.Warn("SYNCWATCH_SECRET_KEY is set, syncwatch does not use secret.key", "file", keyFile)
+	}
+	source := keyFile
+	if fromEnv {
+		source = "SYNCWATCH_SECRET_KEY"
+	}
+	bad, total, err := st.UnreadableSecrets()
+	switch {
+	case err != nil:
+		log.Error("cannot read the stored secrets", "err", err)
+	case len(bad) > 0 && made:
+		log.Error("cannot decrypt the stored secrets: restore the old secret.key", "cause", "secret.key was missing, syncwatch made a new key", "file", keyFile, "secrets", strings.Join(bad, ", "))
+	case len(bad) > 0:
+		log.Error("cannot decrypt the stored secrets: restore the old secret key", "key", source, "secrets", strings.Join(bad, ", "), "stored", total)
+	case made:
+		log.Info("new secret key made", "file", keyFile)
+	}
+	return st, nil
 }
 
 // absPath resolves a relative path (the default data directory is ./data) so
@@ -376,7 +411,7 @@ func (w *configWatcher) run(ctx context.Context) {
 func Run(ctx context.Context, o Options) error {
 	log := o.Log
 	o.DataDir = absPath(o.DataDir)
-	st, err := OpenStore(o.DataDir, o.SecretKey)
+	st, err := openServeStore(o.DataDir, o.SecretKey, log)
 	if err != nil {
 		return err
 	}
