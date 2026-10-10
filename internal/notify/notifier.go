@@ -29,6 +29,7 @@ const (
 	keyOvernight = "notify.overnight_done"
 	keyReminder  = "notify.last_reminder"
 	keyWeekly    = "notify.last_weekly"
+	keyAnnounced = "notify.announced" // see announcedRun
 )
 
 // Notifier decides what to send and when.
@@ -44,6 +45,8 @@ type Notifier struct {
 
 	mu        sync.Mutex
 	httpProxy *http.Client
+	runs      []announcedRun // under mu; read from the store at first use
+	runsRead  bool
 
 	dmu       sync.Mutex
 	delivered map[string]map[string]bool // message key → channels that already have it
@@ -350,6 +353,7 @@ func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Ti
 		return err
 	}
 	n.src.MarkResolvedNotified(ids(pend), now)
+	n.remember(now, resolvedRuns(pend))
 	return nil
 }
 
@@ -396,14 +400,7 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		if !dueAt.Before(end) || h.ResolvedAt.Before(dueAt) {
 			continue
 		}
-		if n.announced(h) {
-			continue
-		}
-		// Not when it is ignored or snoozed, now or when it resolved.
-		if _, z := v.Snoozed(h.FindingID, now); z {
-			continue
-		}
-		if _, z := v.Snoozed(h.FindingID, h.ResolvedAt); z {
+		if n.announced(h) || hidden(v, h, now) {
 			continue
 		}
 		blips = append(blips, h)
@@ -416,19 +413,100 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		}
 		n.src.MarkPinged(append(ids(due), ids(day)...), now)
 		n.src.MarkResolvedNotified(ids(pend), now)
+		n.remember(now, append(resolvedRuns(pend), listedRuns(blips)...))
 	}
 	return n.st.SetSetting(keyOvernight, marker)
 }
 
-// announced reports whether an occurrence of a finding was pinged: its
-// record was pinged before the occurrence resolved. A re-open that carried
-// PingedAt over counts as the same, already announced problem.
+// hidden reports whether an occurrence is ignored or snoozed, now or when
+// it resolved.
+func hidden(v *engine.View, h store.HistoryEntry, now time.Time) bool {
+	if _, z := v.Snoozed(h.FindingID, now); z {
+		return true
+	}
+	_, z := v.Snoozed(h.FindingID, h.ResolvedAt)
+	return z
+}
+
+// announced reports whether an occurrence of a finding was announced: an
+// urgent message went out for it before it resolved (a re-open that
+// carried PingedAt over is the same, already announced problem), or a
+// summary listed it. The record knows this only for its latest run of
+// occurrences: a re-open after the "resolved" message starts a new record,
+// so older occurrences are looked up in the announced runs.
 func (n *Notifier) announced(h store.HistoryEntry) bool {
+	at := h.ResolvedAt.UnixMilli()
+	for _, run := range n.announcedRuns() {
+		if run.ID == h.FindingID && run.From <= at && at <= run.To {
+			return true
+		}
+	}
 	r, err := n.st.Record(h.FindingID)
 	if err != nil || r == nil || r.PingedAt.IsZero() {
 		return false
 	}
 	return !r.PingedAt.After(h.ResolvedAt)
+}
+
+// announcedRun is a run of occurrences of one finding that a notification
+// announced, by their resolve times (Unix ms): from the urgent message to
+// the resolve that the "resolved" message reported, or one occurrence that
+// a summary listed.
+type announcedRun struct {
+	ID   string `json:"id"`
+	From int64  `json:"from"`
+	To   int64  `json:"to"`
+}
+
+// announcedKeep is how long announced runs are kept: longer than the
+// overnight summary looks back.
+const announcedKeep = 3 * 24 * time.Hour
+
+// resolvedRuns are the runs that resolved messages for rs report.
+func resolvedRuns(rs []*store.Record) []announcedRun {
+	var out []announcedRun
+	for _, r := range rs {
+		out = append(out, announcedRun{ID: r.ID, From: r.PingedAt.UnixMilli(), To: r.ResolvedAt.UnixMilli()})
+	}
+	return out
+}
+
+// listedRuns are the runs of occurrences that a summary lists.
+func listedRuns(hs []store.HistoryEntry) []announcedRun {
+	var out []announcedRun
+	for _, h := range hs {
+		out = append(out, announcedRun{ID: h.FindingID, From: h.ResolvedAt.UnixMilli(), To: h.ResolvedAt.UnixMilli()})
+	}
+	return out
+}
+
+// announcedRuns returns the announced runs, read from the store once.
+func (n *Notifier) announcedRuns() []announcedRun {
+	if !n.runsRead {
+		if _, err := n.st.JSONSetting(keyAnnounced, &n.runs); err != nil {
+			n.log.Warn("cannot read the list of announced findings", "err", err)
+		}
+		n.runsRead = true
+	}
+	return n.runs
+}
+
+// remember adds announced runs, removes old ones and saves the list, so a
+// restart does not announce an occurrence again.
+func (n *Notifier) remember(now time.Time, add []announcedRun) {
+	if len(add) == 0 {
+		return
+	}
+	keep := []announcedRun{}
+	for _, run := range n.announcedRuns() {
+		if run.To >= now.Add(-announcedKeep).UnixMilli() {
+			keep = append(keep, run)
+		}
+	}
+	n.runs = append(keep, add...)
+	if err := n.st.SetJSONSetting(keyAnnounced, n.runs); err != nil {
+		n.log.Warn("cannot save the list of announced findings", "err", err)
+	}
 }
 
 func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.View, local, now time.Time) error {
