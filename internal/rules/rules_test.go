@@ -189,6 +189,38 @@ func TestOverlapAndShareRoot(t *testing.T) {
 	}
 }
 
+// Two Syncthing folders at exactly the same path are the worst overlap of
+// all, and must give one S1 (not one per direction).
+func TestOverlapSamePath(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("a", "A", akkaID)
+	a.Folders["x"] = folder("x", "LIVE-X", "/s/A-LIVE-1SOURCE/LIVE-X")
+	a.Folders["y"] = folder("y", "LIVE-X copy", "/s/A-LIVE-1SOURCE//LIVE-X/")
+	fs := run(t, c, a)
+	s1 := mustFind(t, fs, "S1", "same path")
+	if !s1.Urgent || s1.Severity != model.Error || !strings.Contains(s1.Message, "LIVE-X copy") {
+		t.Fatalf("S1: %+v", s1)
+	}
+	n := 0
+	for _, f := range fs {
+		if f.Check == "S1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want exactly one S1, got %d:\n%s", n, dump(fs))
+	}
+	// Case-insensitive, either separator, on a Windows server.
+	w := server("w", "WIN", solID)
+	w.PathSep = `\`
+	w.Folders["x"] = folder("x", "LIVE-X", `D:\data\WIN-LIVE-1SOURCE\LIVE-X`)
+	w.Folders["y"] = folder("y", "LIVE-X copy", `d:/Data/win-live-1source/live-x/`)
+	mustFind(t, run(t, c, w), "S1", "same path")
+	// A different path with the same prefix is not an overlap.
+	a.Folders["y"].Path = "/s/A-LIVE-1SOURCE/LIVE-XY"
+	mustNot(t, run(t, c, a), "S1", "")
+}
+
 func TestShareRootWithoutRules(t *testing.T) {
 	c, _ := config.ParseYAML([]byte("servers: [{name: A, url: 'https://a:1'}]"))
 	a := server("a", "A", akkaID)

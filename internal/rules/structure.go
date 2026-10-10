@@ -22,14 +22,27 @@ func (e *evaluator) structure() {
 	}
 }
 
-// S1: one Syncthing folder inside another.
+// S1: one Syncthing folder inside another, or two at the same path.
 func (e *evaluator) overlaps(sv *model.Server) {
 	st := pathx.StyleFor(sv.PathSep)
 	ids := sortedFolderIDs(sv)
-	for _, a := range ids {
-		for _, b := range ids {
+	for i, a := range ids {
+		for j, b := range ids {
 			fa, fb := sv.Folders[a], sv.Folders[b]
 			if a == b || fa.Path == "" || fb.Path == "" {
+				continue
+			}
+			if st.Equal(fa.Path, fb.Path) {
+				if i < j {
+					e.add("S1", sv.ID, "same:"+fa.ID+":"+fb.ID, model.Finding{
+						Subject: fmt.Sprintf("%s and %s on %s", fa.DisplayName(), fb.DisplayName(), sv.Name),
+						Message: fmt.Sprintf("Syncthing folders %s and %s have the same path on %s; files would be synced twice", fa.DisplayName(), fb.DisplayName(), sv.Name),
+						Details: []model.Detail{
+							detail("Folder", fa.ID+" — "+fa.Path),
+							detail("Folder", fb.ID+" — "+fb.Path),
+						},
+					})
+				}
 				continue
 			}
 			if !st.Within(fb.Path, fa.Path) {
