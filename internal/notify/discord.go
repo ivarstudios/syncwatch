@@ -142,7 +142,7 @@ func (d *Discord) usable() error {
 		return nil
 	}
 	if u, err := url.Parse(d.URL); err != nil || u.Scheme != "https" || !config.DiscordHost(d.URL) {
-		return errors.New("discord: the stored webhook isn't a Discord webhook URL (https://discord.com/api/webhooks/…); save it again")
+		return errors.New("Discord: the stored webhook is not a Discord webhook URL (https://discord.com/api/webhooks/…). Save the webhook URL again.")
 	}
 	return nil
 }
@@ -167,12 +167,12 @@ func (d *Discord) Send(ctx context.Context, m Message) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.URL, bytes.NewReader(body))
 		if err != nil {
-			return fmt.Errorf("discord: invalid webhook URL")
+			return fmt.Errorf("Discord: the webhook URL is not valid")
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := hc.Do(req)
 		if err != nil {
-			return fmt.Errorf("discord: %v", redactURL(err.Error(), d.URL))
+			return fmt.Errorf("Discord: %v", redactURL(err.Error(), d.URL))
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
@@ -180,7 +180,7 @@ func (d *Discord) Send(ctx context.Context, m Message) error {
 			return nil
 		}
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-			return &httpError{code: resp.StatusCode, text: "the webhook redirects, which isn't followed"}
+			return &httpError{code: resp.StatusCode, text: "the webhook answers with a redirect, which syncwatch does not follow"}
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			wait := 2 * time.Second
@@ -211,7 +211,7 @@ func (d *Discord) Send(ctx context.Context, m Message) error {
 		}
 		return &httpError{code: resp.StatusCode, text: discordError(respBody)}
 	}
-	return fmt.Errorf("discord: still rate limited")
+	return fmt.Errorf("Discord: too many requests (HTTP 429) after 3 tries")
 }
 
 // httpError is a reply other than 2xx, with Discord's explanation when the
@@ -223,9 +223,9 @@ type httpError struct {
 
 func (e *httpError) Error() string {
 	if e.text == "" {
-		return fmt.Sprintf("discord: HTTP %d", e.code)
+		return fmt.Sprintf("Discord: HTTP %d", e.code)
 	}
-	return fmt.Sprintf("discord: HTTP %d: %s", e.code, e.text)
+	return fmt.Sprintf("Discord: HTTP %d: %s", e.code, e.text)
 }
 
 // rejected says whether a reply won't change on a retry: a 4xx other than
