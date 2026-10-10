@@ -47,6 +47,7 @@ type Collector struct {
 	scanTimerOn   bool // scanTimer runs (events mode)
 	gaps          gapState
 	clearDue      map[string]time.Time // folders whose error events cleared, with when; see confirmClears
+	copies        copySet              // conflict copies counted from events; see conflictCopy
 
 	trafficEvery time.Duration // how often traffic counters are read
 }

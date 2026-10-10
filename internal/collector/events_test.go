@@ -338,3 +338,51 @@ func TestClearWait(t *testing.T) {
 		t.Fatalf("wait %v for an overdue confirmation, want 1s", w)
 	}
 }
+
+// A conflict copy that another device made reaches the server as an
+// ordinary file (W-012). Syncthing counts it only on the device that made
+// it, so H10 counts it from RemoteChangeDetected: once per copy. A copy
+// that the server made itself comes as LocalChangeDetected and is in the
+// server's own counter.
+func TestConflictCopiesFromEvents(t *testing.T) {
+	fake, hub, _, m, stop := setup(t)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	ev := func(typ, action, kind, path string) {
+		fake.push(typ, map[string]any{"folder": "p-alpha", "folderID": "p-alpha", "type": kind, "action": action, "path": path, "modifiedBy": "OHP4C7G"})
+	}
+	const copy = "docs/notes.sync-conflict-20261010-205040-OHP4C7G.md"
+	ev("RemoteChangeDetected", "modified", "file", copy)
+	ev("RemoteChangeDetected", "modified", "file", copy)                                                 // the same copy again
+	ev("RemoteChangeDetected", "added", "file", `docs\plan.sync-conflict-20261010-205041-ABCDEF2`)       // a Windows server, no extension
+	ev("RemoteChangeDetected", "deleted", "file", "docs/old.sync-conflict-20261010-205042-OHP4C7G.md")   // a copy deleted
+	ev("RemoteChangeDetected", "modified", "file", "docs/notes.md")                                      // a normal file
+	ev("RemoteChangeDetected", "modified", "dir", "docs/x.sync-conflict-20261010-205043-OHP4C7G")        // a directory
+	ev("RemoteChangeDetected", "modified", "file", "docs.sync-conflict-20261010-205044-OHP4C7G/a.md")    // inside such a directory
+	ev("LocalChangeDetected", "modified", "file", "docs/notes.sync-conflict-20261010-205045-AKKAAAA.md") // the server's own copy
+	fake.push("StateChanged", map[string]any{"folder": "p-alpha", "from": "idle", "to": "scanning"})
+	waitFor(t, hub, "the events applied", func(s *model.Server) bool { return s.Folders["p-alpha"].State == "scanning" })
+	got, err := m.st.ConflictsSince(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["akka"]["p-alpha"] != 2 || len(got["akka"]) != 1 {
+		t.Fatalf("conflicts %v; want 2 in p-alpha (the two copies, the first one once)", got)
+	}
+}
+
+// The set of counted copies stays bounded: the oldest key goes first.
+func TestCopySetBounded(t *testing.T) {
+	var s copySet
+	for i := 0; i < maxCopies; i++ {
+		if !s.add(fmt.Sprint(i)) {
+			t.Fatalf("key %d not new", i)
+		}
+	}
+	if s.add("0") || !s.add("new") || len(s.keys) != maxCopies {
+		t.Fatalf("%d keys", len(s.keys))
+	}
+	if !s.add("0") || s.add("2") {
+		t.Fatal("the oldest key was not forgotten first")
+	}
+}
