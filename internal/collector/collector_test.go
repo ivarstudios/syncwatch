@@ -710,3 +710,49 @@ func TestPerFolderErrorStaysWithTheFolder(t *testing.T) {
 		t.Fatalf("LastError %q", sv.LastError)
 	}
 }
+
+// An API key that can't be decrypted (the secret key changed, secret.key
+// was lost) marks the server down with a message, so H1 says why, and is
+// tried again regularly: once it can be read, monitoring resumes.
+func TestUnreadableAPIKeyMarksServerDownAndRetries(t *testing.T) {
+	old := keyRetry
+	keyRetry = 200 * time.Millisecond
+	defer func() { keyRetry = old }()
+	fake := newFakeST(t)
+	srv := httptest.NewTLSServer(fake)
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "syncwatch.db")
+	first, err := store.Open(path, []byte(strings.Repeat("1", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.SetServerKey("akka", "k", srv.URL)
+	first.Close()
+	st, err := store.Open(path, []byte(strings.Repeat("2", 32))) // another secret key
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL)))
+	h, _ := config.NewHolder(cfg)
+	hub := model.NewHub(nil)
+	m := NewManager(hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx)
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		<-done
+		st.Close()
+	}()
+	sv := waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	if !strings.Contains(sv.LastError, "API key can't be read") {
+		t.Fatalf("LastError %q", sv.LastError)
+	}
+	// The key is entered again (now encrypted with the new secret key): the
+	// next retry picks it up without a settings save.
+	_ = st.SetServerKey("akka", "k", srv.URL)
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Status == model.StatusUp })
+}
