@@ -329,7 +329,16 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		return nil
 	}
 	start := q.startBefore(end)
-	due := dueRecords(cfg, v, now)
+	// Findings that became due before quiet hours ended are the night's;
+	// later ones (a summary held back by a failing channel) are labelled.
+	var due, day []*store.Record
+	for _, r := range dueRecords(cfg, v, now) {
+		if r.OpenedAt.Add(debounce(cfg, r)).Before(end) {
+			due = append(due, r)
+		} else {
+			day = append(day, r)
+		}
+	}
 	pend, err := n.st.PendingResolved()
 	if err != nil {
 		return err
@@ -365,13 +374,13 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		}
 		blips = append(blips, h)
 	}
-	if len(due) > 0 || len(pend) > 0 || len(blips) > 0 {
-		m := OvernightMessage(cfg, due, pend, blips)
+	if len(due) > 0 || len(day) > 0 || len(pend) > 0 || len(blips) > 0 {
+		m := OvernightMessage(cfg, due, pend, blips, day)
 		m.Key = "overnight:" + marker
 		if err := n.send(ctx, now, m); err != nil {
 			return err
 		}
-		n.src.MarkPinged(ids(due), now)
+		n.src.MarkPinged(append(ids(due), ids(day)...), now)
 		n.src.MarkResolvedNotified(ids(pend), now)
 	}
 	return n.st.SetSetting(keyOvernight, marker)
@@ -804,9 +813,10 @@ func ReminderMessage(cfg *config.Config, rs []*store.Record, now time.Time) Mess
 		Sections: []Section{{Title: "Still open", Lines: limitLines(lines, 25)}}}
 }
 
-// OvernightMessage is the batch sent when quiet hours end.
-func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips []store.HistoryEntry) Message {
-	var openL, resL, blipL []string
+// OvernightMessage is the batch sent when quiet hours end. day holds the
+// findings that became due after they ended (a summary that went out late).
+func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips []store.HistoryEntry, day []*store.Record) Message {
+	var openL, resL, blipL, dayL []string
 	for _, r := range open {
 		openL = append(openL, findingLine(r, dashboard(cfg)))
 	}
@@ -816,15 +826,22 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 	for _, h := range blips {
 		blipL = append(blipL, historyLine(h, true)+fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04")))
 	}
-	color := ColorResolved
-	if len(open) > 0 {
-		color = colorFor(open)
+	for _, r := range day {
+		dayL = append(dayL, findingLine(r, dashboard(cfg)))
 	}
-	return Message{Kind: KindOvernight, Mention: len(open) > 0, Title: "🌅 Overnight summary", Color: color, URL: dashboard(cfg),
+	var all []*store.Record
+	all = append(all, open...)
+	all = append(all, day...)
+	color := ColorResolved
+	if len(all) > 0 {
+		color = colorFor(all)
+	}
+	return Message{Kind: KindOvernight, Mention: len(all) > 0, Title: "🌅 Overnight summary", Color: color, URL: dashboard(cfg),
 		Sections: []Section{
 			{Title: fmt.Sprintf("New and still open (%d)", len(open)), Lines: limitLines(openL, 20)},
 			{Title: fmt.Sprintf("Resolved during the night (%d)", len(resolved)), Lines: limitLines(resL, 20)},
 			{Title: fmt.Sprintf("Opened and resolved during the night (%d)", len(blips)), Lines: limitLines(blipL, 20)},
+			{Title: fmt.Sprintf("New since quiet hours ended (%d)", len(day)), Lines: limitLines(dayL, 20)},
 		}}
 }
 

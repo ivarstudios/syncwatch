@@ -855,3 +855,49 @@ func TestReminderSkipsRecentlyAnnounced(t *testing.T) {
 		t.Fatalf("reminder should list AKKA only:\n%s", text)
 	}
 }
+
+// An overnight summary that goes out late (the channel was failing at quiet
+// end) labels findings by when they became due: during the night, or since
+// quiet hours ended. A finding due during the night and resolved before the
+// late summary is still listed.
+func TestLateOvernightLabelsDaytimeFindings(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 23, 0), "AKKA", "SOL", "SIRIUS")
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.now = local(2026, 10, 7, 1, 0)
+	r.setDown("SIRIUS", true)
+	r.at(r.now)
+	r.sender.fail(errors.New("discord: HTTP 502"))
+	r.at(local(2026, 10, 7, 7, 0))
+	r.now = local(2026, 10, 7, 7, 30)
+	r.setDown("SIRIUS", false) // resolved after quiet end, never pinged
+	r.at(r.now)
+	r.now = local(2026, 10, 7, 8, 0)
+	r.setDown("SOL", true) // due at 08:05, after quiet end
+	r.at(r.now)
+	r.at(local(2026, 10, 7, 8, 30))
+	if n := len(r.sender.take()); n != 0 {
+		t.Fatalf("%d messages got through a failing channel", n)
+	}
+	r.sender.fail(nil)
+	r.n.ChannelsChanged()
+	r.at(local(2026, 10, 7, 10, 1))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindOvernight || !msgs[0].Mention {
+		t.Fatalf("late overnight summary: %+v", msgs)
+	}
+	m := msgs[0]
+	if lines := m.Sections[0].Lines; len(lines) != 1 || !strings.Contains(lines[0], "AKKA") {
+		t.Fatalf("new and still open: %+v", m.Sections[0])
+	}
+	if lines := m.Sections[2].Lines; len(lines) != 1 || !strings.Contains(lines[0], "SIRIUS") || !strings.Contains(lines[0], "(01:00–07:30)") {
+		t.Fatalf("opened and resolved: %+v", m.Sections[2])
+	}
+	if len(m.Sections) != 4 || !strings.Contains(m.Sections[3].Title, "since quiet hours ended") || len(m.Sections[3].Lines) != 1 || !strings.Contains(m.Sections[3].Lines[0], "SOL") {
+		t.Fatalf("since quiet hours ended: %+v", m.Sections)
+	}
+	r.at(local(2026, 10, 7, 10, 2))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("pinged again after the summary: %s", m[0].Title)
+	}
+}
