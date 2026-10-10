@@ -11,7 +11,7 @@ This is the plain-language list of the changes from the review (13 branches, `si
 5. **Configuration values:** syncwatch now refuses values outside the ranges in the README (durations up to 10 years, thresholds from 10 seconds, role IDs with 17 to 20 digits, server IDs from `a-z`, `0-9` and `-`). A stored configuration with a value outside a range stops the next start with a message. Correct it with `syncwatch import-config`.
 6. **Reminder time:** a `reminder_time` in the evening part of the quiet hours is an error now, because syncwatch could never send it. Change it before the update if you have one.
 7. **Data directory:** run `chmod 700` on the data directory of a bind mount. The image makes `/data` with mode 0700, and syncwatch sets the database files to mode 0600.
-8. **Integrations:** scripts that read the health line of `/api/v1/status` see "not yet checked" for servers without a result. `/api/v1/status` and `/api/v1/ha` have new folder counts (`scanning`, `watch_error`) and the status value `watch error`. The field `notifications.error` is present only for administrator sessions, not for API tokens.
+8. **Integrations:** scripts that read the health line of `/api/v1/status` see "not contacted" for servers without a result. `/api/v1/status` and `/api/v1/ha` have new folder counts (`scanning`, `watch_error`) and the status value `watch error`. The field `notifications.error` is present only for administrator sessions, not for API tokens.
 9. **Findings on Linux servers:** the IDs of S3 to S7 findings keep the case of the path now. After the update, such findings resolve and open again one time (one resolved message and one urgent message for S3). Snoozes and ignores on the old IDs do not apply to the new IDs.
 10. **Watcher errors:** an open H4 finding that was only a file watcher error resolves at the update and opens again as a WARNING after 1 hour.
 
@@ -65,7 +65,7 @@ This is the plain-language list of the changes from the review (13 branches, `si
 - The daily reminder skips findings with an urgent message in the last hour. Before, the 08:00 reminder repeated the 07:00 summary.
 - Snoozed and ignored findings are not in the overnight summary.
 - The resolved message waits until the finding stayed resolved for 5 minutes (or the debounce, if shorter). A server that flaps for 2 hours gives one urgent message and one resolved message, not 12 of each.
-- After a start, the weekly report and the reminder wait for the first results of the servers (at most 5 minutes). The health line says "not yet checked" instead of "down" for a server without a result.
+- After a start, the weekly report and the reminder wait for the first results of the servers (at most 5 minutes). The health line says "not contacted" instead of "down" for a server without a result.
 - The health line uses the singular for 1 server, 1 PC, 1 error.
 - A settings notice that Discord refuses (HTTP 400, 401, 403, 404) is logged one time and discarded. A failed settings notice no longer blocks the urgent messages for a day.
 - If syncwatch cannot decrypt the webhook (a changed secret key), the banner and the test button say so.
