@@ -257,6 +257,23 @@ func dueRecords(cfg *config.Config, v *engine.View, now time.Time) []*store.Reco
 	return out
 }
 
+// A problem must stay resolved for this long (or its debounce, if shorter)
+// before "resolved" goes out. A re-open inside that window carries on as
+// the same incident (the engine keeps its PingedAt), so a flapping link
+// gets one ping, not one per cycle.
+const resolveSettle = 5 * time.Minute
+
+// settled keeps the resolved findings whose resolution has lasted.
+func settled(cfg *config.Config, rs []*store.Record, now time.Time) []*store.Record {
+	var out []*store.Record
+	for _, r := range rs {
+		if now.Sub(r.ResolvedAt) >= min(debounce(cfg, r), resolveSettle) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func ids(rs []*store.Record) []string {
 	out := make([]string, len(rs))
 	for i, r := range rs {
@@ -281,8 +298,12 @@ func (n *Notifier) urgent(ctx context.Context, cfg *config.Config, v *engine.Vie
 
 func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Time) error {
 	pend, err := n.st.PendingResolved()
-	if err != nil || len(pend) == 0 {
+	if err != nil {
 		return err
+	}
+	pend = settled(cfg, pend, now)
+	if len(pend) == 0 {
+		return nil
 	}
 	engine.SortRecords(pend)
 	m := ResolvedMessage(cfg, pend)
@@ -309,6 +330,7 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 	if err != nil {
 		return err
 	}
+	pend = settled(cfg, pend, now)
 	engine.SortRecords(pend)
 	// Resolved findings that were due (open for their debounce) at some
 	// moment of the night and were never announced: also ones that opened

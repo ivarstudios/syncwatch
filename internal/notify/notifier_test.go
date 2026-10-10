@@ -146,11 +146,15 @@ func TestDebounceBatchResolve(t *testing.T) {
 	}
 	r.setDown("SOL", false)
 	r.at(local(2026, 10, 6, 10, 20))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("resolved sent before it settled: %v", m[0].Title)
+	}
+	r.at(local(2026, 10, 6, 10, 25))
 	msgs = r.sender.take()
 	if len(msgs) != 1 || msgs[0].Kind != KindResolved || msgs[0].Mention || !strings.Contains(msgs[0].Title, "SOL") {
 		t.Fatalf("resolved: %+v", msgs)
 	}
-	r.at(local(2026, 10, 6, 10, 21))
+	r.at(local(2026, 10, 6, 10, 26))
 	if len(r.sender.take()) != 0 {
 		t.Fatal("resolved sent twice")
 	}
@@ -637,5 +641,41 @@ func TestOvernightListsDueBeforeQuietResolvedDuring(t *testing.T) {
 	r.at(local(2026, 10, 7, 8, 0))
 	if m := r.sender.take(); len(m) != 0 {
 		t.Fatalf("follow-up for a resolved finding: %s", m[0].Title)
+	}
+}
+
+// A link that drops for 6 minutes every 10 minutes is one incident: one ping
+// and no "resolved" until it has stayed up for min(debounce, 5 min).
+func TestResolveHysteresisDuringFlapping(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	counts := map[string]int{}
+	for m := 0; m < 120; m++ {
+		r.now = start.Add(time.Duration(m) * time.Minute)
+		r.setDown("AKKA", m%10 < 6)
+		r.at(r.now)
+		for _, msg := range r.sender.take() {
+			counts[msg.Kind]++
+		}
+	}
+	if counts[KindUrgent] != 1 || counts[KindResolved] != 0 {
+		t.Fatalf("2 h of flapping: %v, want one urgent ping and no resolved message", counts)
+	}
+	// Up since 11:56; "resolved" goes out once it has stayed up for 5 minutes.
+	r.at(local(2026, 10, 6, 12, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("resolved sent after 4 minutes up: %s", m[0].Title)
+	}
+	r.at(local(2026, 10, 6, 12, 1))
+	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Kind != KindResolved {
+		t.Fatalf("resolved after staying up for 5 minutes: %+v", msgs)
+	}
+	// An outage after that is a new problem and gets a new ping.
+	r.now = local(2026, 10, 6, 12, 10)
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 12, 15))
+	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
+		t.Fatalf("new outage after a settled resolution: %+v", msgs)
 	}
 }
