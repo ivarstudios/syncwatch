@@ -231,6 +231,43 @@ func (i *Instance) waitPortsFree(timeout time.Duration) error {
 	return nil
 }
 
+// CheckIsolated verifies that the instance can't reach outside the test
+// network: global and local discovery, relays, NAT traversal, usage and
+// crash reporting and auto-upgrade must all be off. generate turns them off
+// before the first start, and the Compose stacks do the same in their init
+// step; the tests use this to make sure.
+func (i *Instance) CheckIsolated(ctx context.Context) error {
+	var o struct {
+		GlobalAnnounceEnabled bool `json:"globalAnnounceEnabled"`
+		LocalAnnounceEnabled  bool `json:"localAnnounceEnabled"`
+		RelaysEnabled         bool `json:"relaysEnabled"`
+		NATEnabled            bool `json:"natEnabled"`
+		CrashReportingEnabled bool `json:"crashReportingEnabled"`
+		URAccepted            int  `json:"urAccepted"`
+		AutoUpgradeIntervalH  int  `json:"autoUpgradeIntervalH"`
+	}
+	if err := i.Call(ctx, http.MethodGet, "/rest/config/options", nil, &o); err != nil {
+		return err
+	}
+	var on []string
+	for _, c := range []struct {
+		name string
+		on   bool
+	}{
+		{"globalAnnounceEnabled", o.GlobalAnnounceEnabled}, {"localAnnounceEnabled", o.LocalAnnounceEnabled},
+		{"relaysEnabled", o.RelaysEnabled}, {"natEnabled", o.NATEnabled}, {"crashReportingEnabled", o.CrashReportingEnabled},
+		{"urAccepted", o.URAccepted >= 0}, {"autoUpgradeIntervalH", o.AutoUpgradeIntervalH > 0},
+	} {
+		if c.on {
+			on = append(on, c.name)
+		}
+	}
+	if len(on) > 0 {
+		return fmt.Errorf("%s is not isolated: %s on", i.Name, strings.Join(on, ", "))
+	}
+	return nil
+}
+
 // ReplaceCert stops the instance, deletes its GUI certificate and starts it
 // again, so Syncthing generates a new self-signed one.
 func (i *Instance) ReplaceCert(ctx context.Context) error {

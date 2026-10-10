@@ -94,6 +94,11 @@ func TestStructureScanLoad(t *testing.T) {
 	if err := nas.WaitReady(ctx, 3*time.Minute); err != nil {
 		t.Fatal(err)
 	}
+	// The init step in docker-compose.yml turned everything that reaches
+	// outside the test network off before the first start.
+	if err := nas.CheckIsolated(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// The share: project folders with fanout subdirectories on each of
 	// three levels (the scan's default depth) and one more level below.

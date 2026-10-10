@@ -40,6 +40,16 @@ func startInstance(t *testing.T) (*Instance, context.Context) {
 	return inst, ctx
 }
 
+// TestGenerateIsolates checks the config patches against the real binary: a
+// generated instance has everything that reaches outside the test network
+// turned off.
+func TestGenerateIsolates(t *testing.T) {
+	inst, ctx := startInstance(t)
+	if err := inst.CheckIsolated(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestStopKillsProcessTree checks that Stop frees the ports even when the API
 // shutdown fails and the process has to be killed: Syncthing runs as a
 // launcher plus a worker child that holds the ports, so killing the launcher
