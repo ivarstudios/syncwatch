@@ -959,11 +959,11 @@ func (s *Server) handleAPIToken(w http.ResponseWriter, r *http.Request, info req
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	title := "API token generated"
+	title, summary := "API token generated", "The API token gives read access to /api/v1/status and /api/v1/ha."
 	if had {
-		title = "API token replaced"
+		title, summary = "API token replaced", summary+" syncwatch refuses the old API token now."
 	}
-	s.announce(r, title, "The API token gives read access to /api/v1/status and /api/v1/ha.")
+	s.announce(r, title, summary)
 	s.render(w, r, http.StatusOK, "settings", info, s.settingsData(info, map[string]any{"NewToken": tok}))
 }
 

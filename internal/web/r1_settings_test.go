@@ -216,3 +216,37 @@ func TestFormRangesFollowValidation(t *testing.T) {
 		t.Fatalf("down_after_failures 21: %d", resp.StatusCode)
 	}
 }
+
+// W-032: Replace and Revoke acted at once. Each now asks first, in its own
+// form, and the API text names both endpoints and what the answer contains.
+// The replace notice says that the old API token stops working.
+func TestAPITokenFormsAskFirst(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	_, page := e.get("/settings")
+	csrf := csrfRe.FindStringSubmatch(page)[1]
+	api := section(t, page, "api")
+	const replace = `data-confirm="Replace the API token? Home Assistant and scripts with the current API token lose access immediately."`
+	const revoke = `data-confirm="Revoke the API token? Home Assistant and scripts with the current API token lose access immediately."`
+	for _, want := range []string{replace, revoke, "<code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code>",
+		"The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL."} {
+		if !strings.Contains(api, want) {
+			t.Errorf("API section lacks %s", want)
+		}
+	}
+	// Each confirmation is on the form of its own button.
+	if a, b, c, d := strings.Index(api, replace), strings.Index(api, `value="generate"`), strings.Index(api, revoke), strings.Index(api, `value="revoke"`); !(a < b && b < c && c < d) {
+		t.Errorf("forms and buttons are not paired: %d %d %d %d", a, b, c, d)
+	}
+	resp, body := e.postPage("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"generate"}})
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "for <code>GET /api/v1/status</code> and <code>GET /api/v1/ha</code>.") {
+		t.Fatalf("new token panel: %d", resp.StatusCode)
+	}
+	if n := e.noticesText(); !strings.Contains(n, "API token replaced: The API token gives read access to /api/v1/status and /api/v1/ha. syncwatch refuses the old API token now.") {
+		t.Fatalf("notice: %q", n)
+	}
+	// Without a token, Generate does not ask.
+	e.post("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"revoke"}})
+	if _, page = e.get("/settings"); strings.Contains(section(t, page, "api"), "data-confirm") || !strings.Contains(page, "Generate API token") {
+		t.Fatal("Generate API token asks for a confirmation")
+	}
+}
