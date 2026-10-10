@@ -61,6 +61,10 @@ func RunGate(ctx context.Context, o GateOptions) error {
 	pin := ""
 	if b, err := os.ReadFile(pinFile); err == nil {
 		pin = strings.TrimSpace(string(b))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		// Only a missing file means first use. Starting without the pin
+		// would trust whatever answers as Syncthing.
+		return fmt.Errorf("reading Syncthing's certificate pin: %w", err)
 	}
 	g, err := gate.New(gate.Options{
 		Syncthing: o.Syncthing, APIKey: key, Token: tok, Pin: pin, Log: log,
