@@ -104,10 +104,10 @@ func TestCompose(t *testing.T) {
 		if err := i.WaitReady(ctx, 120*time.Second); err != nil {
 			t.Fatal(err)
 		}
-		if err := i.Call(ctx, http.MethodPatch, "/rest/config/options", map[string]any{
-			"globalAnnounceEnabled": false, "localAnnounceEnabled": false, "relaysEnabled": false,
-			"natEnabled": false, "urAccepted": -1, "crashReportingEnabled": false,
-		}, nil); err != nil {
+		// The init step in docker-compose.yml turned discovery, relays, NAT
+		// traversal, usage and crash reporting and auto-upgrade off before
+		// the first start; a stack that reaches outside must not run.
+		if err := i.CheckIsolated(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if err := i.SetName(ctx); err != nil {

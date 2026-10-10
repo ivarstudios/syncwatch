@@ -11,13 +11,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -187,7 +187,11 @@ func (i *Instance) Start(ctx context.Context) error {
 // Running reports whether the process is up.
 func (i *Instance) Running() bool { return i.cmd != nil }
 
-// Stop shuts Syncthing down through its API, killing it if needed.
+// stopGrace is how long Stop waits for the API shutdown before killing.
+var stopGrace = 15 * time.Second
+
+// Stop shuts Syncthing down through its API, killing it if needed, and
+// waits until its ports are free again.
 func (i *Instance) Stop() error {
 	if i.cmd == nil {
 		return nil
@@ -197,14 +201,69 @@ func (i *Instance) Stop() error {
 	cancel()
 	select {
 	case <-i.done:
-	case <-time.After(15 * time.Second):
-		_ = i.cmd.Process.Kill()
+	case <-time.After(stopGrace):
+		// Syncthing runs as a launcher with a worker child that holds the
+		// ports (also with --no-restart), so the whole tree has to go.
+		killTree(i.cmd)
 		<-i.done
 	}
 	i.cmd = nil
-	// Windows keeps the port briefly; give it a moment.
-	if runtime.GOOS == "windows" {
-		time.Sleep(500 * time.Millisecond)
+	return i.waitPortsFree(10 * time.Second)
+}
+
+// waitPortsFree waits until the GUI and sync ports can be bound again: a
+// child may have outlived the process, and Windows keeps a port briefly.
+func (i *Instance) waitPortsFree(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for _, port := range []int{i.GUIPort, i.SyncPort} {
+		for {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err == nil {
+				ln.Close()
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("%s: port %d still in use after stop: %v", i.Name, port, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
+// CheckIsolated verifies that the instance can't reach outside the test
+// network: global and local discovery, relays, NAT traversal, usage and
+// crash reporting and auto-upgrade must all be off. generate turns them off
+// before the first start, and the Compose stacks do the same in their init
+// step; the tests use this to make sure.
+func (i *Instance) CheckIsolated(ctx context.Context) error {
+	var o struct {
+		GlobalAnnounceEnabled bool `json:"globalAnnounceEnabled"`
+		LocalAnnounceEnabled  bool `json:"localAnnounceEnabled"`
+		RelaysEnabled         bool `json:"relaysEnabled"`
+		NATEnabled            bool `json:"natEnabled"`
+		CrashReportingEnabled bool `json:"crashReportingEnabled"`
+		URAccepted            int  `json:"urAccepted"`
+		AutoUpgradeIntervalH  int  `json:"autoUpgradeIntervalH"`
+	}
+	if err := i.Call(ctx, http.MethodGet, "/rest/config/options", nil, &o); err != nil {
+		return err
+	}
+	var on []string
+	for _, c := range []struct {
+		name string
+		on   bool
+	}{
+		{"globalAnnounceEnabled", o.GlobalAnnounceEnabled}, {"localAnnounceEnabled", o.LocalAnnounceEnabled},
+		{"relaysEnabled", o.RelaysEnabled}, {"natEnabled", o.NATEnabled}, {"crashReportingEnabled", o.CrashReportingEnabled},
+		{"urAccepted", o.URAccepted >= 0}, {"autoUpgradeIntervalH", o.AutoUpgradeIntervalH > 0},
+	} {
+		if c.on {
+			on = append(on, c.name)
+		}
+	}
+	if len(on) > 0 {
+		return fmt.Errorf("%s is not isolated: %s on", i.Name, strings.Join(on, ", "))
 	}
 	return nil
 }

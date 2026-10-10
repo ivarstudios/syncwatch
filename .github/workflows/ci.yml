@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
@@ -23,6 +25,11 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go vet -tags integration,compose,loadsim ./test/...
+      - run: go mod tidy -diff
+      - name: govulncheck
+        # Known vulnerabilities reachable from the code, including in the
+        # standard library of the Go version go.mod selects.
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: go test -race ./...
       - name: Cross-compile
         run: |
@@ -35,13 +42,22 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - name: Download Syncthing
+        # Checked against the release's sha256sum.txt.asc (the checksums
+        # only; the signature on that file is not verified here).
+        shell: bash
         run: |
-          curl -fsSL -o st.tgz "https://github.com/syncthing/syncthing/releases/download/${SYNCTHING_VERSION}/syncthing-linux-amd64-${SYNCTHING_VERSION}.tar.gz"
-          tar xzf st.tgz
+          base="https://github.com/syncthing/syncthing/releases/download/${SYNCTHING_VERSION}"
+          tarball="syncthing-linux-amd64-${SYNCTHING_VERSION}.tar.gz"
+          curl -fsSL -o "$tarball" "$base/$tarball"
+          curl -fsSL -o sha256sum.txt.asc "$base/sha256sum.txt.asc"
+          grep " ${tarball}\$" sha256sum.txt.asc | sha256sum -c -
+          tar xzf "$tarball"
           echo "SYNCTHING_BIN=$PWD/syncthing-linux-amd64-${SYNCTHING_VERSION}/syncthing" >> "$GITHUB_ENV"
       - run: go test -tags integration -v -count=1 -timeout 30m ./test/integration
 
@@ -52,10 +68,17 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - run: go test -tags compose -v -count=1 -timeout 30m ./test/compose
+        env:
+          KEEP_COMPOSE: "1" # leave the stack up for the log step below
       - name: Logs on failure
         if: failure()
-        run: docker compose -f test/compose/docker-compose.yml logs --no-color | tail -n 300
+        run: docker compose -f test/compose/docker-compose.yml logs --no-color --timestamps --tail 400
+      - name: Stack down
+        if: always()
+        run: docker compose -f test/compose/docker-compose.yml down -v --remove-orphans
