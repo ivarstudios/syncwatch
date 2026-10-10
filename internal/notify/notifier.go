@@ -1156,19 +1156,20 @@ func plural(n int, noun string) string {
 func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry, now time.Time) Message {
 	from := now.Add(-7 * 24 * time.Hour)
 	var newL, resL []string
-	nNew, nRes := 0, 0
 	for _, h := range hist {
+		// ERROR and WARNING findings only, and not the snoozed or ignored
+		// ones (as in the overnight summary); the counts are of the lines.
+		if h.Severity < model.Warn {
+			continue
+		}
+		if _, z := v.Snoozed(h.FindingID, now); z {
+			continue
+		}
 		if !h.OpenedAt.Before(from) {
-			nNew++
-			if h.Severity >= model.Warn {
-				newL = append(newL, historyLine(h, false))
-			}
+			newL = append(newL, historyLine(h, false))
 		}
 		if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) {
-			nRes++
-			if h.Severity >= model.Warn {
-				resL = append(resL, historyLine(h, true))
-			}
+			resL = append(resL, historyLine(h, true))
 		}
 	}
 	var top []string
@@ -1197,8 +1198,8 @@ func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry
 	}
 	return Message{Kind: KindWeekly, Title: "📋 Weekly Syncthing report", Summary: summary, Color: color, URL: dashboard(cfg),
 		Sections: []Section{
-			{Title: fmt.Sprintf("New this week (%d)", nNew), Lines: limitLines(newL, 8)},
-			{Title: fmt.Sprintf("Resolved this week (%d)", nRes), Lines: limitLines(resL, 8)},
+			{Title: fmt.Sprintf("New this week (%d)", len(newL)), Lines: limitLines(newL, 8)},
+			{Title: fmt.Sprintf("Resolved this week (%d)", len(resL)), Lines: limitLines(resL, 8)},
 			{Title: "Most important open findings", Lines: top},
 		}}
 }

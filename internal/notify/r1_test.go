@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,9 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/engine"
+	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
 // utc is a time on 2026-10-06 (a Tuesday) in UTC.
@@ -259,6 +263,47 @@ func TestTransientFailures(t *testing.T) {
 	} {
 		if got := transient(tc.err); got != tc.want {
 			t.Errorf("transient(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+// The weekly report counts what it lists: ERROR and WARNING occurrences of
+// findings that are not snoozed or ignored (INFO findings stay on the
+// dashboard), and a cut list ends with "…and N more" (admin-anna AA-17).
+func TestWeeklyCountsWhatItLists(t *testing.T) {
+	now := local(2026, 10, 5, 8, 0)
+	cfg := &config.Config{PublicURL: "http://sw.local:8080"}
+	cfg.ApplyDefaults()
+	var hist []store.HistoryEntry
+	add := func(id, check string, sev model.Severity, opened, resolved time.Duration) {
+		h := store.HistoryEntry{FindingID: id, Check: check, Severity: sev, Message: id + " message", OpenedAt: now.Add(-opened)}
+		if resolved > 0 {
+			h.ResolvedAt = now.Add(-resolved)
+		}
+		hist = append(hist, h)
+	}
+	for i := 0; i < 10; i++ {
+		add(fmt.Sprintf("relay%d", i), "H11", model.Warn, 48*time.Hour, 0)
+	}
+	add("h1", "H1", model.Error, 48*time.Hour, 47*time.Hour)
+	add("c3", "C3", model.Info, 24*time.Hour, 0)
+	add("ignored", "H11", model.Warn, 72*time.Hour, 24*time.Hour)
+	add("snoozed", "H7", model.Warn, 24*time.Hour, 0)
+	v := &engine.View{Snapshot: &model.Snapshot{}, Snoozes: map[string]store.Snooze{
+		"ignored": {FindingID: "ignored", Kind: store.IgnoreKind},
+		"snoozed": {FindingID: "snoozed", Kind: store.SnoozeKind, Until: now.Add(time.Hour)},
+	}}
+	m := WeeklyMessage(cfg, v, hist, now)
+	newS, resS := m.Sections[0], m.Sections[1]
+	if newS.Title != "New this week (11)" || len(newS.Lines) != 9 || newS.Lines[8] != "…and 3 more" {
+		t.Errorf("new this week: %s %q", newS.Title, newS.Lines)
+	}
+	if resS.Title != "Resolved this week (1)" || len(resS.Lines) != 1 || !strings.Contains(resS.Lines[0], "h1") {
+		t.Errorf("resolved this week: %s %q", resS.Title, resS.Lines)
+	}
+	for _, l := range append(newS.Lines, resS.Lines...) {
+		if strings.Contains(l, "c3") || strings.Contains(l, "ignored") || strings.Contains(l, "snoozed") {
+			t.Errorf("listed: %s", l)
 		}
 	}
 }
