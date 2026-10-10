@@ -1,11 +1,14 @@
 package web
 
 import (
+	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/store"
@@ -323,5 +326,144 @@ func TestNoticeLinesUseLabels(t *testing.T) {
 	}
 	if n := e.noticesText(); !strings.HasSuffix(n, "Checks changed: C1 no file change for: 180d → 10m\nChanged from 127.0.0.1.") {
 		t.Fatalf("notice: %q", n)
+	}
+}
+
+// stranger logs in from a browser of its own at the address of the test
+// client (another person behind the same VPN or reverse proxy).
+func (e *env) stranger(password string) int {
+	e.t.Helper()
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(e.srv.URL + "/login")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp, err = c.PostForm(e.srv.URL+"/login", url.Values{"csrf": {csrfRe.FindStringSubmatch(string(b))[1]}, "password": {password}})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// W-026 (t_limiter_roles.py): an administrator session S, then 5 wrong
+// logins from the same address. S then changed access or the password with
+// the correct password and got "Too many failed logins", and accept-cert
+// asked for the password that S had typed. The confirmations of a session
+// now count in a bucket of that session.
+func TestFailedLoginsDoNotBlockAdminConfirmations(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	for i := 0; i < 5; i++ {
+		if code := e.stranger(fmt.Sprintf("typo %d", i)); code != http.StatusUnauthorized {
+			t.Fatalf("wrong login %d: %d", i, code)
+		}
+	}
+	// DECISION (W-026): logins keep the count of the address for each role.
+	if code := e.stranger("correct horse battery"); code != http.StatusTooManyRequests {
+		t.Fatalf("login after 5 failures at the address: %d, want 429", code)
+	}
+	if msg, isErr := flash(e.post("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf}, "fingerprint": {"ff"}, "confirm": {"correct horse battery"}})); isErr {
+		t.Fatalf("accept-cert with the correct password: %s", msg)
+	}
+	if msg, isErr := flash(e.post("/settings/servers", url.Values{"csrf": {csrf}, "orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"},
+		"reset_pin": {"on"}, "confirm": {"secret-key-akka"}})); isErr {
+		t.Fatalf("pinned certificate removal with the API key: %s", msg)
+	}
+	if msg, isErr := flash(e.post("/settings/access", url.Values{"csrf": {csrf}, "mode": {"builtin"}, "viewer": {"open"}, "confirm": {"correct horse battery"}})); isErr {
+		t.Fatalf("access change with the correct password: %s", msg)
+	}
+	if msg, isErr := flash(e.post("/settings/password", url.Values{"csrf": {csrf}, "current": {"correct horse battery"},
+		"password": {"a new long password"}, "password2": {"a new long password"}})); isErr {
+		t.Fatalf("password change with the correct password: %s", msg)
+	}
+}
+
+// The session's own wrong confirmations are limited, with a message that
+// says so. They block neither another administrator session nor the logins
+// at the same address.
+func TestAdminConfirmationsAreLimitedBySession(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	accept := func(confirm string) (string, bool) {
+		return flash(e.post("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf}, "fingerprint": {"ff"}, "confirm": {confirm}}))
+	}
+	for i := 0; i < 5; i++ {
+		if msg, isErr := accept(fmt.Sprintf("guess %d", i)); !isErr || !strings.Contains(msg, "type the administrator password") {
+			t.Fatalf("guess %d: %q %v", i, msg, isErr)
+		}
+	}
+	const limited = "Too many failed tries. Try again in 10 minutes."
+	if msg, _ := accept("correct horse battery"); msg != limited {
+		t.Fatalf("accept-cert after 5 wrong confirmations: %q", msg)
+	}
+	if msg, _ := flash(e.post("/settings/access", url.Values{"csrf": {csrf}, "mode": {"builtin"}, "viewer": {"open"}, "confirm": {"correct horse battery"}})); msg != limited {
+		t.Fatalf("access change: %q", msg)
+	}
+	if msg, _ := flash(e.post("/settings/password", url.Values{"csrf": {csrf}, "current": {"correct horse battery"}, "password": {"a new long password"}, "password2": {"a new long password"}})); msg != limited {
+		t.Fatalf("password change: %q", msg)
+	}
+	e.mu.Lock()
+	accepted := len(e.accepted)
+	e.mu.Unlock()
+	if accepted != 0 || e.cfg.Get().Access.Viewer != "none" {
+		t.Fatal("a change went through while the session was over the limit")
+	}
+	// A login at the same address and another administrator session work.
+	if code := e.stranger("correct horse battery"); code != http.StatusSeeOther {
+		t.Fatalf("login at the same address: %d", code)
+	}
+	jar, _ := cookiejar.New(nil)
+	c2 := &http.Client{Jar: jar, CheckRedirect: e.http.CheckRedirect}
+	post2 := func(path string, form url.Values) *http.Response {
+		t.Helper()
+		resp, err := c2.PostForm(e.srv.URL+path, form)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	resp, err := c2.Get(e.srv.URL + "/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	csrf2 := csrfRe.FindStringSubmatch(string(b))[1]
+	if r := post2("/login", url.Values{"csrf": {csrf2}, "password": {"correct horse battery"}}); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("second session login: %d", r.StatusCode)
+	}
+	if msg, isErr := flash(post2("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf2}, "fingerprint": {"ff"}, "confirm": {"correct horse battery"}})); isErr {
+		t.Fatalf("accept-cert from another session: %s", msg)
+	}
+}
+
+// The limiter tells how long a key stays refused, and the message rounds
+// it up to whole minutes.
+func TestLimiterRetryAfter(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	if d := l.retryAfter("k", now); d != 0 {
+		t.Fatalf("unknown key: %v", d)
+	}
+	for i := 0; i < l.maxIP; i++ {
+		l.check("k", now.Add(time.Duration(i)*time.Minute))
+		l.fail("k", now.Add(time.Duration(i)*time.Minute), RoleAdmin)
+	}
+	// The oldest failure (at 0) expires at 10 minutes.
+	if d := l.retryAfter("k", now.Add(5*time.Minute)); d != 5*time.Minute {
+		t.Fatalf("retry after %v, want 5m", d)
+	}
+	if ok, _ := l.check("k", now.Add(10*time.Minute+time.Second)); !ok {
+		t.Fatal("still refused after the oldest failure expired")
+	}
+	for d, want := range map[time.Duration]string{10 * time.Minute: "10 minutes", 61 * time.Second: "2 minutes", time.Second: "1 minute", 0: "1 minute"} {
+		if got := tooManyTries(d); got != "Too many failed tries. Try again in "+want+"." {
+			t.Errorf("%v: %q", d, got)
+		}
 	}
 }

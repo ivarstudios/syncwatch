@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -207,40 +208,59 @@ func (s *Server) announcer(r *http.Request) func(title, summary string) {
 // confirmed checks the "confirm" field of a form against the admin password
 // or the server's stored API key. Accepting a new certificate or forgetting a
 // pin can send the stored key to a different machine, so an admin session
-// alone isn't enough. Failures count towards the login rate limit.
-func (s *Server) confirmed(r *http.Request, serverID string) bool {
+// alone isn't enough. Failures count in the rate limit of confirmations. It
+// reports whether the confirmation is correct, or the message to show when
+// the rate limit refuses it.
+func (s *Server) confirmed(r *http.Request, info requestInfo, serverID string) (ok bool, limited string) {
 	v := r.FormValue("confirm")
 	if v == "" {
-		return false
+		return false, ""
 	}
-	ok, _ := s.limitedCheck(r, func() bool {
+	return s.limitedCheck(r, info, func() bool {
 		if h, _ := s.st.Setting(KeyAdminHash); h != "" && CheckPassword(v, h) {
 			return true
 		}
 		key, _, err := s.st.ServerKey(serverID)
 		return err == nil && key != "" && subtle.ConstantTimeCompare([]byte(v), []byte(key)) == 1
 	})
-	return ok
 }
 
-// limitedCheck runs a password check under the login rate limit, so an
-// admin session alone can't be used to guess the admin password. It reports
-// whether the check passed, and limited when the client address is over the
-// limit (the check isn't run then).
-func (s *Server) limitedCheck(r *http.Request, check func() bool) (ok, limited bool) {
-	ip := clientIP(r)
-	allowed, delay := s.limiter.check(ip, s.now())
+// limitedCheck runs a password check under the rate limit of confirmations,
+// so an admin session alone can't be used to guess the admin password: at
+// most 5 failures in 10 minutes for each session (confirmKey). It reports
+// whether the check passed, or the message to show when the session is over
+// the limit (the check isn't run then).
+func (s *Server) limitedCheck(r *http.Request, info requestInfo, check func() bool) (ok bool, limited string) {
+	key := confirmKey(r, info)
+	allowed, delay := s.limiter.check(key, s.now())
 	if !allowed {
-		s.log.Warn("password check rate limit reached", "ip", ip, "path", r.URL.Path)
-		return false, true
+		s.log.Warn("password check rate limit reached", "ip", clientIP(r), "path", r.URL.Path)
+		return false, tooManyTries(s.limiter.retryAfter(key, s.now()))
 	}
 	wait(r, delay)
 	if check() {
-		s.limiter.success(ip, RoleAdmin)
-		return true, false
+		s.limiter.success(key, RoleAdmin)
+		return true, ""
 	}
-	s.limiter.fail(ip, s.now(), RoleAdmin)
-	return false, false
+	s.limiter.fail(key, s.now(), RoleAdmin)
+	return false, ""
+}
+
+// confirmKey is the limiter bucket of a password typed to confirm a change:
+// the administrator's session, so that failed logins of other people at the
+// same address (a VPN, a reverse proxy) cannot block it, or the client
+// address when there is no session (proxy mode). Logins count by address.
+func confirmKey(r *http.Request, info requestInfo) string {
+	if info.Session != nil {
+		return "session " + info.Session.TokenHash
+	}
+	return "confirm " + clientIP(r)
+}
+
+// tooManyTries is the message for a confirmation that the rate limit
+// refuses, with the wait in whole minutes.
+func tooManyTries(d time.Duration) string {
+	return "Too many failed tries. Try again in " + plural(max(1, int((d+time.Minute-1)/time.Minute)), "minute", "minutes") + "."
 }
 
 func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -304,9 +324,11 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		// The stored key is only ever sent to the URL it was entered for.
 		s.redirect(w, r, "/settings#servers", "The API URL changed. Type the API key again for "+sv.URL+". "+keyOnlyToURL, true)
 		return
-	case resetPin && key == "" && !s.confirmed(r, sv.ID):
-		s.redirect(w, r, "/settings#servers", "To remove the pinned certificate, type the administrator password or this server's API key.", true)
-		return
+	case resetPin && key == "":
+		if ok, limited := s.confirmed(r, info, sv.ID); !ok {
+			s.redirect(w, r, "/settings#servers", orText(limited, "To remove the pinned certificate, type the administrator password or this server's API key."), true)
+			return
+		}
 	}
 	if key != "" {
 		// A key for a new URL also forgets the old URL's pinned certificate.
@@ -377,8 +399,8 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info
 
 func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	id := r.PathValue("id")
-	if !s.confirmed(r, id) {
-		s.redirect(w, r, "/settings#servers", "To accept the new certificate, type the administrator password or this server's API key.", true)
+	if ok, limited := s.confirmed(r, info, id); !ok {
+		s.redirect(w, r, "/settings#servers", orText(limited, "To accept the new certificate, type the administrator password or this server's API key."), true)
 		return
 	}
 	fp := r.FormValue("fingerprint")
@@ -465,6 +487,14 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 		announce("Notification settings changed", strings.Join(changes, "\n"))
 	}
 	s.redirect(w, r, "/settings#notifications", "The notification settings are saved.", false)
+}
+
+// orText returns msg, or else when msg is empty.
+func orText(msg, other string) string {
+	if msg == "" {
+		return other
+	}
+	return msg
 }
 
 // replacedOrAdded words a stored secret's change as a notice line.
@@ -916,7 +946,7 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 	// A new viewer password lets someone else in, too.
 	newViewerPW := viewerPW != "" && c.Access.Mode == config.AccessBuiltin && c.Access.Viewer == config.ViewerPassword
 	if weakensAccess(old, c) || newViewerPW {
-		if msg := s.confirmAdmin(r); msg != "" {
+		if msg := s.confirmAdmin(r, info); msg != "" {
 			s.redirect(w, r, "/settings#access", msg, true)
 			return
 		}
@@ -962,7 +992,7 @@ func weakensAccess(old, c *config.Config) bool {
 // change that weakens access needs: an admin session alone isn't enough.
 // It returns "" when confirmed, otherwise the message to show. With no admin
 // password set (proxy mode) there's nothing to confirm with.
-func (s *Server) confirmAdmin(r *http.Request) string {
+func (s *Server) confirmAdmin(r *http.Request, info requestInfo) string {
 	h, _ := s.setting(KeyAdminHash)
 	if h == "" {
 		return ""
@@ -972,10 +1002,10 @@ func (s *Server) confirmAdmin(r *http.Request) string {
 	if pw == "" {
 		return need
 	}
-	ok, limited := s.limitedCheck(r, func() bool { return CheckPassword(pw, h) })
+	ok, limited := s.limitedCheck(r, info, func() bool { return CheckPassword(pw, h) })
 	switch {
-	case limited:
-		return errTooManyLogins
+	case limited != "":
+		return limited
 	case !ok:
 		return "The administrator password is not correct. " + need
 	}
@@ -984,10 +1014,10 @@ func (s *Server) confirmAdmin(r *http.Request) string {
 
 func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	if h, _ := s.setting(KeyAdminHash); h != "" {
-		ok, limited := s.limitedCheck(r, func() bool { return CheckPassword(r.FormValue("current"), h) })
+		ok, limited := s.limitedCheck(r, info, func() bool { return CheckPassword(r.FormValue("current"), h) })
 		switch {
-		case limited:
-			s.redirect(w, r, "/settings#access", errTooManyLogins, true)
+		case limited != "":
+			s.redirect(w, r, "/settings#access", limited, true)
 			return
 		case !ok:
 			s.redirect(w, r, "/settings#access", "The current password is not correct.", true)
@@ -1081,7 +1111,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 		return
 	}
 	if weakensAccess(old, c) {
-		if msg := s.confirmAdmin(r); msg != "" {
+		if msg := s.confirmAdmin(r, info); msg != "" {
 			s.redirect(w, r, "/settings#import", "Not imported. The file sets login to off or gives viewer access to more people. "+msg, true)
 			return
 		}
@@ -1128,7 +1158,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	s.redirect(w, r, "/settings#import", msg, false)
 }
 
-// errTooManyLogins is the one text for every password rate limit.
+// errTooManyLogins is the one text for the rate limit of logins.
 const errTooManyLogins = "Too many failed logins. Try again in 10 minutes."
 
 // fieldLabels maps the duration fields of the Checks and Collector forms to

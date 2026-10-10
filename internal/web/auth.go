@@ -212,6 +212,9 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 // limiter rate-limits failed password attempts. Failures from one client IP
 // are capped hard. Failures from everywhere together only slow attempts down,
 // so nobody can lock the admin out by failing logins from a few addresses.
+// Logins count by client address; a password that an administrator session
+// types to confirm a change counts by session (see confirmKey), so failed
+// logins at a shared address do not block the confirmations.
 type limiter struct {
 	mu       sync.Mutex
 	perIP    map[string]*attempts
@@ -315,6 +318,27 @@ func (l *limiter) fail(ip string, now time.Time, roles ...string) bool {
 		l.perIP = map[string]*attempts{}
 	}
 	return len(l.global) == l.slowAll
+}
+
+// retryAfter returns how long check keeps refusing ip: until enough of its
+// failures are older than the window.
+func (l *limiter) retryAfter(ip string, now time.Time) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a := l.perIP[ip]
+	if a == nil {
+		return 0
+	}
+	cut := now.Add(-l.window)
+	var d time.Duration
+	for _, ts := range a.failed {
+		ts = prune(ts, cut)
+		// The failure at i must expire for len(ts)+inflight to drop below maxIP.
+		if i := len(ts) + a.inflight - l.maxIP; i >= 0 && i < len(ts) {
+			d = max(d, ts[i].Add(l.window).Sub(now))
+		}
+	}
+	return d
 }
 
 // wait sleeps for d unless the request goes away first.
