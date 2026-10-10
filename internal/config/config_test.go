@@ -388,6 +388,33 @@ func TestIgnoreDirsNilVersusEmpty(t *testing.T) {
 	}
 }
 
+// A placement attribute that is not a named group of share_type_from_path
+// can never be satisfied, so every matching project would fail placement.
+func TestPlacementAttributesMatchGroups(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	for in, want := range map[string]string{
+		"structure: {share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$', placement: [{when_name_matches: '^ME-', share_must_have: {ME: true}}]}": "share_must_have attribute \"ME\" is not a named group of share_type_from_path (have: me, type)",
+		"structure: {placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                                                                   "attribute \"me\" is not a named group",
+		"structure: {share_type_from_path: '-LIVE-[1-5][A-Z]+$', placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                       "(have: none)",
+	} {
+		_, err := ParseYAML([]byte(srv + in + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", in, err, want)
+		}
+	}
+	c, err := ParseYAML([]byte(srv + "structure: {case_insensitive: true, share_type_from_path: '-LIVE-(?P<type>[1-5][A-Z]+)$', placement: [{when_name_matches: '^LIVE-', share_must_have: {type: 1SOURCE}}]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, _ := c.Structure.Compile()
+	if attrs, ok := cs.ShareAttrs("sol-live-1source"); !ok || attrs["type"] != "1source" {
+		t.Fatalf("case_insensitive not applied to share_type_from_path: %v %v", attrs, ok)
+	}
+	if !cs.Placement[0].When.MatchString("live-x") {
+		t.Fatal("case_insensitive not applied to when_name_matches")
+	}
+}
+
 func TestStructureHelpers(t *testing.T) {
 	c, _ := ParseYAML([]byte(ivarYAML))
 	cs, err := c.Structure.Compile()
