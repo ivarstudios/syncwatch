@@ -61,6 +61,12 @@ const (
 	rootsRetry      = 30 * time.Second // wait after a failed read of the folder list
 	logInterval     = time.Minute      // one log line per client, reason and minute about refused requests
 	maxRefusals     = 4096             // refusal counters kept (client × reason)
+
+	// Parallel requests per client address. syncwatch holds 1 event
+	// long-poll and sends at most 2 × 16 (collector.concurrency, full check
+	// and structure scan) + 2 other requests at the same time.
+	maxEventsPerClient = 4
+	maxOtherPerClient  = 64
 )
 
 // Timeouts toward Syncthing. Event long-polls go through their own
@@ -132,6 +138,9 @@ type Gate struct {
 
 	lmu      sync.Mutex
 	refusals map[string]*refusal // per client and reason
+
+	imu      sync.Mutex
+	inflight map[string]*inflight // per client address
 }
 
 // refusal counts one client's refused requests for one reason since the
@@ -140,6 +149,9 @@ type refusal struct {
 	n  int
 	at time.Time // when they were last logged
 }
+
+// inflight counts one client's requests that the gate serves now.
+type inflight struct{ events, other int }
 
 // New creates a gate. It does not contact Syncthing.
 func New(o Options) (*Gate, error) {
@@ -158,7 +170,7 @@ func New(o Options) (*Gate, error) {
 	}
 	ip := net.ParseIP(u.Hostname())
 	g := &Gate{o: o, base: u, pin: o.Pin, allowed: map[string]bool{}, now: time.Now, refusals: map[string]*refusal{},
-		loopback: u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())}
+		inflight: map[string]*inflight{}, loopback: u.Hostname() == "localhost" || (ip != nil && ip.IsLoopback())}
 	for _, p := range stclient.Allowlist() {
 		g.allowed[p] = true
 	}
@@ -299,6 +311,18 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.deny(w, r, http.StatusForbidden, "gate token missing or not correct", "")
 		return
 	}
+	// Each request holds a goroutine here and in Syncthing, an event
+	// long-poll for minutes: a client gets only a few at the same time.
+	ip, events := clientIP(r), r.URL.Path == pathEvents
+	if !g.acquire(ip, events) {
+		why := "too many parallel requests"
+		if events {
+			why = "too many parallel long-polls"
+		}
+		g.deny(w, r, http.StatusTooManyRequests, why, "")
+		return
+	}
+	defer g.release(ip, events)
 	if r.Method != http.MethodGet {
 		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests are accepted", "")
 		return
@@ -391,6 +415,43 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(out)
+}
+
+// acquire counts a request of the client at ip (an event long-poll or
+// not) and reports false, without a count, when the client is at its
+// limit. Each true needs a release.
+func (g *Gate) acquire(ip string, events bool) bool {
+	g.imu.Lock()
+	defer g.imu.Unlock()
+	in := g.inflight[ip]
+	if in == nil {
+		in = &inflight{}
+		g.inflight[ip] = in
+	}
+	n, limit := &in.other, maxOtherPerClient
+	if events {
+		n, limit = &in.events, maxEventsPerClient
+	}
+	if *n >= limit {
+		return false
+	}
+	*n++
+	return true
+}
+
+// release ends a request that acquire counted.
+func (g *Gate) release(ip string, events bool) {
+	g.imu.Lock()
+	defer g.imu.Unlock()
+	in := g.inflight[ip]
+	if events {
+		in.events--
+	} else {
+		in.other--
+	}
+	if in.events == 0 && in.other == 0 {
+		delete(g.inflight, ip)
+	}
 }
 
 // upstream is the URL of path at Syncthing.

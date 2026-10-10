@@ -662,6 +662,100 @@ func TestGateDoesNotForwardUncleanedErrors(t *testing.T) {
 	}
 }
 
+// A client gets at most 4 parallel event long-polls and 64 other parallel
+// requests; more get 429 and a log line once a minute. syncwatch needs 1
+// long-poll and at most 34 other requests at the same time. A different
+// client address has its own limits.
+func TestGateLimitsParallelRequests(t *testing.T) {
+	arrived, release := make(chan string, 100), make(chan struct{})
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/events" || r.URL.Path == "/rest/system/version" {
+			arrived <- r.URL.Path
+			<-release
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer up.Close()
+	var logs syncBuffer
+	g, err := New(Options{Syncthing: up.URL, APIKey: realKey, Token: token, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	var wg sync.WaitGroup
+	codes := make(chan int, 100)
+	hold := func(path string, n int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest(http.MethodGet, gs.URL+path, nil)
+				req.Header.Set("X-API-Key", token)
+				resp, err := gs.Client().Do(req)
+				if err != nil {
+					codes <- 0
+					return
+				}
+				resp.Body.Close()
+				codes <- resp.StatusCode
+			}()
+		}
+		for i := 0; i < n; i++ {
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s: %d of %d requests reached Syncthing", path, i, n)
+			}
+		}
+	}
+	hold("/rest/events", 4)
+	if code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=60", token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel long-polls\n" {
+		t.Fatalf("5th long-poll: %d %q", code, body)
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/status", token); code != 200 {
+		t.Fatalf("a request during 4 long-polls: %d", code)
+	}
+	hold("/rest/system/version", 64)
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel requests\n" {
+		t.Fatalf("65th request: %d %q", code, body)
+	}
+	// Another client address is not at the limit.
+	req := httptest.NewRequest(http.MethodGet, "/rest/system/status", nil)
+	req.RemoteAddr = "127.0.0.2:40000"
+	req.Header.Set("X-API-Key", token)
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("another client: %d %s", rec.Code, rec.Body)
+	}
+	once.Do(func() { close(release) })
+	wg.Wait()
+	close(codes)
+	for code := range codes {
+		if code != 200 {
+			t.Fatalf("a held request ended with %d", code)
+		}
+	}
+	// The ended requests free their places.
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1", token); code != 200 {
+		t.Fatalf("a long-poll after the others ended: %d", code)
+	}
+	g.imu.Lock()
+	left := len(g.inflight)
+	g.imu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d clients still counted", left)
+	}
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 2 || !strings.Contains(logs.String(), `why="too many parallel long-polls"`) {
+		t.Fatalf("%d log lines, want 2:\n%s", n, logs.String())
+	}
+}
+
 // syncwatch's client shows what the gate refused: H1 finds a refused gate
 // token by "HTTP 403", a key that Syncthing refused is a 502, and a share
 // outside the browse roots gets the name of the setting.
