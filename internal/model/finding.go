@@ -30,19 +30,20 @@ func (s Severity) String() string {
 // Lower is the lowercase name, for CSS classes and filters.
 func (s Severity) Lower() string { return strings.ToLower(s.String()) }
 
-// Label is the word the dashboard shows: error, warning or suggestion.
+// Label is the display name of the severity: ERROR, WARNING or INFO. The
+// API keeps the values of String() and Lower() (error, warn, info).
 func (s Severity) Label() string {
 	switch s {
 	case Error:
-		return "error"
+		return "ERROR"
 	case Warn:
-		return "warning"
+		return "WARNING"
 	default:
-		return "suggestion"
+		return "INFO"
 	}
 }
 
-// ParseSeverity parses ERROR/WARN/INFO (or the dashboard words), case-insensitively.
+// ParseSeverity parses ERROR/WARN/INFO (or the display names), case-insensitively.
 func ParseSeverity(s string) Severity {
 	switch strings.ToUpper(s) {
 	case "ERROR":

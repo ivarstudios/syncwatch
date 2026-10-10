@@ -83,7 +83,7 @@ func TestParseAndExport(t *testing.T) {
 
 func TestValidateErrors(t *testing.T) {
 	_, err := ParseYAML([]byte("servers: [{name: a, url: ftp://x}]\nstructure: {project_pattern: '('}\n"))
-	if err == nil || !strings.Contains(err.Error(), "url must be") || !strings.Contains(err.Error(), "project_pattern") {
+	if err == nil || !strings.Contains(err.Error(), "the API URL (url) must be") || !strings.Contains(err.Error(), "project_pattern") {
 		t.Fatalf("expected errors, got %v", err)
 	}
 	if _, err := ParseYAML([]byte("bogus: 1\n")); err == nil {
@@ -164,33 +164,33 @@ func TestNegativeDurationsRejected(t *testing.T) {
 func TestValidateBounds(t *testing.T) {
 	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
 	bad := map[string]string{
-		"collector: {request_timeout: 500ms}":   "collector.request_timeout must be between 1s and 10m",
-		"collector: {request_timeout: 11m}":     "collector.request_timeout must be between 1s and 10m",
-		"collector: {down_after_failures: 21}":  "collector.down_after_failures must be between 1 and 20",
-		"collector: {concurrency: 17}":          "collector.concurrency must be between 1 and 16",
-		"collector: {event_timeout: 4s}":        "collector.event_timeout must be between 5s and 10m",
-		"collector: {event_timeout: 11m}":       "collector.event_timeout must be between 5s and 10m",
-		"collector: {full_check_interval: 59s}": "collector.full_check_interval must be between 1m and 7d",
-		"collector: {full_check_interval: 8d}":  "collector.full_check_interval must be between 1m and 7d",
-		"collector: {poll_interval: 30s}":       "collector.poll_interval must be between 1m and 1d",
-		"collector: {poll_interval: 25h}":       "collector.poll_interval must be between 1m and 1d",
-		"collector: {structure_interval: 10s}":  "collector.structure_interval must be between 1m and 7d",
-		"collector: {structure_interval: 2w}":   "collector.structure_interval must be between 1m and 7d",
-		"collector: {baseline_interval: 59m}":   "collector.baseline_interval must be between 1h and 90d",
-		"collector: {baseline_interval: 91d}":   "collector.baseline_interval must be between 1h and 90d",
-		"structure: {nested_scan_depth: 11}":    "structure.nested_scan_depth must be between 1 and 10",
-		"notifications: {weekly_top: 51}":       "notifications.weekly_top must be between 1 and 50",
-		"access: {session_ttl: 59m}":            "access.session_ttl must be between 1h and 365d",
-		"access: {session_ttl: 366d}":           "access.session_ttl must be between 1h and 365d",
-		"checks: {H1: {debounce: 31d}}":         "checks.H1.debounce must be between 0 and 30d",
-		"thresholds: {paused: 9s}":              "thresholds.paused must be between 10s and 3650d",
-		"thresholds: {failing_files: 5s}":       "thresholds.failing_files must be between 10s and 3650d",
-		"thresholds: {stuck_sync: 1ms}":         "thresholds.stuck_sync must be between 10s and 3650d",
-		"thresholds: {pc_offline: 1s}":          "thresholds.pc_offline must be between 10s and 3650d",
-		"thresholds: {conflict_window: 1s}":     "thresholds.conflict_window must be between 10s and 3650d",
-		"thresholds: {inactive_project: 1s}":    "thresholds.inactive_project must be between 10s and 3650d",
-		"thresholds: {old_device: 1s}":          "thresholds.old_device must be between 10s and 3650d",
-		"thresholds: {dead_share: 1s}":          "thresholds.dead_share must be between 10s and 3650d",
+		"collector: {request_timeout: 500ms}":   "Request timeout (collector.request_timeout): the value must be between 1 second and 10 minutes.",
+		"collector: {request_timeout: 11m}":     "Request timeout (collector.request_timeout): the value must be between 1 second and 10 minutes.",
+		"collector: {down_after_failures: 21}":  "Mark unreachable after failures (collector.down_after_failures): the value must be between 1 and 20.",
+		"collector: {concurrency: 17}":          "Parallel requests for each server (collector.concurrency): the value must be between 1 and 16.",
+		"collector: {event_timeout: 4s}":        "Event long-poll timeout (collector.event_timeout): the value must be between 5 seconds and 10 minutes.",
+		"collector: {event_timeout: 11m}":       "Event long-poll timeout (collector.event_timeout): the value must be between 5 seconds and 10 minutes.",
+		"collector: {full_check_interval: 59s}": "Full check every (collector.full_check_interval): the value must be between 1 minute and 7 days.",
+		"collector: {full_check_interval: 8d}":  "Full check every (collector.full_check_interval): the value must be between 1 minute and 7 days.",
+		"collector: {poll_interval: 30s}":       "Poll interval (polled mode) (collector.poll_interval): the value must be between 1 minute and 1 day.",
+		"collector: {poll_interval: 25h}":       "Poll interval (polled mode) (collector.poll_interval): the value must be between 1 minute and 1 day.",
+		"collector: {structure_interval: 10s}":  "Structure scan every (collector.structure_interval): the value must be between 1 minute and 7 days.",
+		"collector: {structure_interval: 2w}":   "Structure scan every (collector.structure_interval): the value must be between 1 minute and 7 days.",
+		"collector: {baseline_interval: 59m}":   "Baseline scan every (collector.baseline_interval): the value must be between 1 hour and 90 days.",
+		"collector: {baseline_interval: 91d}":   "Baseline scan every (collector.baseline_interval): the value must be between 1 hour and 90 days.",
+		"structure: {nested_scan_depth: 11}":    "structure.nested_scan_depth: the value must be between 1 and 10.",
+		"notifications: {weekly_top: 51}":       "Findings listed in the weekly report (notifications.weekly_top): the value must be between 1 and 50.",
+		"access: {session_ttl: 59m}":            "access.session_ttl: the value must be between 1 hour and 365 days.",
+		"access: {session_ttl: 366d}":           "access.session_ttl: the value must be between 1 hour and 365 days.",
+		"checks: {H1: {debounce: 31d}}":         "H1 debounce (checks.H1.debounce): the value must be between 0 seconds and 30 days.",
+		"thresholds: {paused: 9s}":              "H6 paused for more than (thresholds.paused): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {failing_files: 5s}":       "H4 with only failed items after (thresholds.failing_files): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {stuck_sync: 1ms}":         "H5 stuck sync after (thresholds.stuck_sync): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {pc_offline: 1s}":          "H7 PC offline for more than (thresholds.pc_offline): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {conflict_window: 1s}":     "H10 conflicts in the last (thresholds.conflict_window): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {inactive_project: 1s}":    "C1 no file change for (thresholds.inactive_project): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {old_device: 1s}":          "C2 device not seen for (thresholds.old_device): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {dead_share: 1s}":          "C3 folder not used by device after (thresholds.dead_share): the value must be between 10 seconds and 3650 days.",
 	}
 	for in, want := range bad {
 		_, err := ParseYAML([]byte(srv + in + "\n"))
@@ -315,17 +315,17 @@ func TestParseClockStrict(t *testing.T) {
 func TestServerIDs(t *testing.T) {
 	const u = "url: 'https://10.0.0.1:8384'"
 	bad := map[string]string{
-		"servers: [{id: AKKA, name: a, " + u + "}]":                                 "server id \"AKKA\" must be 1-40",
-		"servers: [{id: 'a,b', name: a, " + u + "}]":                                "server id \"a,b\" must be",
-		"servers: [{id: '<b>x</b>', name: a, " + u + "}]":                           "must be 1-40 characters",
-		"servers: [{id: '-a', name: a, " + u + "}]":                                 "must be 1-40 characters",
-		"servers: [{id: 'a b', name: a, " + u + "}]":                                "must be 1-40 characters",
-		"servers: [{id: " + strings.Repeat("a", 41) + ", name: a, " + u + "}]":      "must be 1-40 characters",
-		"servers: [{id: akka, name: A, " + u + "}, {id: AKKA, name: B, " + u + "}]": "already used by server akka",
-		"servers: [{id: akka, name: A, " + u + "}, {id: akka, name: B, " + u + "}]": "already used by server akka",
-		"servers: [{name: Akka, " + u + "}, {name: AKKA, " + u + "}]":               "name \"AKKA\" is already used by server akka",
-		"servers: [{name: A, id: nas, " + u + "}, {name: nas, id: b, " + u + "}]":   "server b: id or name \"nas\" is already used by server nas",
-		"servers: [{name: nas, id: a, " + u + "}, {name: B, id: NAS, " + u + "}]":   "already used by server a",
+		"servers: [{id: AKKA, name: a, " + u + "}]":                                 "the server ID \"AKKA\" is not valid",
+		"servers: [{id: 'a,b', name: a, " + u + "}]":                                "the server ID \"a,b\" is not valid",
+		"servers: [{id: '<b>x</b>', name: a, " + u + "}]":                           "Use 1 to 40 characters",
+		"servers: [{id: '-a', name: a, " + u + "}]":                                 "Use 1 to 40 characters",
+		"servers: [{id: 'a b', name: a, " + u + "}]":                                "Use 1 to 40 characters",
+		"servers: [{id: " + strings.Repeat("a", 41) + ", name: a, " + u + "}]":      "Use 1 to 40 characters",
+		"servers: [{id: akka, name: A, " + u + "}, {id: AKKA, name: B, " + u + "}]": "already in use by the server akka",
+		"servers: [{id: akka, name: A, " + u + "}, {id: akka, name: B, " + u + "}]": "already in use by the server akka",
+		"servers: [{name: Akka, " + u + "}, {name: AKKA, " + u + "}]":               "name \"AKKA\" is already in use by the server akka",
+		"servers: [{name: A, id: nas, " + u + "}, {name: nas, id: b, " + u + "}]":   "Server b: the ID or name \"nas\" is already in use by the server nas",
+		"servers: [{name: nas, id: a, " + u + "}, {name: B, id: NAS, " + u + "}]":   "already in use by the server a",
 	}
 	for in, want := range bad {
 		_, err := ParseYAML([]byte(in + "\n"))
@@ -393,9 +393,9 @@ func TestIgnoreDirsNilVersusEmpty(t *testing.T) {
 func TestPlacementAttributesMatchGroups(t *testing.T) {
 	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
 	for in, want := range map[string]string{
-		"structure: {share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$', placement: [{when_name_matches: '^ME-', share_must_have: {ME: true}}]}": "share_must_have attribute \"ME\" is not a named group of share_type_from_path (have: me, type)",
+		"structure: {share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$', placement: [{when_name_matches: '^ME-', share_must_have: {ME: true}}]}": "the share_must_have attribute \"ME\" is not a named group of share_type_from_path (the groups are: me, type)",
 		"structure: {placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                                                                   "attribute \"me\" is not a named group",
-		"structure: {share_type_from_path: '-LIVE-[1-5][A-Z]+$', placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                       "(have: none)",
+		"structure: {share_type_from_path: '-LIVE-[1-5][A-Z]+$', placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                       "(the groups are: none",
 	} {
 		_, err := ParseYAML([]byte(srv + in + "\n"))
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -418,7 +418,7 @@ func TestPlacementAttributesMatchGroups(t *testing.T) {
 func TestDiscordRoleID(t *testing.T) {
 	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
 	for _, id := range []string{"123456", "42", "1234567890123456", "123456789012345678901", "12345678901234567a", "<@&123456789012345678>"} {
-		if _, err := ParseYAML([]byte(srv + "notifications: {discord_role_id: '" + id + "'}\n")); err == nil || !strings.Contains(err.Error(), "17-20 digits") {
+		if _, err := ParseYAML([]byte(srv + "notifications: {discord_role_id: '" + id + "'}\n")); err == nil || !strings.Contains(err.Error(), "17 to 20 digits") {
 			t.Errorf("%q: %v", id, err)
 		}
 	}

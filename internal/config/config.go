@@ -330,11 +330,11 @@ func (c *Config) Validate() error {
 	seen := map[string]int{}
 	for i, s := range c.Servers {
 		if s.ID == "" {
-			errs = append(errs, errors.New("a server has no id or name"))
+			errs = append(errs, errors.New("Servers: a server has no name or ID. Give each server a name."))
 			continue
 		}
 		if !serverIDRe.MatchString(s.ID) {
-			errs = append(errs, fmt.Errorf("server id %q must be 1-40 characters of a-z, 0-9 and -, starting with a letter or digit", s.ID))
+			errs = append(errs, fmt.Errorf("Servers: the server ID %q is not valid. Use 1 to 40 characters from a-z, 0-9 and the hyphen, and start with a letter or a digit.", s.ID))
 		}
 		for _, key := range []string{s.ID, s.Name} {
 			k := strings.ToLower(key)
@@ -342,7 +342,7 @@ func (c *Config) Validate() error {
 				continue
 			}
 			if j, ok := seen[k]; ok && j != i {
-				errs = append(errs, fmt.Errorf("server %s: id or name %q is already used by server %s (ids and names are compared ignoring case)", s.ID, key, c.Servers[j].ID))
+				errs = append(errs, fmt.Errorf("Server %s: the ID or name %q is already in use by the server %s. syncwatch compares IDs and names without case.", s.ID, key, c.Servers[j].ID))
 			}
 			seen[k] = i
 		}
@@ -350,20 +350,20 @@ func (c *Config) Validate() error {
 		u, err := url.Parse(s.URL)
 		switch {
 		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || !hostOK(u):
-			errs = append(errs, fmt.Errorf("server %s: url must be http(s)://host:port", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the API URL (url) must be https://address:port or http://address:port.", s.ID))
 		case u.User != nil:
-			errs = append(errs, fmt.Errorf("server %s: url must not contain a user name or password; syncwatch authenticates with the API key only", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the API URL (url) must not contain a user name or a password. syncwatch uses the API key only.", s.ID))
 		case strings.ContainsAny(s.URL, "?#"):
-			errs = append(errs, fmt.Errorf("server %s: url must not contain a query (?) or fragment (#)", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the API URL (url) must not contain a question mark (?) or a number sign (#).", s.ID))
 		case u.Scheme == "http" && !s.AllowHTTP:
-			errs = append(errs, fmt.Errorf("server %s: an http:// URL sends the API key unencrypted; use https:// or set allow_http", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: a plain http:// API URL sends the API key unencrypted. Use https://, or permit the plain URL with the checkbox (allow_http).", s.ID))
 		}
 		if s.GUIURL != "" && !webURL(s.GUIURL) {
-			errs = append(errs, fmt.Errorf("server %s: gui_url must be an http(s) URL without a user name or password", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the GUI URL (gui_url) must be an https:// or http:// URL without a user name or a password.", s.ID))
 		}
 	}
 	if c.Collector.Mode != ModeEvents && c.Collector.Mode != ModePolled {
-		errs = append(errs, fmt.Errorf("collector.mode must be %q or %q", ModeEvents, ModePolled))
+		errs = append(errs, fmt.Errorf("Collector mode (collector.mode): the value must be %q or %q.", ModeEvents, ModePolled))
 	}
 	col := &c.Collector
 	add(durRange("collector.event_timeout", col.EventTimeout, 5*time.Second, 10*time.Minute))
@@ -376,7 +376,7 @@ func (c *Config) Validate() error {
 	add(intRange("collector.down_after_failures", col.DownAfter, 1, 20))
 	for id, ch := range c.Checks {
 		if _, ok := CatalogByID[id]; !ok {
-			errs = append(errs, fmt.Errorf("checks: unknown check %q", id))
+			errs = append(errs, fmt.Errorf("Checks: %q is not a check ID. Use an ID from the Checks table.", id))
 		}
 		if ch.Debounce != nil {
 			add(durRange("checks."+id+".debounce", *ch.Debounce, 0, 30*24*time.Hour))
@@ -399,55 +399,55 @@ func (c *Config) Validate() error {
 		errs = append(errs, err)
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
-		errs = append(errs, fmt.Errorf("timezone: %v", err))
+		errs = append(errs, fmt.Errorf("Time zone (timezone): the value is not a time zone name (%v). Use a name such as Europe/Stockholm.", err))
 	}
 	if c.Notify.QuietHours != "" && c.Notify.QuietHours != "off" {
 		if _, _, err := ParseRange(c.Notify.QuietHours); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.quiet_hours: %v", err))
+			errs = append(errs, fmt.Errorf("Quiet hours (notifications.quiet_hours): %v", err))
 		}
 	}
 	if c.Notify.ReminderTime != "" && c.Notify.ReminderTime != "off" {
 		t, err := ParseClock(c.Notify.ReminderTime)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("notifications.reminder_time: %v", err))
+			errs = append(errs, fmt.Errorf("Daily reminder (notifications.reminder_time): %v", err))
 		} else if qs, qe, qerr := ParseRange(c.Notify.QuietHours); qerr == nil && qs != qe {
 			// The reminder goes out at the first tick after its time that
 			// isn't quiet, up to 12 hours later: a time inside quiet hours
 			// only works when the window ends later the same day.
 			quiet := (qs < qe && t >= qs && t < qe) || (qs > qe && (t >= qs || t < qe))
 			if quiet && (t >= qe || qe-t > 12*60) {
-				errs = append(errs, fmt.Errorf("notifications.reminder_time must be outside quiet_hours: a reminder at %s would never be sent with quiet hours %s", c.Notify.ReminderTime, c.Notify.QuietHours))
+				errs = append(errs, fmt.Errorf("Daily reminder (notifications.reminder_time): the time %s is inside the quiet hours %s, thus syncwatch can never send the reminder. Use a time outside the quiet hours.", c.Notify.ReminderTime, c.Notify.QuietHours))
 			}
 		}
 	}
 	if c.Notify.WeeklyDay != "" && c.Notify.WeeklyDay != "off" {
 		if _, err := ParseWeekday(c.Notify.WeeklyDay); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.weekly_day: %v", err))
+			errs = append(errs, fmt.Errorf("Weekly report day (notifications.weekly_day): %v", err))
 		}
 		if _, err := ParseClock(c.Notify.WeeklyTime); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.weekly_time: %v", err))
+			errs = append(errs, fmt.Errorf("Weekly report time (notifications.weekly_time): %v", err))
 		}
 	}
 	if c.Notify.DiscordWebhook != "" {
 		if err := CheckDiscordWebhook(c.Notify.DiscordWebhook); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.discord_webhook: %v", err))
+			errs = append(errs, err)
 		}
 	}
 	if c.Notify.DiscordRoleID != "" && !roleIDRe.MatchString(c.Notify.DiscordRoleID) {
-		errs = append(errs, errors.New("notifications.discord_role_id must be the numeric role ID (17-20 digits)"))
+		errs = append(errs, errors.New("Role ID (notifications.discord_role_id): the value must be the ID of the Discord role (17 to 20 digits)."))
 	}
 	switch c.Access.Mode {
 	case AccessBuiltin, AccessProxy:
 	default:
-		errs = append(errs, fmt.Errorf("access.mode must be %q or %q", AccessBuiltin, AccessProxy))
+		errs = append(errs, fmt.Errorf("Login (access.mode): the value must be %q or %q.", AccessBuiltin, AccessProxy))
 	}
 	switch c.Access.Viewer {
 	case ViewerNone, ViewerPassword, ViewerOpen:
 	default:
-		errs = append(errs, fmt.Errorf("access.viewer must be none, password or open"))
+		errs = append(errs, fmt.Errorf("Viewer access (access.viewer): the value must be none, password or open."))
 	}
 	if c.PublicURL != "" && !webURL(c.PublicURL) {
-		errs = append(errs, errors.New("public_url must be an http(s) URL without a user name or password"))
+		errs = append(errs, errors.New("Dashboard URL (public_url): the value must be an https:// or http:// URL without a user name or a password."))
 	}
 	return errors.Join(errs...)
 }
@@ -462,7 +462,7 @@ var roleIDRe = regexp.MustCompile(`^\d{17,20}$`)
 // Zero means "use the default" (ApplyDefaults fills it), so it passes.
 func durRange(name string, d Duration, lo, hi time.Duration) error {
 	if d != 0 && (d.D() < lo || d.D() > hi) {
-		return fmt.Errorf("%s must be between %s and %s", name, Duration(lo), Duration(hi))
+		return fmt.Errorf("%s: the value must be between %s and %s.", FieldLabel(name), Duration(lo).Words(), Duration(hi).Words())
 	}
 	return nil
 }
@@ -471,7 +471,7 @@ func durRange(name string, d Duration, lo, hi time.Duration) error {
 // Zero means "use the default", so it passes.
 func intRange(name string, n, lo, hi int) error {
 	if n != 0 && (n < lo || n > hi) {
-		return fmt.Errorf("%s must be between %d and %d", name, lo, hi)
+		return fmt.Errorf("%s: the value must be between %d and %d.", FieldLabel(name), lo, hi)
 	}
 	return nil
 }
@@ -514,12 +514,12 @@ func CanonicalDiscordWebhook(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if AllowAnyWebhook {
 		if err != nil || !webURL(raw) {
-			return "", errors.New("the Discord webhook must be an http(s) URL")
+			return "", errors.New("Discord webhook URL (notifications.discord_webhook): the value must be an https:// or http:// URL.")
 		}
 		return raw, nil
 	}
 	if err != nil || u.Scheme != "https" || u.User != nil || !DiscordHost(raw) || !webhookPath.MatchString(u.Path) {
-		return "", errors.New("the Discord webhook must be a Discord webhook URL, https://discord.com/api/webhooks/…")
+		return "", errors.New("Discord webhook URL (notifications.discord_webhook): the value must be a webhook URL from Discord (https://discord.com/api/webhooks/…).")
 	}
 	u.Host = strings.ToLower(u.Host)
 	u.Path, u.RawPath = strings.TrimSuffix(u.Path, "/"), ""
@@ -687,7 +687,7 @@ func ParseYAML(b []byte) (*Config, error) {
 func (c *Config) ExportYAML() ([]byte, error) {
 	r := c.Redacted()
 	var buf bytes.Buffer
-	buf.WriteString("# syncwatch configuration export. Secrets (API keys, webhook URLs, tokens) are not included.\n")
+	buf.WriteString("# syncwatch configuration export. The file does not contain the API keys, the webhook URL or the API token.\n")
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(r); err != nil {
@@ -703,7 +703,7 @@ var clockRe = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
 func ParseClock(s string) (int, error) {
 	m := clockRe.FindStringSubmatch(strings.TrimSpace(s))
 	if m == nil {
-		return 0, fmt.Errorf("invalid time %q, want HH:MM", s)
+		return 0, fmt.Errorf("the value %q is not a time. Use the form HH:MM, for example 07:30.", s)
 	}
 	h, _ := strconv.Atoi(m[1])
 	min, _ := strconv.Atoi(m[2])
@@ -715,7 +715,7 @@ func ParseClock(s string) (int, error) {
 func ParseRange(s string) (start, end int, err error) {
 	parts := strings.Split(s, "-")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid range %q, want HH:MM-HH:MM", s)
+		return 0, 0, fmt.Errorf("the value %q is not a time range. Use the form HH:MM-HH:MM, for example 22:00-07:00.", s)
 	}
 	if start, err = ParseClock(parts[0]); err != nil {
 		return
@@ -724,7 +724,7 @@ func ParseRange(s string) (start, end int, err error) {
 		return
 	}
 	if start == end {
-		return 0, 0, fmt.Errorf("invalid range %q: start and end are the same, use off to disable", s)
+		return 0, 0, fmt.Errorf("the value %q is not a time range: the start and the end are the same. Use off to set the quiet hours to off.", s)
 	}
 	return
 }
@@ -736,7 +736,7 @@ func ParseWeekday(s string) (time.Weekday, error) {
 			return d, nil
 		}
 	}
-	return 0, fmt.Errorf("invalid weekday %q", s)
+	return 0, fmt.Errorf("the value %q is not a weekday. Use a weekday name such as monday, or off.", s)
 }
 
 // SortedCheckIDs returns the catalog order of check IDs.
@@ -746,4 +746,39 @@ func SortedCheckIDs() []string {
 		ids[i] = c.ID
 	}
 	return ids
+}
+
+// fieldLabels maps YAML keys to the labels of the Settings page, so a
+// validation message names a field as the dashboard shows it. Keys without
+// a label (YAML-only settings) are named by the key.
+var fieldLabels = map[string]string{
+	"collector.event_timeout":       "Event long-poll timeout",
+	"collector.full_check_interval": "Full check every",
+	"collector.poll_interval":       "Poll interval (polled mode)",
+	"collector.structure_interval":  "Structure scan every",
+	"collector.baseline_interval":   "Baseline scan every",
+	"collector.request_timeout":     "Request timeout",
+	"collector.concurrency":         "Parallel requests for each server",
+	"collector.down_after_failures": "Mark unreachable after failures",
+	"notifications.weekly_top":      "Findings listed in the weekly report",
+	"thresholds.failing_files":      "H4 with only failed items after",
+	"thresholds.stuck_sync":         "H5 stuck sync after",
+	"thresholds.paused":             "H6 paused for more than",
+	"thresholds.pc_offline":         "H7 PC offline for more than",
+	"thresholds.conflict_window":    "H10 conflicts in the last",
+	"thresholds.inactive_project":   "C1 no file change for",
+	"thresholds.old_device":         "C2 device not seen for",
+	"thresholds.dead_share":         "C3 folder not used by device after",
+}
+
+// FieldLabel returns "Label (key)" for a YAML key that has a label on the
+// Settings page, "ID debounce (key)" for a check debounce, else the key.
+func FieldLabel(key string) string {
+	if l, ok := fieldLabels[key]; ok {
+		return l + " (" + key + ")"
+	}
+	if strings.HasPrefix(key, "checks.") && strings.HasSuffix(key, ".debounce") {
+		return strings.TrimSuffix(strings.TrimPrefix(key, "checks."), ".debounce") + " debounce (" + key + ")"
+	}
+	return key
 }
