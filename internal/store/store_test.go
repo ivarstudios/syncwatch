@@ -251,3 +251,32 @@ func TestServerKeyBinding(t *testing.T) {
 		t.Fatal("empty key must delete the secret")
 	}
 }
+
+// A second process can see secret.key between the moment its creator opened
+// it (O_EXCL) and the moment the key was written: an existing, still empty
+// file. That is not a corrupt key but a key on its way, so LoadKey waits
+// for it instead of failing the start.
+func TestKeyFileReadWhileBeingWritten(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.key")
+	if err := os.WriteFile(path, nil, 0o600); err != nil { // created, not yet written
+		t.Fatal(err)
+	}
+	want := bytes.Repeat([]byte{7}, 32)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(want)+"\n"), 0o600)
+	}()
+	key, err := LoadKey(dir, "")
+	if err != nil || !bytes.Equal(key, want) {
+		t.Fatalf("key still being written by another process: got %x, %v", key, err)
+	}
+	// A file that stays invalid is still an error, after the wait.
+	dir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "secret.key"), []byte("not base64!\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadKey(dir, ""); err == nil || !strings.Contains(err.Error(), "not a valid key") {
+		t.Fatalf("corrupt key file accepted: %v", err)
+	}
+}

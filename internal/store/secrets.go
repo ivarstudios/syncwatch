@@ -74,8 +74,14 @@ func LoadKey(dataDir, envValue string) ([]byte, error) {
 	}
 	path := filepath.Join(dataDir, "secret.key")
 	key, err := readKeyFile(path)
+	if err == nil {
+		return key, nil
+	}
 	if !errors.Is(err, fs.ErrNotExist) {
-		return key, err
+		// The file exists but holds no key (yet): another process may have
+		// created it a moment ago and not written it. Wait for the key
+		// rather than refuse to start on a file that is on its way.
+		return awaitKeyFile(path)
 	}
 	key = make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -83,20 +89,29 @@ func LoadKey(dataDir, envValue string) ([]byte, error) {
 	}
 	err = createKeyFile(path, key)
 	if errors.Is(err, fs.ErrExist) {
-		// Another process created it at the same moment: use its key,
-		// giving it a moment to finish writing.
-		for i := 0; i < 20; i++ {
-			if key, err = readKeyFile(path); err == nil {
-				return key, nil
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		return nil, err
+		// Another process created it at the same moment: use its key.
+		return awaitKeyFile(path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
 	return key, nil
+}
+
+// awaitKeyFile reads a key file that another process is writing, giving it
+// up to a second to finish; the last read error is returned otherwise.
+func awaitKeyFile(path string) ([]byte, error) {
+	var (
+		key []byte
+		err error
+	)
+	for i := 0; i < 20; i++ {
+		if key, err = readKeyFile(path); err == nil {
+			return key, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, err
 }
 
 func readKeyFile(path string) ([]byte, error) {
