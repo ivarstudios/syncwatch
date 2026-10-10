@@ -152,3 +152,32 @@ func TestRefusedCollectorAndNotificationSavesKeepTypedValues(t *testing.T) {
 		t.Fatalf("the refused save stored the webhook: %q", v)
 	}
 }
+
+// W-017: the Checks table explains Urgent and Debounce, and each Collector
+// field that changes the detection time or the server load has a hint.
+func TestSettingsHelpTexts(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	_, page := e.get("/settings")
+	checks, col := section(t, page, "checks"), section(t, page, "collector")
+	for _, want := range []string{"<dt>Urgent</dt><dd>The check sends an urgent message for each new finding. The message mentions the role.",
+		"<dt>Debounce</dt><dd>The time that a finding must stay open before syncwatch sends the urgent message."} {
+		if !strings.Contains(checks, want) {
+			t.Errorf("Checks section lacks %q", want)
+		}
+	}
+	const interval = "(A shorter interval finds changes sooner and adds server load.)"
+	for label, hint := range map[string]string{
+		"Event long-poll timeout":           "(Keep it below the idle timeout of the VPN.)",
+		"Full check every":                  interval,
+		"Poll interval (polled mode)":       interval,
+		"Structure scan every":              interval,
+		"Baseline scan every":               interval,
+		"Parallel requests for each server": "(A higher number makes scans faster and adds server load.)",
+		"Request timeout":                   "(syncwatch stops a request to the server after this time.)",
+		"Mark unreachable after failures":   "(A higher number gives fewer false H1 findings and a later H1.)",
+	} {
+		if !strings.Contains(col, ">"+label+` <span class="muted">`+hint+"</span> <input") {
+			t.Errorf("%s: no hint %q", label, hint)
+		}
+	}
+}

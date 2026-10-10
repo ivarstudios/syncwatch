@@ -95,6 +95,10 @@
   <h2>Checks</h2>
   <form method="post" action="/settings/checks">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
+    <dl class="facts small">
+      <dt>Urgent</dt><dd>The check sends an urgent message for each new finding. The message mentions the role. syncwatch shows findings of other checks only on the dashboard and in the weekly report.</dd>
+      <dt>Debounce</dt><dd>The time that a finding must stay open before syncwatch sends the urgent message. The debounce has no effect on checks that are not urgent.</dd>
+    </dl>
     <div class="scroll">
     <table class="list">
       <thead><tr><th>Check</th><th>Severity</th><th>Enabled</th><th>Urgent</th><th>Debounce</th></tr></thead>
@@ -140,14 +144,14 @@
   <form method="post" action="/settings/collector" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label{{if index $bad "mode"}} class="c-err"{{end}}>Mode <select name="mode"{{if index $bad "mode"}} aria-invalid="true" aria-describedby="collector-error"{{end}}><option value="events" {{if eq (index $f "mode") "events"}}selected{{end}}>events (real time)</option><option value="polled" {{if eq (index $f "mode") "polled"}}selected{{end}}>polled (less load on the server)</option></select></label>
-    <label{{if index $bad "event_timeout"}} class="c-err"{{end}}>Event long-poll timeout <input name="event_timeout" value="{{index $f "event_timeout"}}"{{if index $bad "event_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "full_check_interval"}} class="c-err"{{end}}>Full check every <input name="full_check_interval" value="{{index $f "full_check_interval"}}"{{if index $bad "full_check_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "poll_interval"}} class="c-err"{{end}}>Poll interval (polled mode) <input name="poll_interval" value="{{index $f "poll_interval"}}"{{if index $bad "poll_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "structure_interval"}} class="c-err"{{end}}>Structure scan every <input name="structure_interval" value="{{index $f "structure_interval"}}"{{if index $bad "structure_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "baseline_interval"}} class="c-err"{{end}}>Baseline scan every <input name="baseline_interval" value="{{index $f "baseline_interval"}}"{{if index $bad "baseline_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "concurrency"}} class="c-err"{{end}}>Parallel requests for each server <input type="number" name="concurrency" min="1" max="16" value="{{index $f "concurrency"}}"{{if index $bad "concurrency"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "request_timeout"}} class="c-err"{{end}}>Request timeout <input name="request_timeout" value="{{index $f "request_timeout"}}"{{if index $bad "request_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
-    <label{{if index $bad "down_after_failures"}} class="c-err"{{end}}>Mark unreachable after failures <input type="number" name="down_after_failures" min="1" max="10" value="{{index $f "down_after_failures"}}"{{if index $bad "down_after_failures"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "event_timeout"}} class="c-err"{{end}}>Event long-poll timeout <span class="muted">(Keep it below the idle timeout of the VPN.)</span> <input name="event_timeout" value="{{index $f "event_timeout"}}"{{if index $bad "event_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "full_check_interval"}} class="c-err"{{end}}>Full check every <span class="muted">(A shorter interval finds changes sooner and adds server load.)</span> <input name="full_check_interval" value="{{index $f "full_check_interval"}}"{{if index $bad "full_check_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "poll_interval"}} class="c-err"{{end}}>Poll interval (polled mode) <span class="muted">(A shorter interval finds changes sooner and adds server load.)</span> <input name="poll_interval" value="{{index $f "poll_interval"}}"{{if index $bad "poll_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "structure_interval"}} class="c-err"{{end}}>Structure scan every <span class="muted">(A shorter interval finds changes sooner and adds server load.)</span> <input name="structure_interval" value="{{index $f "structure_interval"}}"{{if index $bad "structure_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "baseline_interval"}} class="c-err"{{end}}>Baseline scan every <span class="muted">(A shorter interval finds changes sooner and adds server load.)</span> <input name="baseline_interval" value="{{index $f "baseline_interval"}}"{{if index $bad "baseline_interval"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "concurrency"}} class="c-err"{{end}}>Parallel requests for each server <span class="muted">(A higher number makes scans faster and adds server load.)</span> <input type="number" name="concurrency" min="1" max="16" value="{{index $f "concurrency"}}"{{if index $bad "concurrency"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "request_timeout"}} class="c-err"{{end}}>Request timeout <span class="muted">(syncwatch stops a request to the server after this time.)</span> <input name="request_timeout" value="{{index $f "request_timeout"}}"{{if index $bad "request_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
+    <label{{if index $bad "down_after_failures"}} class="c-err"{{end}}>Mark unreachable after failures <span class="muted">(A higher number gives fewer false H1 findings and a later H1.)</span> <input type="number" name="down_after_failures" min="1" max="10" value="{{index $f "down_after_failures"}}"{{if index $bad "down_after_failures"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
     {{with index $d.Errors "collector"}}<p id="collector-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
     <div class="actions"><button type="submit">Save and restart collectors</button></div>
   </form>
