@@ -282,7 +282,12 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/login?next="+urlQueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+	to := "/login"
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		// Only a page can be come back to; a form has to be sent again.
+		to += "?next=" + urlQueryEscape(r.URL.RequestURI())
+	}
+	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
 func urlQueryEscape(s string) string {
@@ -436,6 +441,11 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request, info re
 	}
 	if !s.adminConfigured() {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+	if info.Session != nil {
+		// Already logged in, for example through a link from Discord.
+		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}
 	s.render(w, r, http.StatusOK, "login", info, map[string]any{"Title": "Log in", "Next": safeNext(r.URL.Query().Get("next"))})

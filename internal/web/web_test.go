@@ -580,3 +580,28 @@ func TestSetupTokenPrintedWhenLogHidesWarnings(t *testing.T) {
 		t.Fatalf("admin set or proxy mode: stderr %q, log %q", errBuf.String(), logBuf.String())
 	}
 }
+
+// A form posted after the session expired goes to the login page without a
+// next to the POST-only URL (a GET there would be 405); pages keep their
+// next. A visit to /login with a session goes straight to next.
+func TestLoginNextOnlyForPages(t *testing.T) {
+	e := newEnv(t, twoServers)
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	csrf := e.csrf("/login")
+	if r := e.post("/settings/servers", url.Values{"csrf": {csrf}, "name": {"X"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/login" {
+		t.Fatalf("anonymous POST: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	if r, _ := e.get("/problems?severity=error"); r.Header.Get("Location") != "/login?next=/problems%3Fseverity=error" {
+		t.Fatalf("anonymous GET: %q", r.Header.Get("Location"))
+	}
+	if r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}, "next": {"/grid"}}); r.Header.Get("Location") != "/grid" {
+		t.Fatalf("login: %q", r.Header.Get("Location"))
+	}
+	if r, _ := e.get("/login?next=/problems"); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/problems" {
+		t.Fatalf("/login with a session: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	if r, _ := e.get("/login"); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/" {
+		t.Fatalf("/login with a session and no next: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+}
