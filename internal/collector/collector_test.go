@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -755,4 +756,51 @@ func TestUnreadableAPIKeyMarksServerDownAndRetries(t *testing.T) {
 	// next retry picks it up without a settings save.
 	_ = st.SetServerKey("akka", "k", srv.URL)
 	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Status == model.StatusUp })
+}
+
+// In polled mode the loop sleeps until the next poll or scan is due, never
+// less than a second, and a scan that is still running when the next one
+// is due is left to the next poll rather than re-checked in a busy loop.
+func TestPollWait(t *testing.T) {
+	cfg, err := config.ParseYAML([]byte("collector: {mode: polled, poll_interval: 15m, structure_interval: 1h}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := config.NewHolder(cfg)
+	c := &Collector{cfg: h}
+	c.lastFull, c.lastScan = time.Now(), time.Now()
+	if w := c.pollWait(h.Get().Collector); w < 14*time.Minute || w > 15*time.Minute {
+		t.Fatalf("nothing due: wait %v, want about 15 m", w)
+	}
+	c.lastScan = time.Now().Add(-50 * time.Minute)
+	if w := c.pollWait(h.Get().Collector); w < 9*time.Minute || w > 10*time.Minute {
+		t.Fatalf("scan due in 10 m: wait %v", w)
+	}
+	c.lastScan = time.Now().Add(-2 * time.Hour) // a scan is overdue
+	if w := c.pollWait(h.Get().Collector); w != time.Second {
+		t.Fatalf("scan overdue: wait %v, want 1 s", w)
+	}
+	c.scanning = true // the overdue scan is the one still running
+	if w := c.pollWait(h.Get().Collector); w < 14*time.Minute || w > 15*time.Minute {
+		t.Fatalf("scan running: wait %v, want the next poll", w)
+	}
+	c.lastFull = time.Now().Add(-time.Hour)
+	if w := c.pollWait(h.Get().Collector); w != time.Second {
+		t.Fatalf("poll overdue: wait %v, want 1 s", w)
+	}
+
+	// The loop itself: with the running scan 2 h old (interval 1 h) it used
+	// to spin at full speed; now it sleeps.
+	c.lastFull = time.Now()
+	c.hub, c.log = model.NewHub(nil), slog.New(slog.NewTextHandler(io.Discard, nil))
+	c.wake, c.fullNow = make(chan struct{}, 1), make(chan struct{}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_ = c.pollLoop(ctx)
+	runtime.ReadMemStats(&after)
+	if n := after.Mallocs - before.Mallocs; n > 1000 {
+		t.Fatalf("%d allocations in 300 ms of pollLoop: it is spinning", n)
+	}
 }

@@ -312,17 +312,13 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 func (c *Collector) pollLoop(ctx context.Context) error {
 	for ctx.Err() == nil {
 		cfg := c.cfg.Get().Collector
-		wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
-		if w := time.Until(c.lastScan.Add(cfg.StructureInterval.D())); w < wait {
-			wait = w
-		}
 		forced := false
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.fullNow:
 			forced = true
-		case <-time.After(wait):
+		case <-time.After(c.pollWait(cfg)):
 		}
 		if forced || time.Since(c.lastFull) >= cfg.PollInterval.D() {
 			if err := c.fullCheck(ctx); err != nil {
@@ -332,6 +328,22 @@ func (c *Collector) pollLoop(ctx context.Context) error {
 		c.maybeScan(ctx)
 	}
 	return ctx.Err()
+}
+
+// pollWait is how long the polled mode sleeps: until the next full check or
+// the next structure scan, whichever comes first, but at least a second. A
+// scan that is still running when the next one is due doesn't count,
+// because maybeScan does nothing while one runs: the loop waits for the
+// next poll instead of spinning until the scan ends.
+func (c *Collector) pollWait(cfg config.Collector) time.Duration {
+	wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
+	c.scanMu.Lock()
+	scanning := c.scanning
+	c.scanMu.Unlock()
+	if w := time.Until(c.lastScan.Add(cfg.StructureInterval.D())); !scanning && w < wait {
+		wait = w
+	}
+	return max(wait, time.Second)
 }
 
 // fullCheck reads everything from the server and replaces its state.
