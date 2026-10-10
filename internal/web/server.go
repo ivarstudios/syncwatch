@@ -443,8 +443,10 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request, info re
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	if info.Session != nil {
-		// Already logged in, for example through a link from Discord.
+	if info.Session != nil && info.Role != RoleNone {
+		// Already logged in, for example through a link from Discord. A
+		// viewer session from before viewing was switched off gives no
+		// role; it gets the form rather than a page that sends it back.
 		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}

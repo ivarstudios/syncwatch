@@ -605,3 +605,36 @@ func TestLoginNextOnlyForPages(t *testing.T) {
 		t.Fatalf("/login with a session and no next: %d %q", r.StatusCode, r.Header.Get("Location"))
 	}
 }
+
+// A viewer session from before viewing was switched off gives no role. The
+// login page shows the form to it; sending it on to a page would send it
+// back to /login, round and round.
+func TestLoginPageWithStaleViewerSession(t *testing.T) {
+	e := newEnv(t, twoServers+"access: {viewer: password}\n")
+	ah, _ := HashPassword("correct horse battery")
+	vh, _ := HashPassword("viewer password 1")
+	_ = e.st.SetSetting(KeyAdminHash, ah)
+	_ = e.st.SetSetting(KeyViewerHash, vh)
+	csrf := e.csrf("/login")
+	if r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"viewer password 1"}}); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("viewer login: %d", r.StatusCode)
+	}
+	c := e.cfg.Get().Clone()
+	c.Access.Viewer = config.ViewerNone
+	if err := e.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := e.get("/"); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/login?next=/" {
+		t.Fatalf("page with a stale viewer session: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	if r, body := e.get("/login?next=/"); r.StatusCode != http.StatusOK || !strings.Contains(body, `name="password"`) {
+		t.Fatalf("/login with a stale viewer session: %d, want the login form", r.StatusCode)
+	}
+	// The admin password still gets in.
+	if r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}, "next": {"/"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/" {
+		t.Fatalf("admin login: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	if r, _ := e.get("/settings"); r.StatusCode != http.StatusOK {
+		t.Fatalf("/settings after the admin login: %d", r.StatusCode)
+	}
+}
