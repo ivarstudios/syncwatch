@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -864,4 +865,31 @@ func TestTwoSiteFaultsNameTheNetwork(t *testing.T) {
 			t.Errorf("%q: message %q", tc.err, h1.Message)
 		}
 	}
+}
+
+// A pending device that another server knows is not an unknown device: H9
+// uses the name that the servers know, and quotes the name it sends.
+func TestPendingDeviceKnownOnAnotherServer(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	sol.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-BJORN"}
+	hostile := "BJÖRN @everyone\nlevel=ERROR msg=\"forged\" \u202egnp.exe"
+	stranger := "PENDING-6666666-6666666-6666666-6666666-6666666-6666666-6666666"
+	akka.PendingDevices = []model.PendingDevice{
+		{DeviceID: pcID, Name: hostile, Time: now},
+		{DeviceID: stranger, Name: "stranger", Time: now},
+		{DeviceID: solID, Name: "sol", Time: now},
+	}
+	fs := run(t, c, akka, sol)
+	h9 := mustFind(t, fs, "H9", "PC-SHARED-BJORN on AKKA")
+	want := "Device PC-SHARED-BJORN (known on SOL) requests a connection to AKKA as " + strconv.Quote(hostile)
+	if h9.Message != want {
+		t.Fatalf("known device:\n got %s\nwant %s", h9.Message, want)
+	}
+	if strings.ContainsAny(h9.Message, "\n\u202e") {
+		t.Fatal("the name that the device sends must not put control characters into the message")
+	}
+	mustFind(t, fs, "H9", "Unknown device stranger requests a connection to AKKA")
+	mustFind(t, fs, "H9", `Server SOL requests a connection to AKKA as "sol"`)
 }

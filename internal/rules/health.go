@@ -301,9 +301,23 @@ func (e *evaluator) pending(sv *model.Server) {
 		if name == "" {
 			name = model.ShortID(p.DeviceID)
 		}
+		msg := fmt.Sprintf("Unknown device %s requests a connection to %s", name, sv.Name)
+		if on := e.configuredOn(p.DeviceID, sv.ID); len(on) > 0 || e.Snapshot.IsServerDevice(p.DeviceID) {
+			// Not an unknown device: use the name that the servers know,
+			// and show the name that the device sends as a value.
+			name = e.devName(p.DeviceID)
+			if e.Snapshot.IsServerDevice(p.DeviceID) {
+				msg = fmt.Sprintf("Server %s requests a connection to %s", name, sv.Name)
+			} else {
+				msg = fmt.Sprintf("Device %s (known on %s) requests a connection to %s", name, strings.Join(on, ", "), sv.Name)
+			}
+			if p.Name != "" {
+				msg += fmt.Sprintf(" as %q", p.Name)
+			}
+		}
 		e.add("H9", sv.ID, "pending-device:"+p.DeviceID, model.Finding{
 			Subject: fmt.Sprintf("%s on %s", name, sv.Name),
-			Message: fmt.Sprintf("Unknown device %s requests a connection to %s", name, sv.Name),
+			Message: msg,
 			Since:   p.Time,
 			Details: []model.Detail{detail("Device ID", p.DeviceID), detail("Address", p.Address), timeDetail("First offered", p.Time)},
 		})
@@ -321,6 +335,18 @@ func (e *evaluator) pending(sv *model.Server) {
 			Details: []model.Detail{detail("Folder ID", p.FolderID), detail("Offered by", p.OfferedBy), timeDetail("First offered", p.Time)},
 		})
 	}
+}
+
+// configuredOn returns the names of the servers, other than except, that
+// have a device configured.
+func (e *evaluator) configuredOn(dev, except string) []string {
+	var on []string
+	for _, sv := range e.Snapshot.Servers {
+		if _, ok := sv.Devices[dev]; ok && sv.ID != except && sv.MyID != dev {
+			on = append(on, sv.Name)
+		}
+	}
+	return on
 }
 
 // H10
