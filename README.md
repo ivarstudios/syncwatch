@@ -51,7 +51,7 @@ docker compose up -d
 docker logs syncwatch                       # shows the setup token
 ```
 
-The image runs as a non-root user with a read-only root file system. It writes only to `/data`: an SQLite database, `secret.key` and, with self-signed HTTPS, its certificate. The image makes `/data` with mode 0700. A bind mount keeps the mode of the host directory. syncwatch sets the database files to mode 0600 at each start. Make a backup of `/data`.
+The image runs as a non-root user with a read-only root file system. It writes only to `/data`: an SQLite database, `secret.key` and, with self-signed HTTPS, its certificate. The image makes `/data` with mode 0700. A bind mount keeps the mode of the host directory. syncwatch sets the database files to mode 0600 at each start. Make a backup of `/data` (see [Backup and restore](#backup-and-restore)).
 
 If you lose `secret.key`, or change `SYNCWATCH_SECRET_KEY`, syncwatch cannot decrypt the stored API keys and the webhook. The dashboard then shows an H1 finding for each server with the reason that the API key is not readable. The notification banner reports that the webhook is not readable. Type the API keys and the webhook again.
 
@@ -111,6 +111,29 @@ docker buildx imagetools inspect ghcr.io/ivarstudios/syncwatch:1.0.1   # shows "
 3. Run `docker compose up -d`.
 
 Keep auto-updaters such as Watchtower off for this container. The tag `latest` points to the latest final release. A pre-release tag (with a `-`, for example `v1.2.0-rc1`) gets its own tag only. The `Dockerfile` also pins its base images by digest.
+
+### Backup and restore
+
+`/data` has the database (`syncwatch.db`, `syncwatch.db-wal` and `syncwatch.db-shm`), `secret.key` and the TLS files. Make a backup of all of `/data`. If you use `SYNCWATCH_SECRET_KEY`, make a backup of the database and keep a copy of the secret key in a different location. Without the secret key, syncwatch cannot decrypt the API keys, the webhook and the API token of the backup.
+
+Caution: a backup with `secret.key` decrypts the stored API keys. Keep it private, the same as `/data`.
+
+To make a backup:
+
+1. Stop the container: `docker compose stop syncwatch`.
+2. Copy all of the data directory: `cp -a data data-backup`.
+3. Start the container: `docker compose start syncwatch`.
+
+If you cannot stop the container, copy `syncwatch.db`, `syncwatch.db-wal` and `syncwatch.db-shm` together, or use `sqlite3 data/syncwatch.db ".backup data-backup/syncwatch.db"` on the host. A copy of `syncwatch.db` alone from a container that runs does not have the latest changes, because they are in `syncwatch.db-wal`.
+
+To restore a backup:
+
+1. Stop the container.
+2. Replace the contents of the data directory with the backup.
+3. Give the files to the user of the container: `chown -R 65532:65532 data && chmod 700 data`. The image runs as user 65532. syncwatch sets the database files to mode 0600 at the start.
+4. Start the container.
+
+A restored backup has the findings and the notifications of its time. syncwatch then reports the changes after the time of the backup again. For example, it sends a resolved message for a finding that resolved after the backup.
 
 ## First start
 
