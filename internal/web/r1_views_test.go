@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -317,6 +318,70 @@ thresholds: {pc_offline: 1h}
 	}
 	if !strings.Contains(ov, "<dt>Unknown</dt>") {
 		t.Error("overview: the PCs tile does not show the unknown PCs")
+	}
+}
+
+// The token check accepts the scheme in any case (RFC 7235), answers JSON
+// errors as JSON, and logs unknown tokens once a minute per address with a
+// count. The Host check answers API clients in JSON and logs the same way,
+// with at most 100 characters of the Host.
+func TestAPIHygieneAndRefusalLogs(t *testing.T) {
+	e := newEnv(t, twoServers)
+	var logs syncBuffer
+	e.web.log = slog.New(slog.NewTextHandler(&logs, nil))
+	now := time.Now()
+	e.web.now = func() time.Time { return now }
+	if resp, _ := e.apiGet("/api/v1/status", "bearer swt_test_token", ""); resp.StatusCode != http.StatusOK {
+		t.Fatalf("lower-case bearer: %d", resp.StatusCode)
+	}
+	for _, auth := range []string{"", "Bearer swt_guess"} {
+		resp, body := e.apiGet("/api/v1/status", auth, "")
+		if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("Content-Type") != "application/json" || body["error"] == nil {
+			t.Errorf("auth %q: %d %q %v", auth, resp.StatusCode, resp.Header.Get("Content-Type"), body)
+		}
+	}
+	for i := 0; i < 11; i++ {
+		e.apiGet("/api/v1/ha", "Bearer swt_guess", "")
+	}
+	if n := strings.Count(logs.String(), "API request with an unknown token"); n != 1 {
+		t.Errorf("%d log lines for 12 unknown tokens in a minute, want 1:\n%s", n, logs.String())
+	}
+	now = now.Add(61 * time.Second)
+	e.apiGet("/api/v1/status", "Bearer swt_guess", "")
+	if !strings.Contains(logs.String(), "count=12") {
+		t.Errorf("the line after a minute does not count the requests: %s", logs.String())
+	}
+
+	host := strings.Repeat("x", 5000) + ".attacker.invalid"
+	for i := 0; i < 300; i++ {
+		req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/login", nil)
+		req.Host = host
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}
+	text := logs.String()
+	if n := strings.Count(text, "request for an unknown host name refused"); n != 1 {
+		t.Errorf("%d log lines for 300 refused requests in a minute, want 1", n)
+	}
+	if strings.Contains(text, strings.Repeat("x", 101)) {
+		t.Error("the log has more than 100 characters of the Host")
+	}
+	resp, body := e.apiGet("/api/v1/status", "Bearer swt_test_token", "rebind.attacker.invalid")
+	msg, _ := body["error"].(string)
+	if resp.StatusCode != http.StatusMisdirectedRequest || resp.Header.Get("Content-Type") != "application/json" || !strings.Contains(msg, "SYNCWATCH_TLS_HOSTS") {
+		t.Errorf("unknown host on the API: %d %q %v", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+
+	// The login limit: one line a minute per address.
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	csrf := e.csrf("/login")
+	for i := 0; i < 9; i++ {
+		e.post("/login", url.Values{"csrf": {csrf}, "password": {"nope"}})
+	}
+	if n := strings.Count(logs.String(), "login rate limit reached"); n != 1 {
+		t.Errorf("%d log lines for 4 refused logins in a minute, want 1", n)
 	}
 }
 

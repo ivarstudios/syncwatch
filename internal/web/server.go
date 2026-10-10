@@ -56,6 +56,7 @@ type Server struct {
 
 	tmpl    *template.Template
 	limiter *limiter
+	logs    *logLimiter // once-a-minute log lines about refused requests
 	mux     *http.ServeMux
 	hosts   []string // names answered besides addresses, localhost and public_url's host
 
@@ -68,7 +69,7 @@ func New(cfg *config.Holder, st *store.Store, eng *engine.Engine, hooks Hooks, v
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{cfg: cfg, st: st, eng: eng, hooks: hooks, log: log, version: version, now: time.Now, limiter: newLimiter()}
+	s := &Server{cfg: cfg, st: st, eng: eng, hooks: hooks, log: log, version: version, now: time.Now, limiter: newLimiter(), logs: newLogLimiter()}
 	t, err := template.New("").Funcs(s.funcs()).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -218,8 +219,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Referrer-Policy", "same-origin")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 	if !s.hostAllowed(r) {
-		s.log.Info("request for an unknown host name refused", "host", r.Host, "ip", clientIP(r))
-		http.Error(w, fmt.Sprintf("syncwatch does not answer to the host name %q. Open the dashboard by IP address and set the dashboard URL (public_url) in Settings → Notifications, or set SYNCWATCH_TLS_HOSTS to the names that you use", r.Host), http.StatusMisdirectedRequest)
+		// Anyone can send any Host: log a count once a minute per client,
+		// and only the start of a long name.
+		ip, host := clientIP(r), cutText(r.Host, 100)
+		if n := s.logs.count("host "+ip, s.now()); n > 0 {
+			s.log.Info("request for an unknown host name refused", "host", host, "ip", ip, "count", n)
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			apiError(w, http.StatusMisdirectedRequest, fmt.Sprintf("unknown host name %q: add the name to SYNCWATCH_TLS_HOSTS, or use the name in the dashboard URL (public_url)", host))
+			return
+		}
+		http.Error(w, fmt.Sprintf("syncwatch does not answer to the host name %q. Open the dashboard by IP address. Then use the name in the dashboard URL (public_url) in Settings → Notifications, or add the name to SYNCWATCH_TLS_HOSTS.", host), http.StatusMisdirectedRequest)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
@@ -482,7 +492,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 	next := safeNext(r.FormValue("next"))
 	ok, delay := s.limiter.check(ip, now)
 	if !ok {
-		s.log.Warn("login rate limit reached", "ip", ip)
+		if n := s.logs.count("login "+ip, now); n > 0 {
+			s.log.Warn("login rate limit reached", "ip", ip, "count", n)
+		}
 		s.render(w, r, http.StatusTooManyRequests, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": errTooManyLogins})
 		return
 	}

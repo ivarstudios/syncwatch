@@ -98,24 +98,38 @@ func tptr(t time.Time) *time.Time {
 	return &t
 }
 
+// apiError answers an API request with a JSON error body.
+func apiError(w http.ResponseWriter, code int, msg string) {
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_, _ = w.Write(append(b, '\n'))
+}
+
 // apiAuthorized lets a bearer token or a logged-in viewer through to the
-// JSON API, and answers 401 otherwise.
+// JSON API, and answers 401 otherwise. The scheme name is not case
+// sensitive (RFC 7235): "bearer" is the same as "Bearer".
 func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+	if scheme, tok, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
 		want, err := s.st.Secret(store.SecretAPIToken)
-		got := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		got := strings.TrimSpace(tok)
 		if err == nil && want != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
 			return true
 		}
+		ip := clientIP(r)
+		if n := s.logs.count("token "+ip, s.now()); n > 0 {
+			s.log.Warn("API request with an unknown token", "ip", ip, "path", r.URL.Path, "count", n)
+		}
 		w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch"`)
-		http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+		apiError(w, http.StatusUnauthorized, "invalid token")
 		return false
 	}
 	if roleAtLeast(s.resolve(r).Role, RoleViewer) {
 		return true
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch"`)
-	http.Error(w, `{"error":"token required"}`, http.StatusUnauthorized)
+	apiError(w, http.StatusUnauthorized, "token required")
 	return false
 }
 
