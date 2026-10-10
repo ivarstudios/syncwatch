@@ -27,20 +27,23 @@ type Collector struct {
 	log    *slog.Logger
 	client *stclient.Client
 
-	wake        chan struct{}
-	fullNow     chan struct{}
-	lastEventID int64
-	startTime   time.Time
-	failures    int
-	firstFail   time.Time
-	certFails   int       // failed sessions in a row because the certificate changed
-	certWarned  time.Time // when the certificate change was last logged at WARN
-	lastFull    time.Time
-	needFull    bool // a full check was started and hasn't completed
-	lastScan    time.Time
-	lastBase    time.Time
-	scanMu      sync.Mutex
-	scanning    bool
+	wake          chan struct{}
+	fullNow       chan struct{}
+	lastEventID   int64
+	startTime     time.Time
+	failures      int
+	firstFail     time.Time
+	certFails     int       // failed sessions in a row because the certificate changed
+	certWarned    time.Time // when the certificate change was last logged at WARN
+	lastFull      time.Time
+	needFull      bool // a full check was started and hasn't completed
+	configDue     bool // a ConfigSaved event in the current batch; see applyBatch
+	pendingDue    bool // a Pending*Changed event in the current batch
+	pendingWarned bool // the pending re-read failed and was logged this session
+	lastScan      time.Time
+	lastBase      time.Time
+	scanMu        sync.Mutex
+	scanning      bool
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
@@ -159,6 +162,7 @@ func (c *Collector) session(ctx context.Context) error {
 	cfg := c.cfg.Get().Collector
 	mode := cfg.Mode
 	c.update(func(s *model.Server) { s.Mode = mode })
+	c.pendingWarned = false
 	// After a dropped connection (a VPN or firewall closing an idle
 	// long-poll, a short outage) the state from the last full check is still
 	// current if Syncthing didn't restart: Syncthing keeps buffering events
@@ -176,12 +180,7 @@ func (c *Collector) session(ctx context.Context) error {
 		}
 		if recent && time.Since(c.lastFull) < cfg.FullCheckInterval.D() && continues(evs, c.lastEventID) {
 			c.log.Debug("reconnected; resuming events without a full re-check", "since", c.lastEventID)
-			for _, e := range evs {
-				if e.ID > c.lastEventID {
-					c.lastEventID = e.ID
-					c.apply(ctx, e)
-				}
-			}
+			c.applyBatch(ctx, evs)
 			c.succeeded()
 			c.maybeScan(ctx)
 			return c.eventLoop(ctx)
@@ -362,16 +361,39 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 			c.log.Info("missed events; running a full re-check", "from", c.lastEventID, "to", evs[0].ID)
 			c.FullCheckNow()
 		}
-		for _, e := range evs {
-			if e.ID <= c.lastEventID {
-				continue
-			}
-			c.lastEventID = e.ID
-			c.apply(ctx, e)
-		}
+		c.applyBatch(ctx, evs)
 		c.update(func(s *model.Server) { s.LastEvent = now })
 	}
 	return ctx.Err()
+}
+
+// applyBatch applies the events of one long-poll answer. The re-reads some
+// of them ask for (ConfigSaved, Pending*Changed) are done once per batch
+// afterwards, not once per event: five ConfigSaved in a batch are one
+// config re-read, while no long-poll is open.
+func (c *Collector) applyBatch(ctx context.Context, evs []stclient.Event) {
+	for _, e := range evs {
+		if e.ID <= c.lastEventID {
+			continue
+		}
+		c.lastEventID = e.ID
+		c.apply(ctx, e)
+	}
+	if c.configDue {
+		c.configDue = false
+		if err := c.refreshConfig(ctx); err != nil {
+			c.log.Warn("re-reading config after ConfigSaved", "err", shortErr(err))
+			c.FullCheckNow()
+		}
+	}
+	if c.pendingDue {
+		c.pendingDue = false
+		if err := c.refreshPending(ctx); err != nil && !c.pendingWarned {
+			// Once per session: the next full check reads the lists anyway.
+			c.pendingWarned = true
+			c.log.Warn("re-reading pending devices and folders", "err", shortErr(err))
+		}
+	}
 }
 
 func (c *Collector) pollLoop(ctx context.Context) error {

@@ -68,6 +68,20 @@ func (f *fakeST) push(typ string, data any) {
 	}
 }
 
+// pushAll adds several events at once, so one long-poll returns them as a batch.
+func (f *fakeST) pushAll(types ...string) {
+	f.mu.Lock()
+	for _, typ := range types {
+		f.nextID++
+		f.events = append(f.events, stclient.Event{ID: f.nextID, Type: typ, Time: time.Now(), Data: []byte(`{}`)})
+	}
+	f.mu.Unlock()
+	select {
+	case f.notify <- struct{}{}:
+	default:
+	}
+}
+
 func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		f.t.Errorf("non-GET request: %s %s", r.Method, r.URL.Path)
@@ -1082,5 +1096,61 @@ func TestTrafficGapIsNotBooked(t *testing.T) {
 	}
 	if got := tr["akka"]; got.In != 1_000_000 || got.Out != 100_000 {
 		t.Fatalf("recorded traffic: %+v; the bytes moved while away must not count", got)
+	}
+}
+
+// Several ConfigSaved or Pending*Changed events in one batch are one config
+// re-read and one pending re-read, after the batch, not one per event
+// (while no long-poll is open). A failing pending re-read is logged, once
+// per session.
+func TestEventBatchRefreshesOnce(t *testing.T) {
+	fake := newFakeST(t)
+	var mu sync.Mutex
+	pendingFail := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		pf := pendingFail
+		mu.Unlock()
+		if pf && r.URL.Path == "/rest/cluster/pending/devices" {
+			fake.mu.Lock()
+			fake.requests[r.URL.Path]++
+			fake.mu.Unlock()
+			http.Error(w, "nope", http.StatusBadRequest)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	var logs lockedBuf
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	hub, _, _, stop := startManager(t, srv, "collector: {event_timeout: 5s}", log, nil)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	waitUntil(t, "the event loop", func() bool { return fake.count("/rest/events") >= 2 })
+	folders, pending := fake.count("/rest/config/folders"), fake.count("/rest/cluster/pending/devices")
+	fake.pushAll("ConfigSaved", "PendingDevicesChanged", "ConfigSaved", "PendingFoldersChanged", "ConfigSaved")
+	waitUntil(t, "the re-reads", func() bool {
+		return fake.count("/rest/config/folders") > folders && fake.count("/rest/cluster/pending/devices") > pending
+	})
+	time.Sleep(300 * time.Millisecond)
+	if n := fake.count("/rest/config/folders") - folders; n != 1 {
+		t.Fatalf("%d config re-reads for a batch of 3 ConfigSaved; want 1", n)
+	}
+	if n := fake.count("/rest/cluster/pending/devices") - pending; n != 1 {
+		t.Fatalf("%d pending re-reads for a batch of 2 pending events; want 1", n)
+	}
+
+	mu.Lock()
+	pendingFail = true
+	mu.Unlock()
+	const line = "re-reading pending devices and folders"
+	for i := 0; i < 2; i++ {
+		n := fake.count("/rest/cluster/pending/devices")
+		fake.push("PendingDevicesChanged", map[string]any{})
+		waitUntil(t, "the pending re-read", func() bool { return fake.count("/rest/cluster/pending/devices") > n })
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := logs.count("level=WARN msg=\"" + line); n != 1 {
+		t.Fatalf("%d WARN lines for two failed pending re-reads in one session; want 1", n)
 	}
 }
