@@ -11,13 +11,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -187,7 +187,11 @@ func (i *Instance) Start(ctx context.Context) error {
 // Running reports whether the process is up.
 func (i *Instance) Running() bool { return i.cmd != nil }
 
-// Stop shuts Syncthing down through its API, killing it if needed.
+// stopGrace is how long Stop waits for the API shutdown before killing.
+var stopGrace = 15 * time.Second
+
+// Stop shuts Syncthing down through its API, killing it if needed, and
+// waits until its ports are free again.
 func (i *Instance) Stop() error {
 	if i.cmd == nil {
 		return nil
@@ -197,14 +201,32 @@ func (i *Instance) Stop() error {
 	cancel()
 	select {
 	case <-i.done:
-	case <-time.After(15 * time.Second):
-		_ = i.cmd.Process.Kill()
+	case <-time.After(stopGrace):
+		// Syncthing runs as a launcher with a worker child that holds the
+		// ports (also with --no-restart), so the whole tree has to go.
+		killTree(i.cmd)
 		<-i.done
 	}
 	i.cmd = nil
-	// Windows keeps the port briefly; give it a moment.
-	if runtime.GOOS == "windows" {
-		time.Sleep(500 * time.Millisecond)
+	return i.waitPortsFree(10 * time.Second)
+}
+
+// waitPortsFree waits until the GUI and sync ports can be bound again: a
+// child may have outlived the process, and Windows keeps a port briefly.
+func (i *Instance) waitPortsFree(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for _, port := range []int{i.GUIPort, i.SyncPort} {
+		for {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err == nil {
+				ln.Close()
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("%s: port %d still in use after stop: %v", i.Name, port, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 	return nil
 }
