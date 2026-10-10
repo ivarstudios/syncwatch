@@ -543,3 +543,45 @@ func TestSnoozeOnlyKnownFindings(t *testing.T) {
 		t.Fatal("a finding resolved 110 days ago can't be ignored any more")
 	}
 }
+
+// A disabled server leaves the hub, but the engine gives every evaluation
+// the device ID it had when it was polled last: a powered-off disabled NAS
+// is not a PC that is offline, also not in the view that the dashboard,
+// the health line and the API count from.
+func TestDisabledServerIsNotAPC(t *testing.T) {
+	r := newRig(t) // pc_offline: 7 days
+	c := r.cfg.Get().Clone()
+	c.Servers = append(c.Servers, config.Server{ID: "sol", Name: "SOL", URL: "https://sol:1", Disabled: true})
+	if err := r.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	r.hub.Update("a", func(s *model.Server) {
+		s.Devices["SOL-ID"] = &model.Device{ID: "SOL-ID", Name: "SOL-NAS", LastSeen: r.now.Add(-10 * 24 * time.Hour)}
+		s.Folders["f"] = &model.Folder{ID: "f", Label: "LIVE-F", Path: "/s/X/LIVE-F", State: "idle", SharedWith: []string{"SOL-ID"}, Completion: map[string]*model.Completion{}}
+	})
+	// Never polled: its device ID is not known, and it is a PC.
+	if find(r.at(0), "H7", "SOL-NAS") == nil {
+		t.Fatal("expected H7 for a device that nobody knows as a server")
+	}
+	if err := r.st.SetServerDeviceID("sol", "SOL-ID"); err != nil {
+		t.Fatal(err)
+	}
+	v := r.at(time.Minute)
+	for _, check := range []string{"H7", "C2", "C3"} {
+		if g := find(v, check, "SOL"); g != nil {
+			t.Fatalf("%s for the disabled server: %+v", check, g)
+		}
+	}
+	pcs := 0
+	for _, d := range v.Snapshot.Devices() {
+		if d.ID == "SOL-ID" && (!d.IsServer || !d.Disabled || d.Name != "SOL") {
+			t.Fatalf("the view's device list: %+v", d)
+		}
+		if !d.IsServer {
+			pcs++
+		}
+	}
+	if pcs != 0 {
+		t.Fatalf("the disabled server counts as a PC: %d PCs", pcs)
+	}
+}

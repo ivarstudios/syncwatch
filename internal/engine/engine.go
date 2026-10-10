@@ -374,6 +374,7 @@ func (e *Engine) Evaluate() {
 	snap := e.hub.Snapshot()
 	now := e.now()
 	snap.At = now
+	snap.Disabled = e.disabledServers(cfg)
 	conflicts, err := e.st.ConflictsSince(now.Add(-cfg.Thresholds.ConflictWindow.D()))
 	if err != nil {
 		e.log.Warn("cannot read the conflict history", "err", err)
@@ -536,6 +537,22 @@ func (e *Engine) Evaluate() {
 	}
 }
 
+// disabledServers lists the servers that are disabled in the configuration,
+// with the device ID each had when it was polled last. The collector does
+// not poll them, but their devices are servers, not PCs (no H7, C2, C3 or
+// PC counts for a NAS that an administrator disabled).
+func (e *Engine) disabledServers(cfg *config.Config) []model.DisabledServer {
+	var out []model.DisabledServer
+	for _, s := range cfg.Servers {
+		if !s.Disabled {
+			continue
+		}
+		id, _ := e.st.ServerDeviceID(s.ID)
+		out = append(out, model.DisabledServer{ID: s.ID, Name: s.Name, MyID: id})
+	}
+	return out
+}
+
 func (e *Engine) save(r *store.Record) {
 	if err := e.st.SaveRecord(r); err != nil {
 		e.log.Error("cannot save the finding", "id", r.ID, "err", err)
@@ -556,6 +573,9 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 	h := fnv.New64a()
 	w := func(parts ...any) {
 		fmt.Fprintln(h, parts...)
+	}
+	for _, ds := range snap.Disabled {
+		w("disabled", ds.ID, ds.Name, ds.MyID)
 	}
 	for _, sv := range snap.Servers {
 		w(sv.ID, sv.Status, sv.Version, sv.LastError, sv.Loaded, sv.Mode, sv.Cert.NotAfter.Unix())

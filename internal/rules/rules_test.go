@@ -712,3 +712,53 @@ func TestStuckDeviceHeldWhileAway(t *testing.T) {
 	f.Completion[pcID].RemoteState = "unknown"
 	mustNot(t, run(t, c, akka), "H5", "MORTIS")
 }
+
+// A server that is disabled in the configuration is not polled, but its
+// device is a server, not a PC: no H7, C2, C3 (never connected) or H8 for
+// it. H5, H6 and H11 report it as before, seen from the polled servers.
+func TestDisabledServerIsNotAPC(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("akka", "AKKA", akkaID)
+	a.Devices[solID] = &model.Device{ID: solID, Name: "SOL-NAS", LastSeen: now.Add(-100 * 24 * time.Hour)}
+	a.Folders["f"] = folder("f", "LIVE-F", "/s/AKKA-LIVE-1SOURCE/LIVE-F", solID)
+	a.Folders["f"].Completion[solID] = &model.Completion{Percent: 100, RemoteState: "paused"}
+	never := folder("n", "LIVE-N", "/s/AKKA-LIVE-1SOURCE/LIVE-N", solID)
+	a.Folders["n"] = never
+	snap := &model.Snapshot{At: now, Servers: []*model.Server{a}}
+	in := Input{Snapshot: snap, Config: c, Now: now}
+	// As a PC (the device ID is not known): H7 or C2.
+	mustFind(t, Evaluate(in), "C2", "SOL-NAS")
+	snap.Disabled = []model.DisabledServer{{ID: "sol", Name: "SOL", MyID: solID}}
+	fs := Evaluate(in)
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, fs, check, "SOL")
+	}
+	// The remote pause is still reported: SOL does not report it itself.
+	mustFind(t, fs, "H6", "Device SOL paused folder LIVE-F")
+	a.Devices[solID].LastSeen = now.Add(-10 * 24 * time.Hour)
+	a.Connections[solID] = &model.Connection{Connected: true, ClientVersion: "v2.0.9", Type: "relay-client"}
+	fs = Evaluate(in)
+	mustNot(t, fs, "H8", "SOL")
+	mustNot(t, fs, "H7", "SOL")
+	mustFind(t, fs, "H11", "Device SOL is connected to AKKA through a relay")
+	var dv *model.DeviceView
+	for _, d := range snap.Devices() {
+		if d.ID == solID {
+			dv = d
+		}
+	}
+	if dv == nil || !dv.IsServer || !dv.Disabled || dv.ServerID != "sol" || dv.Name != "SOL" || !dv.Connected || dv.Version != "v2.0.9" {
+		t.Fatalf("device view of the disabled server: %+v", dv)
+	}
+	if !snap.IsServerDevice(solID) || snap.ServerByDeviceID(solID) != nil || snap.DeviceName(solID) != "SOL" {
+		t.Fatal("the disabled server's device ID is a server, but not a polled one")
+	}
+	// Never connected, with C2 off: C3 says it for a PC, not for a server.
+	off := false
+	c.Checks["C2"] = config.Check{Enabled: &off}
+	a.Devices[solID].LastSeen = time.Time{}
+	delete(a.Connections, solID)
+	mustNot(t, Evaluate(in), "C3", "SOL")
+	snap.Disabled = nil
+	mustFind(t, Evaluate(in), "C3", "SOL-NAS, which never connected to AKKA")
+}
