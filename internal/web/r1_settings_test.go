@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -465,5 +466,44 @@ func TestLimiterRetryAfter(t *testing.T) {
 		if got := tooManyTries(d); got != "Too many failed tries. Try again in "+want+"." {
 			t.Errorf("%v: %q", d, got)
 		}
+	}
+}
+
+// W-030: after the secret key changed, Settings showed the webhook and the
+// API token as "Set" although syncwatch could not decrypt them.
+func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syncwatch.db")
+	keyA, keyB := make([]byte, 32), make([]byte, 32)
+	keyB[0] = 1
+	st, err := store.Open(path, keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.SetSecret(store.SecretDiscordWebhook, "https://discord.com/api/webhooks/1/x")
+	_ = st.SetSecret(store.SecretAPIToken, "swt_x")
+	st.Close()
+	st, err = store.Open(path, keyB) // another secret key
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	e := newEnv(t, twoServers)
+	e.web.st, e.st = st, st
+	h, _ := HashPassword("correct horse battery")
+	_ = st.SetSetting(KeyAdminHash, h)
+	if r := e.post("/login", url.Values{"csrf": {e.csrf("/login")}, "password": {"correct horse battery"}}); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login: %d", r.StatusCode)
+	}
+	_, page := e.get("/settings")
+	if n := section(t, page, "notifications"); !strings.Contains(n, "(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)") || strings.Contains(n, "(Set. Keep") {
+		t.Errorf("webhook: %s", n[:min(len(n), 600)])
+	}
+	if a := section(t, page, "api"); !strings.Contains(a, "API token: <span class=\"c-err\">set, but syncwatch cannot decrypt it: the secret key changed. Replace the API token or restore the old secret key</span>.") {
+		t.Errorf("API token: %s", a)
+	}
+	// Secrets that syncwatch can decrypt are "Set" as before.
+	_, page = adminEnv(t, twoServers).get("/settings")
+	if strings.Contains(page, "cannot decrypt") || !strings.Contains(page, "(Set. Keep the field empty to keep the current value.)") || !strings.Contains(page, "API token: <strong>set</strong>.") {
+		t.Error("a readable secret is not shown as set")
 	}
 }

@@ -68,7 +68,7 @@
   <h2>Notifications</h2>
   <form method="post" action="/settings/notifications" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
-    <label{{if index $bad "discord_webhook"}} class="c-err"{{end}}>Discord webhook URL {{if $d.HasWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
+    <label{{if index $bad "discord_webhook"}} class="c-err"{{end}}>Discord webhook URL {{if $d.WebhookLost}}<span class="c-err">(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)</span>{{else if $d.HasWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
       <input type="password" name="discord_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"{{if index $bad "discord_webhook"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     {{if $d.HasWebhook}}<label class="check"><input type="checkbox" name="discord_webhook_clear" {{if eq (index $f "discord_webhook_clear") "on"}}checked{{end}}> Remove the webhook</label>{{end}}
     <label{{if index $bad "discord_role_id"}} class="c-err"{{end}}>Role to mention in urgent messages (role ID) <input name="discord_role_id" value="{{index $f "discord_role_id"}}" inputmode="numeric" placeholder="123456789012345678"{{if index $bad "discord_role_id"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
@@ -188,7 +188,7 @@
 
 <section class="card" id="api">
   <h2>JSON status API</h2>
-  <p>Send <code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>. The API is read-only. The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL. API token: {{if $d.HasToken}}<strong>set</strong>{{else}}not set{{end}}.</p>
+  <p>Send <code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>. The API is read-only. The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL. API token: {{if $d.TokenLost}}<span class="c-err">set, but syncwatch cannot decrypt it: the secret key changed. Replace the API token or restore the old secret key</span>{{else if $d.HasToken}}<strong>set</strong>{{else}}not set{{end}}.</p>
   {{if $d.HasToken}}
   <div class="actions">
     <form method="post" action="/settings/api-token" class="inline" data-confirm="Replace the API token? Home Assistant and scripts with the current API token lose access immediately.">

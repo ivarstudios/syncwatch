@@ -58,6 +58,8 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 		"StructureYAML": string(sdoc),
 		"HasWebhook":    s.st.HasSecret(store.SecretDiscordWebhook),
 		"HasToken":      s.st.HasSecret(store.SecretAPIToken),
+		"WebhookLost":   s.undecryptable(store.SecretDiscordWebhook),
+		"TokenLost":     s.undecryptable(store.SecretAPIToken),
 		"HasViewerPW":   hasViewer,
 		"Log":           log,
 		"Weekdays":      []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "off"},
@@ -138,6 +140,17 @@ func badInputs(err error) map[string]bool {
 		bad[k[strings.LastIndex(k, ".")+1:]] = true
 	}
 	return bad
+}
+
+// undecryptable reports whether a secret is stored but cannot be decrypted,
+// for example after the secret key changed. The page then does not say
+// "Set" as if the secret worked.
+func (s *Server) undecryptable(name string) bool {
+	if !s.st.HasSecret(name) {
+		return false
+	}
+	_, err := s.st.Secret(name)
+	return err != nil
 }
 
 func (s *Server) setting(key string) (string, bool) {
