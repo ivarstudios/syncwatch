@@ -440,6 +440,19 @@ The traffic comes out of the counters of Syncthing (`/rest/system/connections`).
 
 [examples/home-assistant.yaml](examples/home-assistant.yaml) is a complete `rest:` block for `configuration.yaml`. It makes one request each minute. For each server it has a binary sensor for `running` and 5 sensors. The sensors are the status, the data moved in 24 hours and in 7 days, and the download and upload speed. Write the server IDs as `servers['akka']`: an ID can have a hyphen, and `servers.nas-1` is a subtraction in a template. Home Assistant only gets the read-only API token of syncwatch, never a Syncthing API key. Thus the example also works with the [read-only gate](#read-only-gate).
 
+- The example has the servers AKKA and SOL. The sensors of SIRIUS are a comment. Use the sensors only for your own servers.
+- Each entity has an availability template. When the answer has no data for the server, the state is `unavailable`, not `off`. An example is the answer HTTP 401 after a change of the API token.
+- `running` is also `false` in the first seconds after a start of syncwatch, until syncwatch contacted the server. Give an automation on `running` a delay, for example `for: "00:05:00"`.
+- A second request reads the count of urgent findings from `/api/v1/status` (`counts.urgent`). Use this sensor for automations. The status of a server can show `syncing` or `error` for a short time without a finding.
+
+Caution: with `verify_ssl: false`, Home Assistant does not check the certificate of syncwatch. It sends the API token to each server that answers at the address of the resource. If possible, give syncwatch your own certificate (`SYNCWATCH_TLS_CERT`) and use `verify_ssl: true`.
+
+To replace the API token:
+
+1. In syncwatch, open Settings → API and select **Replace API token**. syncwatch refuses the old API token immediately.
+2. Type the new API token in `secrets.yaml` of Home Assistant (`syncwatch_auth: "Bearer swt_…"`).
+3. In Home Assistant, open Developer tools → YAML. Select the reload of the RESTful entities. Home Assistant needs no restart.
+
 ## Server probe
 
 Before you depend on syncwatch, examine how the API of your servers behaves. The probe is also read-only. It takes the API key from the environment and does not store it:

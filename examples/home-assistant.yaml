@@ -1,5 +1,6 @@
-# Home Assistant sensors from syncwatch, for 3 servers (AKKA, SOL and
-# SIRIUS, as in examples/ivar.yaml).
+# Home Assistant sensors from syncwatch, for the servers AKKA and SOL of
+# examples/ivar.yaml. The sensors of the third server SIRIUS are a comment at
+# the end. Remove the # signs there if you have that server.
 # Paste this block into configuration.yaml (or a package). Write the API
 # token in secrets.yaml:
 #
@@ -12,36 +13,46 @@
 # subtraction in a Jinja template. For each server you get 6 entities: a
 # binary sensor (the server answers) and the status. Also the data moved in
 # the last 24 hours and in 7 days, and the download and upload speed. The
-# data sensors have the attributes received and sent. Remove the
-# sensors of a server that you do not have: a missing key logs a template
-# error each minute. Home Assistant never gets a Syncthing API key. The API
-# token of syncwatch is read-only. The request goes to an IP address. A
-# request by a host name needs that name in SYNCWATCH_TLS_HOSTS of syncwatch.
+# data sensors have the attributes received and sent.
+# Each entity has an availability template. When the answer has no data for
+# the server, the state of the entity is `unavailable`, not `off`. An example
+# is the answer HTTP 401 after a change of the API token. Use the sensors only
+# for the servers that you have: the entities of an unknown server ID stay
+# `unavailable`.
+# Home Assistant never gets a Syncthing API key. The API token of syncwatch is
+# read-only. The request goes to an IP address. A request by a host name needs
+# that name in SYNCWATCH_TLS_HOSTS of syncwatch.
 rest:
   - resource: https://192.168.1.10:8080/api/v1/ha
     headers:
       Authorization: !secret syncwatch_auth
-    verify_ssl: false          # the self-signed certificate of syncwatch
+    # The self-signed certificate of syncwatch. Home Assistant does not check
+    # the certificate and sends the API token to each server at this address.
+    verify_ssl: false
     scan_interval: 60
     timeout: 20
     binary_sensor:
       - name: AKKA Syncthing running
         unique_id: syncwatch_akka_running
         device_class: running
+        availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].running }}"
       - name: SOL Syncthing running
         unique_id: syncwatch_sol_running
         device_class: running
+        availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].running }}"
-      - name: SIRIUS Syncthing running
-        unique_id: syncwatch_sirius_running
-        device_class: running
-        value_template: "{{ value_json.servers['sirius'].running }}"
+      # - name: SIRIUS Syncthing running
+      #   unique_id: syncwatch_sirius_running
+      #   device_class: running
+      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
+      #   value_template: "{{ value_json.servers['sirius'].running }}"
     sensor:
       # AKKA
       - name: AKKA Syncthing status
         unique_id: syncwatch_akka_status
         icon: mdi:sync
+        availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].status }}"
         json_attributes_path: "$.servers['akka']"
         json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
@@ -50,6 +61,7 @@ rest:
         device_class: data_size
         state_class: measurement
         unit_of_measurement: GB
+        availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].moved_24h_gb }}"
         json_attributes_path: "$.servers['akka']"
         json_attributes: [received_24h_gb, sent_24h_gb]
@@ -58,6 +70,7 @@ rest:
         device_class: data_size
         state_class: measurement
         unit_of_measurement: GB
+        availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].moved_7d_gb }}"
         json_attributes_path: "$.servers['akka']"
         json_attributes: [received_7d_gb, sent_7d_gb]
@@ -66,17 +79,20 @@ rest:
         device_class: data_rate
         state_class: measurement
         unit_of_measurement: MB/s
+        availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].download_mb_s }}"
       - name: AKKA upload speed
         unique_id: syncwatch_akka_upload
         device_class: data_rate
         state_class: measurement
         unit_of_measurement: MB/s
+        availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].upload_mb_s }}"
       # SOL
       - name: SOL Syncthing status
         unique_id: syncwatch_sol_status
         icon: mdi:sync
+        availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].status }}"
         json_attributes_path: "$.servers['sol']"
         json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
@@ -85,6 +101,7 @@ rest:
         device_class: data_size
         state_class: measurement
         unit_of_measurement: GB
+        availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].moved_24h_gb }}"
         json_attributes_path: "$.servers['sol']"
         json_attributes: [received_24h_gb, sent_24h_gb]
@@ -93,6 +110,7 @@ rest:
         device_class: data_size
         state_class: measurement
         unit_of_measurement: GB
+        availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].moved_7d_gb }}"
         json_attributes_path: "$.servers['sol']"
         json_attributes: [received_7d_gb, sent_7d_gb]
@@ -101,45 +119,70 @@ rest:
         device_class: data_rate
         state_class: measurement
         unit_of_measurement: MB/s
+        availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].download_mb_s }}"
       - name: SOL upload speed
         unique_id: syncwatch_sol_upload
         device_class: data_rate
         state_class: measurement
         unit_of_measurement: MB/s
+        availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].upload_mb_s }}"
       # SIRIUS
-      - name: SIRIUS Syncthing status
-        unique_id: syncwatch_sirius_status
-        icon: mdi:sync
-        value_template: "{{ value_json.servers['sirius'].status }}"
-        json_attributes_path: "$.servers['sirius']"
-        json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
-      - name: SIRIUS data moved 24 h
-        unique_id: syncwatch_sirius_moved_24h
-        device_class: data_size
+      # - name: SIRIUS Syncthing status
+      #   unique_id: syncwatch_sirius_status
+      #   icon: mdi:sync
+      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
+      #   value_template: "{{ value_json.servers['sirius'].status }}"
+      #   json_attributes_path: "$.servers['sirius']"
+      #   json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
+      # - name: SIRIUS data moved 24 h
+      #   unique_id: syncwatch_sirius_moved_24h
+      #   device_class: data_size
+      #   state_class: measurement
+      #   unit_of_measurement: GB
+      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
+      #   value_template: "{{ value_json.servers['sirius'].moved_24h_gb }}"
+      #   json_attributes_path: "$.servers['sirius']"
+      #   json_attributes: [received_24h_gb, sent_24h_gb]
+      # - name: SIRIUS data moved 7 days
+      #   unique_id: syncwatch_sirius_moved_7d
+      #   device_class: data_size
+      #   state_class: measurement
+      #   unit_of_measurement: GB
+      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
+      #   value_template: "{{ value_json.servers['sirius'].moved_7d_gb }}"
+      #   json_attributes_path: "$.servers['sirius']"
+      #   json_attributes: [received_7d_gb, sent_7d_gb]
+      # - name: SIRIUS download speed
+      #   unique_id: syncwatch_sirius_download
+      #   device_class: data_rate
+      #   state_class: measurement
+      #   unit_of_measurement: MB/s
+      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
+      #   value_template: "{{ value_json.servers['sirius'].download_mb_s }}"
+      # - name: SIRIUS upload speed
+      #   unique_id: syncwatch_sirius_upload
+      #   device_class: data_rate
+      #   state_class: measurement
+      #   unit_of_measurement: MB/s
+      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
+      #   value_template: "{{ value_json.servers['sirius'].upload_mb_s }}"
+
+  # The count of urgent findings that are open and not snoozed, from the
+  # status API. Use this sensor for automations. The status of a server can
+  # show "syncing" or "error" for a short time without a finding.
+  - resource: https://192.168.1.10:8080/api/v1/status
+    headers:
+      Authorization: !secret syncwatch_auth
+    verify_ssl: false
+    scan_interval: 60
+    timeout: 20
+    sensor:
+      - name: syncwatch urgent findings
+        unique_id: syncwatch_urgent
+        icon: mdi:alert
         state_class: measurement
-        unit_of_measurement: GB
-        value_template: "{{ value_json.servers['sirius'].moved_24h_gb }}"
-        json_attributes_path: "$.servers['sirius']"
-        json_attributes: [received_24h_gb, sent_24h_gb]
-      - name: SIRIUS data moved 7 days
-        unique_id: syncwatch_sirius_moved_7d
-        device_class: data_size
-        state_class: measurement
-        unit_of_measurement: GB
-        value_template: "{{ value_json.servers['sirius'].moved_7d_gb }}"
-        json_attributes_path: "$.servers['sirius']"
-        json_attributes: [received_7d_gb, sent_7d_gb]
-      - name: SIRIUS download speed
-        unique_id: syncwatch_sirius_download
-        device_class: data_rate
-        state_class: measurement
-        unit_of_measurement: MB/s
-        value_template: "{{ value_json.servers['sirius'].download_mb_s }}"
-      - name: SIRIUS upload speed
-        unique_id: syncwatch_sirius_upload
-        device_class: data_rate
-        state_class: measurement
-        unit_of_measurement: MB/s
-        value_template: "{{ value_json.servers['sirius'].upload_mb_s }}"
+        availability: "{{ value_json is mapping and 'counts' in value_json }}"
+        value_template: "{{ value_json.counts.urgent }}"
+        json_attributes: [health, counts]
