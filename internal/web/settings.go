@@ -808,7 +808,13 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 		return
 	}
 	old := s.cfg.Get()
-	// Checked before anything from the file is stored.
+	// Checked before anything from the file is stored. Built-in login with
+	// no admin password would send everyone to a setup page whose token was
+	// never logged (the process started in proxy mode).
+	if c.Access.Mode == config.AccessBuiltin && !s.adminConfigured() {
+		s.redirect(w, r, "/settings#import", "Not imported: the file switches built-in login on, but no admin password is set, so nobody could log in. Set an admin password under Access first.", true)
+		return
+	}
 	if weakensAccess(old, c) {
 		if msg := s.confirmAdmin(r); msg != "" {
 			s.redirect(w, r, "/settings#import", "Not imported: the file switches login off or opens viewing. "+msg, true)

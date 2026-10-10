@@ -228,3 +228,32 @@ func TestHidingUrgentProblemsIsAnnounced(t *testing.T) {
 		t.Fatalf("urgent ignore: %q", n)
 	}
 }
+
+// In proxy mode no admin password may exist. A file without an access
+// section switches built-in login on, which would lock everyone out (the
+// setup token is only logged at a start in built-in mode), so it is refused.
+func TestImportCannotLockEveryoneOut(t *testing.T) {
+	e := newEnv(t, twoServers+"access: {mode: proxy}\n")
+	csrf := e.csrf("/settings")
+	imp := func(yaml string) (string, bool) {
+		return flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {yaml}}))
+	}
+	file := "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\n"
+	if msg, isErr := imp(file); !isErr || !strings.Contains(msg, "admin password") {
+		t.Fatalf("import to built-in login without an admin password: %q %v", msg, isErr)
+	}
+	if e.cfg.Get().Access.Mode != "proxy" {
+		t.Fatal("mode changed")
+	}
+	if resp, _ := e.get("/"); resp.StatusCode != 200 {
+		t.Fatalf("dashboard after the refused import: %d", resp.StatusCode)
+	}
+	// With an admin password set (the password form works in proxy mode), the same file is fine.
+	e.post("/settings/password", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}, "password2": {"correct horse battery"}})
+	if msg, isErr := imp(file); isErr {
+		t.Fatalf("import with an admin password: %q", msg)
+	}
+	if e.cfg.Get().Access.Mode != "builtin" {
+		t.Fatal("mode not changed")
+	}
+}
