@@ -3,6 +3,8 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,11 +24,16 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 		}
 		c.withFolder(d.Folder, func(f *model.Folder) {
 			f.State, f.StateChanged = d.To, e.Time
-			if d.To == "error" && d.Error != "" {
-				f.Error = d.Error
-			}
-			if d.From == "error" && d.To != "error" {
-				f.Error = ""
+			if d.To == "error" {
+				delete(c.clearDue, f.ID)
+				if d.Error != "" {
+					f.Error = d.Error
+				}
+			} else if d.From == "error" && f.Error != "" {
+				// A Syncthing that stops also reports its folders in error
+				// as idle, just before its API goes away: the folder keeps
+				// its error until Syncthing answers again (confirmClears).
+				c.noteClear(f.ID)
 			}
 		})
 	case "FolderSummary":
@@ -34,7 +41,18 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 		if json.Unmarshal(e.Data, &d) != nil {
 			return
 		}
-		c.withFolder(d.Folder, func(f *model.Folder) { applyDBStatus(f, d.Summary) })
+		c.withFolder(d.Folder, func(f *model.Folder) {
+			ferr := f.Error
+			applyDBStatus(f, d.Summary)
+			switch {
+			case f.State == "error" || f.Error != "":
+				delete(c.clearDue, f.ID)
+			case ferr != "":
+				// The same as for StateChanged above.
+				f.Error = ferr
+				c.noteClear(f.ID)
+			}
+		})
 	case "FolderCompletion":
 		var d stclient.FolderCompletionData
 		if json.Unmarshal(e.Data, &d) != nil || d.Device == "" {
@@ -129,6 +147,8 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 					f.LastLocalChange = e.Time
 				}
 			})
+		} else {
+			c.conflictCopy(d)
 		}
 		c.diskChange(d, e.Time)
 	}
@@ -139,6 +159,67 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// clearConfirm is how long after an event reported a folder out of error
+// Syncthing must still answer before the folder's error is cleared. A
+// Syncthing that stops sends that event and closes its API within about
+// a second.
+var clearConfirm = 10 * time.Second
+
+// noteClear remembers that an event reported folder id out of error; the
+// first report counts.
+func (c *Collector) noteClear(id string) {
+	if c.clearDue == nil {
+		c.clearDue = map[string]time.Time{}
+	}
+	if _, ok := c.clearDue[id]; !ok {
+		c.clearDue[id] = time.Now()
+	}
+}
+
+// confirmClears clears the errors of the folders that events reported out
+// of error at least clearConfirm before now, the time of a long-poll that
+// Syncthing answered: it did not stop.
+func (c *Collector) confirmClears(now time.Time) {
+	for id, at := range c.clearDue {
+		if now.Sub(at) < clearConfirm {
+			continue
+		}
+		delete(c.clearDue, id)
+		c.withFolder(id, func(f *model.Folder) {
+			if f.State != "error" {
+				f.Error = ""
+			}
+		})
+	}
+}
+
+// clearWait is the timeout for the next long-poll while errors wait for
+// confirmClears, so that Syncthing answers once the first of them can be
+// confirmed. ok is false when no error waits.
+func (c *Collector) clearWait() (wait time.Duration, ok bool) {
+	var first time.Time
+	for _, at := range c.clearDue {
+		if first.IsZero() || at.Before(first) {
+			first = at
+		}
+	}
+	if first.IsZero() {
+		return 0, false
+	}
+	// Whole seconds, rounded up: the timeout is sent in seconds.
+	return max(time.Until(first.Add(clearConfirm)).Truncate(time.Second)+time.Second, time.Second), true
+}
+
+// dropClears forgets the errors that waited for confirmClears when the
+// session ends: the folders keep their errors, and the next session starts
+// with a full check, which reads them again.
+func (c *Collector) dropClears() {
+	if len(c.clearDue) > 0 {
+		c.clearDue = nil
+		c.needFull = true
+	}
 }
 
 // gapState is what missedEvents keeps between gaps in the event stream.
@@ -275,6 +356,55 @@ func (c *Collector) refreshPending(ctx context.Context) error {
 	}
 	c.update(func(s *model.Server) { s.PendingDevices, s.PendingFolders = devs, folds })
 	return nil
+}
+
+// conflictName matches the name of a conflict copy that Syncthing makes,
+// for example notes.sync-conflict-20261010-205040-OHP4C7G.md.
+var conflictName = regexp.MustCompile(`\.sync-conflict-\d{8}-\d{6}-[A-Z0-9]{7}`)
+
+// maxCopies is how many conflict copies conflictCopy remembers.
+const maxCopies = 1000
+
+// copySet is a set of keys that forgets the oldest key above maxCopies.
+type copySet struct {
+	keys  map[string]bool
+	order []string
+}
+
+// add adds key and reports whether it was new.
+func (s *copySet) add(key string) bool {
+	if s.keys[key] {
+		return false
+	}
+	if s.keys == nil {
+		s.keys = map[string]bool{}
+	}
+	if len(s.order) >= maxCopies {
+		delete(s.keys, s.order[0])
+		s.order = s.order[1:]
+	}
+	s.keys[key] = true
+	s.order = append(s.order, key)
+	return true
+}
+
+// conflictCopy counts a conflict copy that another device made and that
+// reached this server (H10). Syncthing raises its conflict counter only on
+// the device that makes the copy; a copy that the server makes itself
+// comes as LocalChangeDetected and is in the counter. Each copy counts
+// once, also when it changes again.
+func (c *Collector) conflictCopy(d stclient.DiskChangeData) {
+	if d.Type != "file" || d.Action == "deleted" || !conflictName.MatchString(d.Path[strings.LastIndexAny(d.Path, `/\`)+1:]) {
+		return
+	}
+	folder := firstNonEmpty(d.FolderID, d.Folder)
+	if !c.copies.add(folder + "\x00" + d.Path) {
+		return
+	}
+	c.log.Info("conflict copy received", "folder", folder, "path", d.Path)
+	if err := c.st.AddConflicts(c.id, folder, 1, time.Now()); err != nil {
+		c.log.Warn("cannot save the sync conflict", "folder", folder, "path", d.Path, "err", err)
+	}
 }
 
 // diskChange catches nested project folders inside synced folders as they

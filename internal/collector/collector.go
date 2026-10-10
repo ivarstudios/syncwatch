@@ -36,7 +36,7 @@ type Collector struct {
 	certFails     int       // failed sessions in a row because the certificate changed
 	certWarned    time.Time // when the certificate change was last logged at WARN
 	lastFull      time.Time
-	needFull      bool // a full check was started and hasn't completed
+	needFull      bool // the next session starts with a full check: one did not complete, or see dropClears
 	configDue     bool // a ConfigSaved event in the current batch; see applyBatch
 	pendingDue    bool // a Pending*Changed event in the current batch
 	pendingWarned bool // the pending re-read failed and was logged this session
@@ -46,6 +46,8 @@ type Collector struct {
 	scanning      bool
 	scanTimerOn   bool // scanTimer runs (events mode)
 	gaps          gapState
+	clearDue      map[string]time.Time // folders whose error events cleared, with when; see confirmClears
+	copies        copySet              // conflict copies counted from events; see conflictCopy
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
@@ -120,6 +122,7 @@ func (c *Collector) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		c.dropClears()
 		c.failed(err)
 		// A wake-up that arrived while the session was running (an
 		// in-session FullCheckNow, a pin reset while the server was up) is
@@ -343,13 +346,18 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 		}
 		c.maybeScan(ctx)
 
-		evs, err := c.client.Events(ctx, c.lastEventID, cfg.EventTimeout.D(), stclient.EventMask)
+		timeout := cfg.EventTimeout.D()
+		if w, ok := c.clearWait(); ok && w < timeout {
+			timeout = w
+		}
+		evs, err := c.client.Events(ctx, c.lastEventID, timeout, stclient.EventMask)
 		if err != nil {
 			return err
 		}
 		now := time.Now()
 		c.update(func(s *model.Server) { s.LastContact = now })
 		if len(evs) == 0 {
+			c.confirmClears(now)
 			continue
 		}
 		if evs[0].ID <= c.lastEventID && c.lastEventID > 0 && evs[len(evs)-1].ID < c.lastEventID {
@@ -365,6 +373,7 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 			c.missedEvents(ctx, c.lastEventID, evs[0].ID, evs)
 		}
 		c.applyBatch(ctx, evs)
+		c.confirmClears(now)
 		c.update(func(s *model.Server) { s.LastEvent = now })
 	}
 	return ctx.Err()
@@ -674,6 +683,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	})
 	c.lastFull = now
 	c.needFull = false
+	c.clearDue = nil // every folder's error was read again
 	if err := c.st.SetServerDeviceID(c.id, status.MyID); err != nil {
 		c.log.Warn("cannot save the device ID of the server", "err", err)
 	}
