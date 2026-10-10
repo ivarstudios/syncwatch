@@ -103,6 +103,47 @@ func TestEnvBool(t *testing.T) {
 	}
 }
 
+// reset-admin-password records a settings notice for the server, which sends
+// it (internal/app TestCLIChangesAnnounced).
+func TestResetPasswordRecordsNotice(t *testing.T) {
+	t.Setenv("SYNCWATCH_SECRET_KEY", "")
+	dir := t.TempDir()
+	st, err := app.OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	in := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(in, []byte("a-new-password-123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	stdin := os.Stdin
+	os.Stdin = f
+	defer func() { os.Stdin = stdin }()
+	if err := resetPassword([]string{"--data", dir}); err != nil {
+		t.Fatal(err)
+	}
+	st, err = app.OpenExistingStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	notices, err := st.SettingsWithPrefix("cli.notice.")
+	if err != nil || len(notices) != 1 {
+		t.Fatalf("notices %v %v", notices, err)
+	}
+	for _, v := range notices {
+		if !strings.Contains(v, "Administrator password changed with the command line") {
+			t.Fatalf("notice %s", v)
+		}
+	}
+}
+
 // The maintenance commands work on an existing instance; a wrong --data must
 // not become a fresh, empty one that reports success.
 func TestMaintenanceCommandsNeedExistingData(t *testing.T) {

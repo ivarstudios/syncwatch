@@ -306,6 +306,11 @@ func resetPassword(args []string) error {
 	if err := st.DeleteSessions(""); err != nil {
 		return err
 	}
+	// The server that runs sends a settings notice (a server that does not
+	// run sends it when it starts).
+	if err := app.RecordPasswordReset(st); err != nil {
+		return err
+	}
 	fmt.Fprintln(os.Stderr, "The new administrator password is set. syncwatch logged out all sessions.")
 	return nil
 }

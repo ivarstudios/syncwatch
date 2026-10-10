@@ -7,7 +7,9 @@ package probe
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -72,7 +74,7 @@ func Run(ctx context.Context, o Options, log *slog.Logger) error {
 	status, err := cl.SystemStatus(ctx)
 	if err != nil {
 		rep.add("**The connection failed:** %v", err)
-		return write(o, rep, log)
+		return stop(o, rep, log, fmt.Errorf("the connection failed: %w", err))
 	}
 	cert := cl.LastCert()
 	rep.add("### TLS (8)")
@@ -108,7 +110,7 @@ func Run(ctx context.Context, o Options, log *slog.Logger) error {
 	requests++
 	if err != nil {
 		rep.add("**The request `config/folders` failed:** %v", err)
-		return write(o, rep, log)
+		return stop(o, rep, log, fmt.Errorf("the request config/folders failed: %w", err))
 	}
 	devices, _ := cl.ConfigDevices(ctx)
 	conns, _ := cl.Connections(ctx)
@@ -316,7 +318,7 @@ func Run(ctx context.Context, o Options, log *slog.Logger) error {
 	evs, err := cl.Events(ctx, 0, time.Second, stclient.EventMask)
 	if err != nil {
 		rep.add("- The subscription with the event mask failed: %v", err)
-		return write(o, rep, log)
+		return stop(o, rep, log, fmt.Errorf("the subscription with the event mask failed: %w", err))
 	}
 	last := int64(0)
 	for _, e := range evs {
@@ -412,21 +414,33 @@ func clip(s string, n int) string {
 	return s[:n] + "…"
 }
 
+// stop writes the report as far as the probe got and returns why the probe
+// stopped early. A probe that could not test the server exits with status 1.
+func stop(o Options, rep *report, log *slog.Logger, err error) error {
+	return errors.Join(err, write(o, rep, log))
+}
+
+// stdout gets the report with --out - and when --out cannot be written.
+var stdout io.Writer = os.Stdout
+
 func write(o Options, rep *report, log *slog.Logger) error {
 	text := strings.Join(rep.lines, "\n") + "\n"
 	if o.Out == "" || o.Out == "-" {
-		fmt.Print(text)
+		fmt.Fprint(stdout, text)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(o.Out), 0o755); err != nil {
-		return err
+	err := os.MkdirAll(filepath.Dir(o.Out), 0o755)
+	if err == nil {
+		existing, _ := os.ReadFile(o.Out)
+		if len(existing) == 0 {
+			existing = []byte("# Syncthing API probe report\n\n`syncwatch probe` writes this file. Each section is one probe run for one server.\n\n## Probe runs\n\n")
+		}
+		err = os.WriteFile(o.Out, append(existing, []byte(text+"\n")...), 0o644)
 	}
-	existing, _ := os.ReadFile(o.Out)
-	if len(existing) == 0 {
-		existing = []byte("# Syncthing API probe report\n\n`syncwatch probe` writes this file. Each section is one probe run for one server.\n\n## Probe runs\n\n")
-	}
-	if err := os.WriteFile(o.Out, append(existing, []byte(text+"\n")...), 0o644); err != nil {
-		return err
+	if err != nil {
+		// The run took minutes: its results are not lost.
+		fmt.Fprint(stdout, text)
+		return fmt.Errorf("cannot write the probe report to %s (syncwatch printed it to standard output): %w", o.Out, err)
 	}
 	log.Info("probe report written", "file", o.Out)
 	return nil

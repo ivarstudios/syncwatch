@@ -189,6 +189,35 @@ func (s *Store) Secret(name string) (string, error) {
 	return string(pt), nil
 }
 
+// UnreadableSecrets returns the names of the stored secrets that the secret
+// key cannot decrypt, and the number of stored secrets. A new or changed
+// secret key makes all of them unreadable.
+func (s *Store) UnreadableSecrets() (names []string, total int, err error) {
+	gcm, err := s.aead()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(`SELECT name, nonce, ciphertext FROM secrets ORDER BY name`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var nonce, ct []byte
+		if err := rows.Scan(&name, &nonce, &ct); err != nil {
+			return nil, 0, err
+		}
+		total++
+		if len(nonce) != gcm.NonceSize() {
+			names = append(names, name)
+		} else if _, err := gcm.Open(nil, nonce, ct, []byte(name)); err != nil {
+			names = append(names, name)
+		}
+	}
+	return names, total, rows.Err()
+}
+
 // HasSecret reports whether a secret is set, without decrypting it.
 func (s *Store) HasSecret(name string) bool {
 	var n int

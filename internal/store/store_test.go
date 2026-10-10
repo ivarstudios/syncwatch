@@ -148,6 +148,57 @@ func TestDatabaseFilesOwnerOnly(t *testing.T) {
 	}
 }
 
+// A missing or replaced secret key is found at start: every stored secret is
+// unreadable with the new key, and none with the right one.
+func TestUnreadableSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "syncwatch.db")
+	right := bytes.Repeat([]byte{1}, 32)
+	s, err := Open(path, right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bad, total, err := s.UnreadableSecrets(); err != nil || bad != nil || total != 0 {
+		t.Fatalf("empty store: %v %d %v", bad, total, err)
+	}
+	_ = s.SetSecret(SecretDiscordWebhook, "https://discord.com/api/webhooks/1/x")
+	_ = s.SetServerKey("akka", "k1", "https://10.0.0.1:8384")
+	if bad, total, err := s.UnreadableSecrets(); err != nil || bad != nil || total != 2 {
+		t.Fatalf("right key: %v %d %v", bad, total, err)
+	}
+	s.Close()
+	s, err = Open(path, bytes.Repeat([]byte{2}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	bad, total, err := s.UnreadableSecrets()
+	if err != nil || total != 2 || strings.Join(bad, ",") != SecretDiscordWebhook+","+ServerAPIKeySecret("akka") {
+		t.Fatalf("other key: %v %d %v", bad, total, err)
+	}
+	// A secret typed again with the new key is readable, the others are not.
+	_ = s.SetSecret(SecretDiscordWebhook, "https://discord.com/api/webhooks/1/y")
+	if bad, total, _ := s.UnreadableSecrets(); total != 2 || len(bad) != 1 || bad[0] != ServerAPIKeySecret("akka") {
+		t.Fatalf("after a new webhook: %v %d", bad, total)
+	}
+}
+
+func TestSettingsWithPrefix(t *testing.T) {
+	s := testStore(t)
+	for k, v := range map[string]string{"cli.notice.1": "a", "cli.notice.2": "b", "cli.noticeX": "c", "cli_notice.3": "d", "other": "e"} {
+		if err := s.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.SettingsWithPrefix("cli.notice.")
+	if err != nil || len(got) != 2 || got["cli.notice.1"] != "a" || got["cli.notice.2"] != "b" {
+		t.Fatalf("got %v %v", got, err)
+	}
+	if got, err := s.SettingsWithPrefix("none."); err != nil || len(got) != 0 {
+		t.Fatalf("no match: %v %v", got, err)
+	}
+}
+
 func TestConfigRevision(t *testing.T) {
 	s := testStore(t)
 	if rev, err := s.ConfigRevision(); err != nil || rev != 0 {
