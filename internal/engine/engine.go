@@ -126,7 +126,7 @@ func (e *Engine) Run(ctx context.Context) {
 const resolvedMemory = 90 * 24 * time.Hour
 
 // errUnknownFinding is returned for snoozes of findings that don't exist.
-var errUnknownFinding = errors.New("No open or recent problem has this ID.")
+var errUnknownFinding = errors.New("No open or recent finding has this ID.")
 
 // Prune removes old history, expired snoozes and sessions.
 func (e *Engine) Prune() {
@@ -141,7 +141,7 @@ func (e *Engine) Prune() {
 		e.st.PruneSessions(now),
 	} {
 		if err != nil {
-			e.log.Warn("pruning the database", "err", err)
+			e.log.Warn("cannot delete old records from the database", "err", err)
 		}
 	}
 	if z, err := e.st.Snoozes(); err == nil {
@@ -315,7 +315,7 @@ func (e *Engine) Evaluate() {
 	snap.At = now
 	conflicts, err := e.st.ConflictsSince(now.Add(-cfg.Thresholds.ConflictWindow.D()))
 	if err != nil {
-		e.log.Warn("reading conflict history", "err", err)
+		e.log.Warn("cannot read the conflict history", "err", err)
 	}
 	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts})
 	z := newFreezer(snap)
@@ -374,7 +374,7 @@ func (e *Engine) Evaluate() {
 			e.open[id] = rec
 			e.save(rec)
 			if err := e.st.HistoryOpen(rec); err != nil {
-				e.log.Warn("writing history", "err", err)
+				e.log.Warn("cannot write the finding history", "err", err)
 			}
 			e.persisted[id] = now
 			changed = true
@@ -413,7 +413,7 @@ func (e *Engine) Evaluate() {
 			rec.ResolvedAt, rec.LastSeen, rec.ResolvedNotifiedAt = now, now, now
 			e.save(rec)
 			if err := e.st.HistoryResolveNote(id, now, "server removed or disabled"); err != nil {
-				e.log.Warn("writing history", "err", err)
+				e.log.Warn("cannot write the finding history", "err", err)
 			}
 			delete(e.open, id)
 			delete(e.persisted, id)
@@ -433,7 +433,7 @@ func (e *Engine) Evaluate() {
 		rec.LastSeen = now
 		e.save(rec)
 		if err := e.st.HistoryResolve(id, now); err != nil {
-			e.log.Warn("writing history", "err", err)
+			e.log.Warn("cannot write the finding history", "err", err)
 		}
 		delete(e.open, id)
 		delete(e.persisted, id)
@@ -455,7 +455,7 @@ func (e *Engine) Evaluate() {
 	e.mu.Unlock()
 
 	if err := e.st.ApplyObservations(obsAdd, obsRemove); err != nil {
-		e.log.Warn("writing observations", "err", err)
+		e.log.Warn("cannot save the observations", "err", err)
 	}
 	if publish {
 		e.publish(ver)
@@ -467,7 +467,7 @@ func (e *Engine) Evaluate() {
 
 func (e *Engine) save(r *store.Record) {
 	if err := e.st.SaveRecord(r); err != nil {
-		e.log.Error("saving finding", "id", r.ID, "err", err)
+		e.log.Error("cannot save the finding", "id", r.ID, "err", err)
 	}
 }
 

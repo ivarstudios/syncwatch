@@ -68,7 +68,7 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 		Log:     log,
 		OnPin: func(fp string) {
 			if err := st.SetPin(sc.ID, fp); err != nil {
-				c.log.Error("saving pinned certificate", "err", err)
+				c.log.Error("cannot save the pinned certificate", "err", err)
 			}
 		},
 	})
@@ -156,7 +156,7 @@ func (c *Collector) session(ctx context.Context) error {
 	restarted := !status.StartTime.Equal(c.startTime)
 	if restarted {
 		if !c.startTime.IsZero() {
-			c.log.Info("Syncthing restarted; re-reading everything", "startTime", status.StartTime)
+			c.log.Info("Syncthing restarted, full check started", "startTime", status.StartTime)
 		}
 		c.startTime = status.StartTime
 		c.lastEventID = 0
@@ -181,7 +181,7 @@ func (c *Collector) session(ctx context.Context) error {
 			return err
 		}
 		if recent && time.Since(c.lastFull) < cfg.FullCheckInterval.D() && continues(evs, c.lastEventID) {
-			c.log.Debug("reconnected; resuming events without a full re-check", "since", c.lastEventID)
+			c.log.Debug("reconnected, events resume without a full check", "since", c.lastEventID)
 			c.applyBatch(ctx, evs)
 			c.readConflicts(ctx, status.StartTime)
 			c.succeeded()
@@ -260,7 +260,7 @@ func (c *Collector) failed(err error) {
 		if fresh || now.Sub(c.certWarned) >= time.Hour {
 			level, c.certWarned = slog.LevelWarn, now
 		}
-		c.log.Log(context.Background(), level, "certificate changed; not connecting until it is accepted", "old", stclient.ShortFP(ce.Old), "new", stclient.ShortFP(ce.New))
+		c.log.Log(context.Background(), level, "certificate changed, syncwatch does not connect until an administrator accepts it", "old", stclient.ShortFP(ce.Old), "new", stclient.ShortFP(ce.New))
 		return
 	}
 	if c.failures == 0 {
@@ -288,7 +288,7 @@ func shortErr(err error) string {
 		return se.Error()
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "timed out"
+		return "timeout"
 	}
 	s := err.Error()
 	for _, p := range netErrs {
@@ -314,10 +314,10 @@ var netErrs = []struct{ match, text string }{
 	{"no route to host", "no route to host"},
 	{"host is unreachable", "no route to host"},
 	{"network is unreachable", "network unreachable"},
-	{"TLS handshake timeout", "timed out"},
-	{"i/o timeout", "timed out"},
-	{"timed out", "timed out"},
-	{"did not properly respond", "timed out"},
+	{"TLS handshake timeout", "timeout"},
+	{"i/o timeout", "timeout"},
+	{"timed out", "timeout"},
+	{"did not properly respond", "timeout"},
 	{"connection reset", "connection reset"},
 	{"forcibly closed", "connection reset"},
 	{"broken pipe", "connection closed early"},
@@ -354,7 +354,7 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 		}
 		if evs[0].ID <= c.lastEventID && c.lastEventID > 0 && evs[len(evs)-1].ID < c.lastEventID {
 			// Event IDs went backwards: Syncthing restarted under us.
-			c.log.Info("event IDs restarted; running a full re-check")
+			c.log.Info("event IDs restarted, full check started")
 			c.lastEventID = 0
 			if err := c.fullCheck(ctx); err != nil {
 				return err
@@ -385,7 +385,7 @@ func (c *Collector) applyBatch(ctx context.Context, evs []stclient.Event) {
 	if c.configDue {
 		c.configDue = false
 		if err := c.refreshConfig(ctx); err != nil {
-			c.log.Warn("re-reading config after ConfigSaved", "err", shortErr(err))
+			c.log.Warn("cannot read the configuration again after ConfigSaved", "err", shortErr(err))
 			c.FullCheckNow()
 		}
 	}
@@ -394,7 +394,7 @@ func (c *Collector) applyBatch(ctx context.Context, evs []stclient.Event) {
 		if err := c.refreshPending(ctx); err != nil && !c.pendingWarned {
 			// Once per session: the next full check reads the lists anyway.
 			c.pendingWarned = true
-			c.log.Warn("re-reading pending devices and folders", "err", shortErr(err))
+			c.log.Warn("cannot read the pending devices and folders again", "err", shortErr(err))
 		}
 	}
 }
@@ -453,7 +453,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		// Syncthing restarted between two requests without breaking one:
 		// its event IDs start over, so the stream is followed from 0 again.
 		if !c.startTime.IsZero() {
-			c.log.Info("Syncthing restarted; re-reading everything", "startTime", status.StartTime)
+			c.log.Info("Syncthing restarted, full check started", "startTime", status.StartTime)
 		}
 		c.startTime = status.StartTime
 		c.lastEventID = 0
@@ -545,7 +545,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			c.log.Debug(what+" unavailable", "folder", id, "err", msg)
 			return nil
 		}
-		c.log.Warn(what+" failed; the folder shows the error", "folder", id, "err", msg)
+		c.log.Warn(what+" failed, the folder shows the error", "folder", id, "err", msg)
 		if dev != "" {
 			msg += " (device " + model.ShortID(dev) + ")"
 		}
@@ -578,7 +578,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 					if serverLevel(err) {
 						return fmt.Errorf("folder/errors %s: %w", f.ID, err)
 					}
-					c.log.Debug("folder/errors unavailable", "folder", f.ID, "err", shortErr(err))
+					c.log.Debug("folder/errors not available", "folder", f.ID, "err", shortErr(err))
 					return nil
 				}
 				mu.Lock()
@@ -675,9 +675,9 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	c.lastFull = now
 	c.needFull = false
 	if err := c.st.SetServerDeviceID(c.id, status.MyID); err != nil {
-		c.log.Warn("remembering the server's device ID", "err", err)
+		c.log.Warn("cannot save the device ID of the server", "err", err)
 	}
-	c.log.Debug("full re-check done", "folders", len(newFolders), "devices", len(newDevices), "took", time.Since(start).Round(time.Millisecond))
+	c.log.Debug("full check done", "folders", len(newFolders), "devices", len(newDevices), "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
@@ -689,11 +689,11 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 func (c *Collector) readConflicts(ctx context.Context, startTime time.Time) {
 	conflicts, err := c.client.ConflictCounters(ctx)
 	if err != nil {
-		c.log.Warn("reading conflict counters from /metrics", "err", shortErr(err))
+		c.log.Warn("cannot read the conflict counters from /metrics", "err", shortErr(err))
 		return
 	}
 	if err := c.st.RecordConflicts(c.id, startTime.UTC().Format(time.RFC3339), conflicts, time.Now()); err != nil {
-		c.log.Warn("recording conflict counters", "err", err)
+		c.log.Warn("cannot save the conflict counters", "err", err)
 	}
 	c.update(func(s *model.Server) { s.Conflicts = conflicts })
 }

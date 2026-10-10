@@ -190,7 +190,7 @@ func TestTOFUAndCertChange(t *testing.T) {
 	if c.LastCert().CASigned {
 		t.Fatal("test cert should not be CA-signed")
 	}
-	if !strings.Contains(logs.String(), "trusting self-signed certificate on first use") || !strings.Contains(logs.String(), "server=t") {
+	if !strings.Contains(logs.String(), "self-signed certificate accepted and pinned on first use") || !strings.Contains(logs.String(), "server=t") {
 		t.Fatalf("first use not logged: %s", logs.String())
 	}
 

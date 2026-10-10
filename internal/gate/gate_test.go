@@ -307,7 +307,7 @@ func TestGateQueryAllowlist(t *testing.T) {
 		}
 		if code == 200 {
 			passed++
-		} else if !strings.HasPrefix(body, "syncwatch gate: query not allowed: ") {
+		} else if !strings.HasPrefix(body, "syncwatch gate: query not permitted: ") {
 			t.Errorf("%s: body %q", c.path, body)
 		}
 	}
@@ -548,7 +548,7 @@ func TestGateLogsRefusalsOnceAMinute(t *testing.T) {
 	if n := strings.Count(logs.String(), "gate refused a request"); n != 3 {
 		t.Fatalf("two more reasons gave %d lines in all:\n%s", n, logs.String())
 	}
-	if !strings.Contains(logs.String(), `detail="parameter \"x\" not allowed"`) {
+	if !strings.Contains(logs.String(), `detail="the gate does not permit the parameter \"x\""`) {
 		t.Fatalf("the first refusal's detail isn't logged:\n%s", logs.String())
 	}
 	// A minute later the next refusal is logged, with everything since counted.
@@ -637,7 +637,7 @@ func TestGatePinsSyncthing(t *testing.T) {
 	g.base.Host = strings.TrimPrefix(other.URL, "https://")
 	g.hc.CloseIdleConnections()
 	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
-	if code != http.StatusBadGateway || !strings.Contains(body, "certificate changed") {
+	if code != http.StatusBadGateway || !strings.Contains(body, "certificate of Syncthing changed") {
 		t.Fatalf("changed certificate: %d %s", code, body)
 	}
 }
@@ -648,7 +648,7 @@ func TestGate502IsShort(t *testing.T) {
 	_, g, gs := setup(t)
 	g.loopback = false
 	g.pin = strings.Repeat("ab", 32) // not the upstream's certificate
-	const hint = "syncwatch gate: Syncthing's certificate changed; delete syncthing.pin in the gate's data dir and restart the gate\n"
+	const hint = "syncwatch gate: the certificate of Syncthing changed. Delete syncthing.pin in the data directory of the gate. Then restart the gate\n"
 	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", token); code != http.StatusBadGateway || body != hint {
 		t.Fatalf("changed certificate: %d %q", code, body)
 	}
@@ -665,7 +665,7 @@ func TestGate502IsShort(t *testing.T) {
 	ln.Close()
 	g.hc.CloseIdleConnections()
 	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
-	if code != http.StatusBadGateway || len(body) > 150 || !strings.HasPrefix(body, "syncwatch gate: Syncthing can't be reached: ") {
+	if code != http.StatusBadGateway || len(body) > 150 || !strings.HasPrefix(body, "syncwatch gate: Syncthing unreachable: ") {
 		t.Fatalf("down: %d %q (%d bytes)", code, body, len(body))
 	}
 	if s := cleanErr(errors.New(strings.Repeat("x", 300))); len(s) != maxErrText {

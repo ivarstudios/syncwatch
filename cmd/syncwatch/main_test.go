@@ -135,7 +135,7 @@ func TestMaintenanceCommandsNeedExistingData(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Close()
-	if err := exportConfig([]string{"--data", dir}); err == nil || !strings.Contains(err.Error(), "no configuration stored yet") {
+	if err := exportConfig([]string{"--data", dir}); err == nil || !strings.Contains(err.Error(), "there is no stored configuration") {
 		t.Fatalf("export-config on an empty instance: %v", err)
 	}
 	if err := importConfig([]string{"--data", dir, yaml}); err != nil {

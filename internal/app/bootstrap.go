@@ -17,7 +17,7 @@ var secretKeys = map[string][]string{
 	"api":           {"token"},
 }
 
-const scrubbedNote = "imported into syncwatch's encrypted store and removed from this file"
+const scrubbedNote = "syncwatch imported this secret into its encrypted store and removed it from this file"
 
 // renameFile is os.Rename, replaced in tests.
 var renameFile = os.Rename
@@ -130,7 +130,7 @@ func scrubBootstrap(path string) error {
 		}
 	}
 	if bootstrapHasSecrets(path) {
-		return errors.New("the file still contains secrets after rewriting it")
+		return errors.New("the file still contains secrets after the rewrite")
 	}
 	return nil
 }

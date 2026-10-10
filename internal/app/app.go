@@ -44,7 +44,7 @@ type Options struct {
 // OpenStore opens the database in a data directory.
 func OpenStore(dataDir, secretKey string) (*store.Store, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating data directory: %w", err)
+		return nil, fmt.Errorf("cannot make the data directory: %w", err)
 	}
 	key, err := store.LoadKey(dataDir, secretKey)
 	if err != nil {
@@ -61,11 +61,11 @@ func OpenStore(dataDir, secretKey string) (*store.Store, error) {
 func OpenExistingStore(dataDir, secretKey string) (*store.Store, error) {
 	dataDir = absPath(dataDir)
 	if _, err := os.Stat(filepath.Join(dataDir, "syncwatch.db")); err != nil {
-		return nil, fmt.Errorf("no syncwatch data in %s", dataDir)
+		return nil, fmt.Errorf("there is no syncwatch data in %s", dataDir)
 	}
 	if strings.TrimSpace(secretKey) == "" {
 		if _, err := os.Stat(filepath.Join(dataDir, "secret.key")); err != nil {
-			return nil, fmt.Errorf("no secret.key in %s and SYNCWATCH_SECRET_KEY is not set; use the key the server runs with", dataDir)
+			return nil, fmt.Errorf("there is no secret.key in %s and SYNCWATCH_SECRET_KEY is not set. Use the secret key of the syncwatch that runs", dataDir)
 		}
 	}
 	return OpenStore(dataDir, secretKey)
@@ -89,7 +89,7 @@ func LoadConfig(st *store.Store, bootstrap string, log *slog.Logger) (*config.Co
 	}
 	if cfg != nil {
 		if bootstrap != "" && bootstrapHasSecrets(bootstrap) {
-			log.Warn("the bootstrap file is no longer read but still contains secrets (API keys, webhook, token) in plaintext; delete it", "file", bootstrap)
+			log.Warn("syncwatch does not read the bootstrap file, but the file still contains unencrypted secrets: delete it", "file", bootstrap)
 		}
 		return cfg, nil
 	}
@@ -108,12 +108,12 @@ func LoadConfig(st *store.Store, bootstrap string, log *slog.Logger) (*config.Co
 			if _, err := saveConfig(st, c); err != nil {
 				return nil, err
 			}
-			log.Info("imported bootstrap configuration", "file", bootstrap, "servers", len(c.Servers), "secrets", n)
+			log.Info("bootstrap file imported", "file", bootstrap, "servers", len(c.Servers), "secrets", n)
 			if n > 0 {
 				// The secrets are encrypted in the database now; don't leave
 				// them in plaintext next to it.
 				if err := scrubBootstrap(bootstrap); err != nil {
-					log.Warn("could not remove the imported secrets from the bootstrap file: it still holds them in plaintext; delete it or remove them by hand", "file", bootstrap, "err", err)
+					log.Warn("cannot remove the imported secrets from the bootstrap file, the file still contains them unencrypted: delete the file or remove the secrets manually", "file", bootstrap, "err", err)
 				} else {
 					log.Info("removed the imported secrets from the bootstrap file", "file", bootstrap)
 				}
@@ -206,16 +206,16 @@ func (w *configWatcher) check() {
 	w.applied = rev // reported once, even when it can't be applied
 	c, err := settings.Load(w.st)
 	if err == nil && c == nil {
-		err = errors.New("no configuration stored")
+		err = errors.New("there is no stored configuration")
 	}
 	if err == nil {
 		err = w.holder.Set(c)
 	}
 	if err != nil {
-		w.log.Error("the configuration was changed by another process but can't be applied", "revision", rev, "err", err)
+		w.log.Error("cannot use the configuration that another process changed", "revision", rev, "err", err)
 		return
 	}
-	w.log.Info("configuration reloaded: it was changed by another process (syncwatch import-config)", "revision", rev, "servers", len(c.Servers))
+	w.log.Info("configuration reloaded after a change by another process (syncwatch import-config)", "revision", rev, "servers", len(c.Servers))
 	if w.onReload != nil {
 		w.onReload()
 	}
@@ -250,12 +250,12 @@ func Run(ctx context.Context, o Options) error {
 	}
 	holder, err := config.NewHolder(cfg)
 	if err != nil {
-		return fmt.Errorf("stored configuration is invalid: %w", err)
+		return fmt.Errorf("the stored configuration is not valid: %w", err)
 	}
 	if o.AdminPassword != "" {
 		if h, _ := st.Setting(web.KeyAdminHash); h == "" {
 			if len([]rune(o.AdminPassword)) < web.MinPasswordLength {
-				return fmt.Errorf("SYNCWATCH_ADMIN_PASSWORD must be at least %d characters", web.MinPasswordLength)
+				return fmt.Errorf("SYNCWATCH_ADMIN_PASSWORD must have at least %d characters", web.MinPasswordLength)
 			}
 			hash, err := web.HashPassword(o.AdminPassword)
 			if err != nil {
@@ -264,7 +264,7 @@ func Run(ctx context.Context, o Options) error {
 			if err := st.SetSetting(web.KeyAdminHash, hash); err != nil {
 				return err
 			}
-			log.Info("admin password set from SYNCWATCH_ADMIN_PASSWORD")
+			log.Info("administrator password set from SYNCWATCH_ADMIN_PASSWORD")
 		}
 	}
 
@@ -363,7 +363,7 @@ func Run(ctx context.Context, o Options) error {
 			log.Error("the web server stopped", "err", err)
 		}
 	}
-	log.Info("shutting down")
+	log.Info("syncwatch stops")
 	reqCancel()
 	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shCancel()
@@ -376,7 +376,7 @@ func Run(ctx context.Context, o Options) error {
 	select {
 	case <-stopped:
 	case <-time.After(10 * time.Second):
-		log.Warn("not all workers stopped in time")
+		log.Warn("some workers did not stop in time")
 	}
 	return serveErr
 }

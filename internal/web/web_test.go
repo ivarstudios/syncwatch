@@ -288,7 +288,7 @@ func TestAPIStatus(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	body := string(b)
-	if resp.StatusCode != 200 || !strings.Contains(body, `"check": "H1"`) || !strings.Contains(body, "0/2 servers OK") {
+	if resp.StatusCode != 200 || !strings.Contains(body, `"check": "H1"`) || !strings.Contains(body, "0 of 2 servers up") {
 		t.Fatalf("status: %d %s", resp.StatusCode, body)
 	}
 	for _, secret := range []string{"secret-key-akka", "secret-hook", "swt_test_token"} {
@@ -358,7 +358,7 @@ api: {token: swt_test_token}
 // error text.
 func TestNotificationFailureBanner(t *testing.T) {
 	e := adminEnv(t, twoServers+"access: {viewer: open}\n")
-	const banner = "Notifications are failing"
+	const banner = "Notifications fail"
 	if _, body := e.get("/"); strings.Contains(body, banner) {
 		t.Fatal("banner while notifications work")
 	}
@@ -658,13 +658,13 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 	})
 	e.eng.Evaluate()
 	_, ov := e.get("/frag/overview")
-	for _, want := range []string{"✔ 1 idle", "⟳ 1 syncing", "⟳ 1 scanning", "✖ 1 error", "⚠ 1 watch error", "⏸ 1 paused"} {
+	for _, want := range []string{"✔ 1 idle", "⟳ 1 syncing", "⟳ 1 scanning", "✖ 1 error", "⚠ 1 file watcher error", "⏸ 1 paused"} {
 		if !strings.Contains(ov, want) {
 			t.Errorf("overview tile lacks %q", want)
 		}
 	}
 	_, grid := e.get("/frag/grid")
-	if !strings.Contains(grid, `c-warn" title="watcher: inotify limit"`) || !strings.Contains(grid, "watch error</span>") {
+	if !strings.Contains(grid, `c-warn" title="file watcher error: inotify limit"`) || !strings.Contains(grid, "file watcher error</span>") {
 		t.Error("grid: the watcher error is not shown as a warning cell")
 	}
 	if n := strings.Count(grid, `cell c-err" title=`); n != 2 { // one per view (wide table and narrow list)
@@ -733,13 +733,13 @@ func TestSeverityWordsAndPlurals(t *testing.T) {
 	})
 	e.eng.Evaluate()
 	_, body := e.get("/problems")
-	for _, want := range []string{"🔴 error</span>", `<option value="warn" >warning</option>`, `<option value="info" >suggestion</option>`,
-		"🔴 1 error</span>", "🟠 0 warnings</span>", "🔵 0 suggestions</span>"} {
+	for _, want := range []string{"🔴 ERROR</span>", `<option value="warn" >WARNING</option>`, `<option value="info" >INFO</option>`,
+		"🔴 ERROR 1</span>", "🟠 WARNING 0</span>", "🔵 INFO 0</span>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("problems page lacks %q", want)
 		}
 	}
-	for _, old := range []string{"ERROR", "WARN", "INFO", ">warn<", ">info<", "1 errors"} {
+	for _, old := range []string{">WARN<", ">warn<", ">info<", "1 errors", "suggestion"} {
 		if strings.Contains(body, old) {
 			t.Errorf("problems page still says %q", old)
 		}
@@ -752,7 +752,7 @@ func TestSeverityWordsAndPlurals(t *testing.T) {
 			t.Errorf("plural(%d) = %q, want %q", n, got, want)
 		}
 	}
-	if model.Error.Label() != "error" || model.Warn.Label() != "warning" || model.Info.Label() != "suggestion" {
+	if model.Error.Label() != "ERROR" || model.Warn.Label() != "WARNING" || model.Info.Label() != "INFO" {
 		t.Error("severity labels")
 	}
 	if model.ParseSeverity("suggestion") != model.Info || model.ParseSeverity("warning") != model.Warn {
@@ -778,7 +778,7 @@ func TestSnoozeUntilDate(t *testing.T) {
 	if want := time.Date(2026, 10, 11, 0, 0, 0, 0, auckland); !ok || !z.Until.Equal(want) || z.Reason != "waiting for the disk" {
 		t.Fatalf("snooze = %+v, want until %v with the reason", z, want)
 	}
-	if msg != "Snoozed until 2026-10-11 00:00." {
+	if msg != "The finding is snoozed until 2026-10-11 00:00." {
 		t.Errorf("flash %q", msg)
 	}
 	if msg, isErr := flash(e.post("/problems/"+id+"/snooze", url.Values{"csrf": {csrf}, "for": {"date"}, "until": {"2026-10-09"}})); !isErr {

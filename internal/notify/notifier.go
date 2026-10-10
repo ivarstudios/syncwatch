@@ -147,10 +147,10 @@ func (n *Notifier) defaultSenders() []Sender {
 	if u, err := n.st.Secret(store.SecretDiscordWebhook); err == nil && u != "" {
 		out = append(out, &Discord{URL: u, RoleID: cfg.Notify.DiscordRoleID, HTTP: n.httpProxy})
 	} else if err != nil {
-		n.log.Error("reading Discord webhook", "err", err)
+		n.log.Error("cannot read the Discord webhook", "err", err)
 		// Fails like a dead webhook, so the banner, the notification log
 		// and the test button all say why.
-		out = append(out, &brokenChannel{err: errors.New("the Discord webhook can't be decrypted (secret key changed?)")})
+		out = append(out, &brokenChannel{err: errors.New("syncwatch cannot decrypt the Discord webhook: check the secret key")})
 	}
 	return out
 }
@@ -257,7 +257,7 @@ func (n *Notifier) fail(now time.Time, gen int, err error) {
 	d := min(time.Minute<<min(n.failures-1, 5), 30*time.Minute)
 	n.retryAt = now.Add(d)
 	n.dmu.Unlock()
-	n.log.Warn("sending notification failed", "err", err, "retry_in", d)
+	n.log.Warn("cannot send the notification", "err", err, "retry_in", d)
 }
 
 // debounce is the shortest debounce of a record's urgent checks.
@@ -594,9 +594,9 @@ func (n *Notifier) notice(senders []Sender, current bool, title, summary string)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := n.sendTo(ctx, now, m, senders, current, gen); errors.Is(err, errNoChannel) {
-			n.log.Info("settings notice not sent: no notification channel is configured", "title", title)
+			n.log.Info("settings notice not sent: no Discord webhook is configured", "title", title)
 		} else if err != nil {
-			n.log.Warn("sending settings notice failed; retrying with the next notifications", "title", title, "err", err)
+			n.log.Warn("cannot send the settings notice, syncwatch retries it with the next notifications", "title", title, "err", err)
 			n.queueNotice(m, now)
 		}
 	}()
@@ -605,11 +605,11 @@ func (n *Notifier) notice(senders []Sender, current bool, title, summary string)
 // queueNotice keeps a notice whose first delivery failed, so a change made
 // while a channel is down still gets announced.
 func (n *Notifier) queueNotice(m Message, at time.Time) {
-	m.Summary += "\nChanged at " + at.In(n.cfg.Get().Location()).Format("2006-01-02 15:04") + "; this notice was held back because sending failed."
+	m.Summary += "\nChanged at " + at.In(n.cfg.Get().Location()).Format("2006-01-02 15:04") + ". syncwatch kept this settings notice because the first send failed."
 	n.dmu.Lock()
 	n.notices = append(n.notices, pendingNotice{m: m, giveUp: at.Add(noticeRetryFor)})
 	if len(n.notices) > maxNotices {
-		n.log.Warn("dropping the oldest held-back settings notice", "title", n.notices[0].m.Title)
+		n.log.Warn("oldest delayed settings notice discarded", "title", n.notices[0].m.Title)
 		n.notices = n.notices[1:]
 	}
 	n.dmu.Unlock()
@@ -627,7 +627,7 @@ func (n *Notifier) retryNotices(ctx context.Context, now time.Time) error {
 	n.dmu.Unlock()
 	for _, p := range pending {
 		if now.After(p.giveUp) {
-			n.log.Warn("giving up on a settings notice after a day of failed sends", "title", p.m.Title)
+			n.log.Warn("settings notice discarded after 1 day of send failures", "title", p.m.Title)
 			n.dropNotice(p.m.Key)
 			continue
 		}
@@ -635,7 +635,7 @@ func (n *Notifier) retryNotices(ctx context.Context, now time.Time) error {
 			if !rejected(err) {
 				return err
 			}
-			n.log.Warn("dropping a settings notice the channel rejected", "title", p.m.Title, "err", err)
+			n.log.Warn("settings notice discarded, Discord refused it", "title", p.m.Title, "err", err)
 			n.dropNotice(p.m.Key)
 			continue
 		}
@@ -657,7 +657,7 @@ func (n *Notifier) dropNotice(key string) {
 
 // errNoChannel means no notification channel is configured. Callers mark
 // nothing as sent, so urgent findings stay due until a channel is added.
-var errNoChannel = errors.New("no notification channel is configured")
+var errNoChannel = errors.New("No Discord webhook is configured.")
 
 // send delivers to every channel. It succeeds if Discord succeeds, or if
 // there is no Discord channel and any other channel succeeds. When a keyed
@@ -763,7 +763,7 @@ func (n *Notifier) logSend(now time.Time, m Message, channel string, err error) 
 		return
 	}
 	if e := n.st.LogNotification(now, m.Kind, channel, err == nil, errText, m.Title); e != nil {
-		n.log.Warn("writing notification log", "err", e)
+		n.log.Warn("cannot write the notification log", "err", e)
 	}
 	if err == nil {
 		n.log.Info("notification sent", "kind", m.Kind, "channel", channel, "title", m.Title)
@@ -822,7 +822,7 @@ func dashboard(cfg *config.Config) string { return strings.TrimRight(cfg.PublicU
 
 // UrgentMessage announces new urgent findings.
 func UrgentMessage(cfg *config.Config, rs []*store.Record) Message {
-	title := fmt.Sprintf("🚨 %d new urgent problems", len(rs))
+	title := fmt.Sprintf("🚨 %d new urgent findings", len(rs))
 	if len(rs) == 1 {
 		title = "🚨 " + config.CatalogByID[rs[0].Check].Title + ": " + rs[0].Subject
 	}
@@ -831,12 +831,12 @@ func UrgentMessage(cfg *config.Config, rs []*store.Record) Message {
 		lines = append(lines, findingLine(r, dashboard(cfg)))
 	}
 	return Message{Kind: KindUrgent, Mention: true, Title: title, Color: colorFor(rs), URL: dashboard(cfg),
-		Sections: []Section{{Title: "New", Lines: limitLines(lines, 25)}}}
+		Sections: []Section{{Title: "New findings", Lines: limitLines(lines, 25)}}}
 }
 
 // ResolvedMessage announces that pinged findings are resolved.
 func ResolvedMessage(cfg *config.Config, rs []*store.Record) Message {
-	title := fmt.Sprintf("✅ %d problems resolved", len(rs))
+	title := fmt.Sprintf("✅ %d findings resolved", len(rs))
 	if len(rs) == 1 {
 		title = "✅ Resolved: " + config.CatalogByID[rs[0].Check].Title + ": " + rs[0].Subject
 	}
@@ -845,7 +845,7 @@ func ResolvedMessage(cfg *config.Config, rs []*store.Record) Message {
 		lines = append(lines, resolvedLine(r)+fmt.Sprintf(" (open %s)", rules.Ago(r.ResolvedAt.Sub(r.OpenedAt))))
 	}
 	return Message{Kind: KindResolved, Title: title, Color: ColorResolved, URL: dashboard(cfg),
-		Sections: []Section{{Title: "Resolved", Lines: limitLines(lines, 25)}}}
+		Sections: []Section{{Title: "Resolved findings", Lines: limitLines(lines, 25)}}}
 }
 
 // ReminderMessage lists urgent findings that are still open.
@@ -854,7 +854,7 @@ func ReminderMessage(cfg *config.Config, rs []*store.Record, now time.Time) Mess
 	for _, r := range rs {
 		lines = append(lines, findingLine(r, dashboard(cfg))+fmt.Sprintf(" (open %s)", rules.Ago(now.Sub(r.OpenedAt))))
 	}
-	return Message{Kind: KindReminder, Title: fmt.Sprintf("⏰ Still open: %d urgent problem(s)", len(rs)), Color: colorFor(rs), URL: dashboard(cfg),
+	return Message{Kind: KindReminder, Title: "⏰ Still open: " + plural(len(rs), "urgent finding"), Color: colorFor(rs), URL: dashboard(cfg),
 		Sections: []Section{{Title: "Still open", Lines: limitLines(lines, 25)}}}
 }
 
@@ -886,7 +886,7 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 			{Title: fmt.Sprintf("New and still open (%d)", len(open)), Lines: limitLines(openL, 20)},
 			{Title: fmt.Sprintf("Resolved during the night (%d)", len(resolved)), Lines: limitLines(resL, 20)},
 			{Title: fmt.Sprintf("Opened and resolved during the night (%d)", len(blips)), Lines: limitLines(blipL, 20)},
-			{Title: fmt.Sprintf("New since quiet hours ended (%d)", len(day)), Lines: limitLines(dayL, 20)},
+			{Title: fmt.Sprintf("New after the end of quiet hours (%d)", len(day)), Lines: limitLines(dayL, 20)},
 		}}
 }
 
@@ -909,16 +909,16 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			}
 		}
 		if up == total {
-			parts = append(parts, plural(total, "server")+" OK")
+			parts = append(parts, plural(total, "server")+" up")
 		} else {
 			var why []string
 			if len(down) > 0 {
 				why = append(why, strings.Join(down, ", ")+" down")
 			}
 			if len(unknown) > 0 {
-				why = append(why, strings.Join(unknown, ", ")+" not yet checked")
+				why = append(why, strings.Join(unknown, ", ")+" not contacted")
 			}
-			parts = append(parts, fmt.Sprintf("%d/%d servers OK (%s)", up, total, strings.Join(why, "; ")))
+			parts = append(parts, fmt.Sprintf("%d of %d servers up (%s)", up, total, strings.Join(why, ", ")))
 		}
 		pcs, offline := 0, 0
 		for _, d := range snap.Devices() {
@@ -930,7 +930,7 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 				offline++
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%s, %d offline > %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
+		parts = append(parts, fmt.Sprintf("%s, %d offline more than %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
 	}
 	var errs, warns, infos, snoozed int
 	for _, r := range v.Open {
@@ -947,7 +947,7 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			infos++
 		}
 	}
-	parts = append(parts, plural(errs, "error")+", "+plural(warns, "warning")+", "+plural(infos, "suggestion"))
+	parts = append(parts, fmt.Sprintf("ERROR %d · WARNING %d · INFO %d", errs, warns, infos))
 	parts = append(parts, fmt.Sprintf("%d snoozed", snoozed))
 	return strings.Join(parts, " · ")
 }
@@ -1007,6 +1007,6 @@ func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry
 		Sections: []Section{
 			{Title: fmt.Sprintf("New this week (%d)", nNew), Lines: limitLines(newL, 8)},
 			{Title: fmt.Sprintf("Resolved this week (%d)", nRes), Lines: limitLines(resL, 8)},
-			{Title: "Top open problems", Lines: top},
+			{Title: "Most important open findings", Lines: top},
 		}}
 }

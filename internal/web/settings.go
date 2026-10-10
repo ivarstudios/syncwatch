@@ -12,10 +12,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/rules"
 	"github.com/ivarstudios/syncwatch/internal/settings"
 	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/store"
@@ -87,7 +90,7 @@ func (s *Server) stale(w http.ResponseWriter, r *http.Request, old *config.Confi
 	if rev := r.FormValue("rev"); rev == "" || rev == configRev(old) {
 		return false
 	}
-	s.redirect(w, r, "/settings#"+section, "Not saved: the settings changed since this page was loaded; reload the page and make the change again.", true)
+	s.redirect(w, r, "/settings#"+section, "Not saved. The settings changed after this page was loaded. Reload the page and make the change again.", true)
 	return true
 }
 
@@ -95,7 +98,7 @@ func (s *Server) stale(w http.ResponseWriter, r *http.Request, old *config.Confi
 // back to a settings section.
 func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Config, section, title, okMsg string) {
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#"+section, "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#"+section, "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	if ch := configChanges(old, c); len(ch) > 0 {
@@ -194,7 +197,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 			}
 		}
 		if idx < 0 {
-			s.redirect(w, r, "/settings#servers", "Unknown server.", true)
+			s.redirect(w, r, "/settings#servers", "The server does not exist. Reload the page.", true)
 			return
 		}
 		old = c.Servers[idx]
@@ -213,57 +216,57 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		c.Servers = append(c.Servers, sv)
 	}
 	if err := c.Validate(); err != nil {
-		s.redirect(w, r, "/settings#servers", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#servers", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	moved := orig != "" && !config.SameEndpoint(old.URL, sv.URL)
 	resetPin := r.FormValue("reset_pin") == "on"
 	switch {
 	case orig == "" && key == "":
-		s.redirect(w, r, "/settings#servers", "A new server needs its Syncthing API key.", true)
+		s.redirect(w, r, "/settings#servers", "A new server needs its API key. Type the API key before you save.", true)
 		return
 	case key == "" && moved:
 		// The stored key is only ever sent to the URL it was entered for.
-		s.redirect(w, r, "/settings#servers", "Enter the API key for "+sv.URL+": syncwatch only sends an API key to the URL it was entered for.", true)
+		s.redirect(w, r, "/settings#servers", "The API URL changed. Type the API key again for "+sv.URL+". "+keyOnlyToURL, true)
 		return
 	case resetPin && key == "" && !s.confirmed(r, sv.ID):
-		s.redirect(w, r, "/settings#servers", "To forget the pinned certificate, enter the admin password or this server's API key.", true)
+		s.redirect(w, r, "/settings#servers", "To remove the pinned certificate, type the administrator password or this server's API key.", true)
 		return
 	}
 	if key != "" {
 		// A key for a new URL also forgets the old URL's pinned certificate.
 		if err := settings.SetServerKey(s.st, sv.ID, key, sv.URL); err != nil {
-			s.redirect(w, r, "/settings#servers", "Saving the API key failed: "+err.Error(), true)
+			s.redirect(w, r, "/settings#servers", "syncwatch cannot save the API key: "+err.Error(), true)
 			return
 		}
 	}
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#servers", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#servers", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	if resetPin && !moved && s.hooks.ResetPin != nil {
 		if err := s.hooks.ResetPin(sv.ID); err != nil {
-			s.redirect(w, r, "/settings#servers", "Forgetting the pinned certificate failed: "+err.Error(), true)
+			s.redirect(w, r, "/settings#servers", "syncwatch cannot remove the pinned certificate: "+err.Error(), true)
 			return
 		}
 	}
 	if orig == "" {
-		s.announce(r, "Server "+name+" added", "API URL "+sv.URL+".")
+		s.announce(r, "Server "+name+" added", "The API URL is "+sv.URL+".")
 	} else {
 		// Disabling a server or changing its name or URL changes what is
 		// checked and what the messages say, so every change is listed.
 		changes := configChanges(cur, c)
 		if key != "" {
-			changes = append(changes, "API key replaced.")
+			changes = append(changes, "The API key is replaced.")
 		}
 		if resetPin && !moved {
-			changes = append(changes, "Pinned certificate forgotten: the next certificate "+sv.URL+" presents is trusted on first use.")
+			changes = append(changes, "The pinned certificate is removed. syncwatch accepts and pins the next certificate from "+sv.URL+" (trust on first use).")
 		}
 		if len(changes) > 0 {
 			s.announce(r, "Server "+name+" changed", strings.Join(changes, "\n"))
 		}
 	}
-	s.redirect(w, r, "/settings#servers", "Server "+name+" saved.", false)
+	s.redirect(w, r, "/settings#servers", "Server "+name+" is saved.", false)
 }
 
 func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -283,24 +286,24 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info
 		}
 	}
 	if name == "" {
-		s.redirect(w, r, "/settings#servers", "Unknown server.", true)
+		s.redirect(w, r, "/settings#servers", "The server does not exist. Reload the page.", true)
 		return
 	}
 	c.Servers = keep
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#servers", "Not removed: "+err.Error(), true)
+		s.redirect(w, r, "/settings#servers", "The server is not removed: "+err.Error(), true)
 		return
 	}
 	_ = s.st.DeleteSecret(store.ServerAPIKeySecret(id))
 	_ = s.st.SetPin(id, "")
-	s.announce(r, "Server "+name+" removed", "Its API key and pinned certificate were deleted.")
-	s.redirect(w, r, "/settings#servers", "Server removed.", false)
+	s.announce(r, "Server "+name+" removed", "syncwatch deleted its API key and pinned certificate.")
+	s.redirect(w, r, "/settings#servers", "The server is removed.", false)
 }
 
 func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	id := r.PathValue("id")
 	if !s.confirmed(r, id) {
-		s.redirect(w, r, "/settings#servers", "To accept the new certificate, enter the admin password or this server's API key.", true)
+		s.redirect(w, r, "/settings#servers", "To accept the new certificate, type the administrator password or this server's API key.", true)
 		return
 	}
 	fp := r.FormValue("fingerprint")
@@ -312,8 +315,8 @@ func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info r
 	if sv, ok := s.cfg.Get().ServerByKey(id); ok {
 		name = sv.Name
 	}
-	s.announce(r, "Server "+name+": new certificate accepted", "Pinned SHA-256 "+stclient.ShortFP(fp)+".")
-	s.redirect(w, r, "/settings#servers", "New certificate accepted. Reconnecting…", false)
+	s.announce(r, "Server "+name+": new certificate accepted", "The pinned SHA-256 fingerprint is "+stclient.ShortFP(fp)+".")
+	s.redirect(w, r, "/settings#servers", "The new certificate is accepted. syncwatch reconnects to the server.", false)
 }
 
 func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -340,14 +343,14 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	c.Timezone = strings.TrimSpace(r.FormValue("timezone"))
 	c.PublicURL = strings.TrimRight(strings.TrimSpace(r.FormValue("public_url")), "/")
 	if err := c.Validate(); err != nil {
-		s.redirect(w, r, "/settings#notifications", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	if !clearHook && hook != "" {
 		var err error
 		if hook, err = config.CanonicalDiscordWebhook(hook); err != nil {
-			s.redirect(w, r, "/settings#notifications", "Not saved: "+err.Error()+".", true)
+			s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
 			return
 		}
 	}
@@ -361,7 +364,7 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	switch {
 	case clearHook && hadHook:
 		_ = s.st.DeleteSecret(store.SecretDiscordWebhook)
-		changes = append(changes, "Discord webhook removed: notifications no longer go to Discord.")
+		changes = append(changes, "The Discord webhook is removed. syncwatch does not send notifications to Discord now.")
 		channels = true
 	case !clearHook && hook != "":
 		_ = s.st.SetSecret(store.SecretDiscordWebhook, hook)
@@ -372,20 +375,44 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 		s.channelsChanged()
 	}
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#notifications", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	if len(changes) > 0 {
 		announce("Notification settings changed", strings.Join(changes, "\n"))
 	}
-	s.redirect(w, r, "/settings#notifications", "Notification settings saved.", false)
+	s.redirect(w, r, "/settings#notifications", "The notification settings are saved.", false)
 }
 
+// replacedOrAdded words a stored secret's change as a notice line.
 func replacedOrAdded(had bool, what string) string {
 	if had {
-		return what + " replaced."
+		return "The " + what + " is replaced."
 	}
-	return what + " added."
+	return "The " + what + " is added."
+}
+
+// keyOnlyToURL is the sentence that explains why a changed API URL needs the
+// API key again; the Servers section and the import flash use the same one.
+const keyOnlyToURL = "syncwatch sends an API key only to the URL that you typed it for."
+
+// sentence makes a machine text (a parser or store error) readable after a
+// flash prefix: a capital first letter and a final period on every line.
+func sentence(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(l)
+		l = string(unicode.ToUpper(r)) + l[n:]
+		if !strings.HasSuffix(l, ".") && !strings.HasSuffix(l, "!") && !strings.HasSuffix(l, "?") {
+			l += "."
+		}
+		lines[i] = l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // maxChangeLines keeps a notice well inside Discord's description limit.
@@ -404,57 +431,57 @@ func configChanges(old, c *config.Config) []string {
 	for _, sv := range c.Servers {
 		o, ok := before[sv.ID]
 		if !ok {
-			out = append(out, "Server "+sv.Name+" added ("+sv.URL+").")
+			out = append(out, "The server "+sv.Name+" is added (API URL "+sv.URL+").")
 			continue
 		}
 		delete(before, sv.ID)
 		name := "Server " + sv.Name
 		switch {
 		case !config.SameEndpoint(o.URL, sv.URL):
-			out = append(out, name+": API URL changed from "+o.URL+" to "+sv.URL+".")
+			out = append(out, "The API URL of the server "+sv.Name+" changed from "+o.URL+" to "+sv.URL+".")
 		case o.URL != sv.URL:
-			out = append(out, name+": url "+o.URL+" → "+sv.URL+".")
+			out = append(out, "The API URL of the server "+sv.Name+" is now "+sv.URL+" (before: "+o.URL+").")
 		}
 		if o.Name != sv.Name {
-			out = append(out, "Server "+o.Name+" renamed to "+sv.Name+".")
+			out = append(out, "The server "+o.Name+" has the new name "+sv.Name+".")
 		}
 		if o.Disabled != sv.Disabled {
 			if sv.Disabled {
-				out = append(out, name+" disabled: it is no longer checked.")
+				out = append(out, "The server "+sv.Name+" is disabled. syncwatch does not poll it now.")
 			} else {
-				out = append(out, name+" enabled.")
+				out = append(out, "The server "+sv.Name+" is enabled.")
 			}
 		}
 		if o.GUIURL != sv.GUIURL {
-			out = append(out, name+": GUI URL "+orNone(o.GUIURL)+" → "+orNone(sv.GUIURL)+".")
+			out = append(out, "The GUI URL of the server "+sv.Name+" changed from "+orNone(o.GUIURL)+" to "+orNone(sv.GUIURL)+".")
 		}
 		if o.AllowHTTP != sv.AllowHTTP {
-			out = append(out, fmt.Sprintf("%s: allow_http %v → %v.", name, o.AllowHTTP, sv.AllowHTTP))
+			out = append(out, fmt.Sprintf("%s: allow_http changed from %v to %v.", name, o.AllowHTTP, sv.AllowHTTP))
 		}
 	}
 	for _, sv := range old.Servers {
 		if _, gone := before[sv.ID]; gone {
-			out = append(out, "Server "+sv.Name+" removed.")
+			out = append(out, "The server "+sv.Name+" is removed.")
 		}
 	}
 	for _, ci := range config.Catalog {
 		name := ci.ID + " (" + ci.Title + ")"
 		if was, now := old.CheckEnabled(ci.ID), c.CheckEnabled(ci.ID); was != now {
 			if now {
-				out = append(out, name+" switched on.")
+				out = append(out, "The check "+name+" is enabled.")
 			} else {
-				out = append(out, name+" switched off.")
+				out = append(out, "The check "+name+" is disabled.")
 			}
 		}
 		if was, now := old.Urgent(ci.ID), c.Urgent(ci.ID); was != now {
 			if now {
-				out = append(out, name+" now sends urgent pings.")
+				out = append(out, "The check "+name+" now sends urgent messages.")
 			} else {
-				out = append(out, name+" no longer sends urgent pings.")
+				out = append(out, "The check "+name+" does not send urgent messages now.")
 			}
 		}
 		if was, now := old.Debounce(ci.ID), c.Debounce(ci.ID); was != now {
-			out = append(out, fmt.Sprintf("%s waits %s instead of %s before an urgent ping.", name, config.Duration(now), config.Duration(was)))
+			out = append(out, fmt.Sprintf("The check %s waits %s instead of %s before an urgent message.", name, rules.Ago(now), rules.Ago(was)))
 		}
 	}
 	was, now := flatConfig(old), flatConfig(c)
@@ -488,21 +515,34 @@ func describe(key, was, now string) string {
 	switch key {
 	case "access.mode":
 		if now == config.AccessProxy {
-			return "Built-in login switched off (proxy mode): everyone who can reach syncwatch is admin."
+			return "Built-in login is off (proxy mode). Each person who can reach syncwatch is an administrator."
 		}
-		return "Built-in login switched on."
+		return "Built-in login is on."
 	case "access.viewer":
-		return "Viewing without the admin password: " + was + " → " + now + "."
+		return "Viewer access without the administrator password changed from " + viewerText(was) + " to " + viewerText(now) + "."
 	case "notifications.discord_role_id":
 		switch {
 		case now == "(none)":
-			return "Urgent messages no longer mention a role (was " + was + ")."
+			return "Urgent messages do not mention a role now (before: " + was + ")."
 		case was == "(none)":
-			return "Urgent messages now mention role " + now + "."
+			return "Urgent messages now mention the role " + now + "."
 		}
-		return "Urgent messages now mention role " + now + " instead of " + was + "."
+		return "Urgent messages now mention the role " + now + " (before: " + was + ")."
 	}
-	return key + ": " + was + " → " + now
+	return key + " changed from " + was + " to " + now + "."
+}
+
+// viewerText is the option text of the Viewer access field for a value.
+func viewerText(v string) string {
+	switch v {
+	case config.ViewerNone:
+		return "administrator only"
+	case config.ViewerPassword:
+		return "with the viewer password"
+	case config.ViewerOpen:
+		return "open, without login"
+	}
+	return v
 }
 
 // flatConfig renders a configuration as the keys of its YAML form with their
@@ -562,10 +602,10 @@ func (s *Server) channelsChanged() {
 
 func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	if err := s.hooks.SendTest(r.Context()); err != nil {
-		s.redirect(w, r, "/settings#notifications", "Test failed: "+err.Error(), true)
+		s.redirect(w, r, "/settings#notifications", "The test message failed. "+sentence(err.Error()), true)
 		return
 	}
-	s.redirect(w, r, "/settings#notifications", "Test message sent.", false)
+	s.redirect(w, r, "/settings#notifications", "syncwatch sent the test message.", false)
 }
 
 func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -589,7 +629,7 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 		if d := strings.TrimSpace(r.FormValue("debounce_" + ci.ID)); d != "" {
 			dv, err := config.ParseDuration(d)
 			if err != nil {
-				errs = append(errs, ci.ID+": "+err.Error())
+				errs = append(errs, ci.ID+" debounce: "+err.Error())
 			} else if dv.D() != ci.Debounce {
 				ch.Debounce = &dv
 			}
@@ -605,16 +645,16 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 	} {
 		d, err := config.ParseDuration(r.FormValue(name))
 		if err != nil || d <= 0 {
-			errs = append(errs, name+": invalid duration")
+			errs = append(errs, fieldLabel(name)+": the value must be a duration of more than 0. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.")
 			continue
 		}
 		*dst = d
 	}
 	if len(errs) > 0 {
-		s.redirect(w, r, "/settings#checks", "Not saved: "+strings.Join(errs, "; "), true)
+		s.redirect(w, r, "/settings#checks", "Not saved. "+strings.Join(errs, " "), true)
 		return
 	}
-	s.save(w, r, old, c, "checks", "Checks changed", "Checks saved.")
+	s.save(w, r, old, c, "checks", "Checks changed", "The checks are saved.")
 }
 
 func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -622,7 +662,7 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 	dec := yaml.NewDecoder(strings.NewReader(r.FormValue("yaml")))
 	dec.KnownFields(true)
 	if err := dec.Decode(&doc); err != nil && err != io.EOF {
-		s.redirect(w, r, "/settings#structure", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#structure", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	old := s.cfg.Get()
@@ -636,7 +676,7 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 		// scanning recycle bins and snapshots. An explicit [] clears it.
 		c.Structure.IgnoreDirs = old.Structure.IgnoreDirs
 	}
-	s.save(w, r, old, c, "structure", "Structure rules changed", "Structure rules saved. The next structure scan uses them.")
+	s.save(w, r, old, c, "structure", "Structure rules changed", "The structure rules are saved. The next structure scan uses them.")
 }
 
 func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -654,7 +694,7 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 	} {
 		d, err := config.ParseDuration(r.FormValue(name))
 		if err != nil || d <= 0 {
-			errs = append(errs, name+": invalid duration")
+			errs = append(errs, fieldLabel(name)+": the value must be a duration of more than 0. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.")
 			continue
 		}
 		*dst = d
@@ -666,10 +706,10 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 		col.DownAfter = n
 	}
 	if len(errs) > 0 {
-		s.redirect(w, r, "/settings#collector", "Not saved: "+strings.Join(errs, "; "), true)
+		s.redirect(w, r, "/settings#collector", "Not saved. "+strings.Join(errs, " "), true)
 		return
 	}
-	s.save(w, r, old, c, "collector", "Collector settings changed", "Collector settings saved; collectors restarted.")
+	s.save(w, r, old, c, "collector", "Collector settings changed", "The collector settings are saved. syncwatch restarted the collectors.")
 }
 
 func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -680,7 +720,7 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 	c := old.Clone()
 	mode := r.FormValue("mode")
 	if mode == config.AccessProxy && c.Access.Mode != config.AccessProxy && r.FormValue("confirm_proxy") != "on" {
-		s.redirect(w, r, "/settings#access", "Tick the confirmation box to switch off built-in login.", true)
+		s.redirect(w, r, "/settings#access", "Select the checkbox to set built-in login to off.", true)
 		return
 	}
 	c.Access.Mode = mode
@@ -694,12 +734,12 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 	}
 	if c.Access.Viewer == config.ViewerPassword && viewerPW == "" {
 		if _, ok := s.setting(KeyViewerHash); !ok {
-			s.redirect(w, r, "/settings#access", "Set a viewer password to use password-protected viewing.", true)
+			s.redirect(w, r, "/settings#access", "Type a viewer password first. The option 'with the viewer password' needs one.", true)
 			return
 		}
 	}
 	if c.Access.Mode == config.AccessBuiltin && !s.adminConfigured() {
-		s.redirect(w, r, "/settings#access", "Set an admin password before switching built-in login on.", true)
+		s.redirect(w, r, "/settings#access", "Set an administrator password first. Then set built-in login to on.", true)
 		return
 	}
 	// A new viewer password lets someone else in, too.
@@ -720,17 +760,17 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 		_ = s.st.DeleteSessions(RoleViewer)
 	}
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#access", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#access", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	changes := configChanges(old, c)
 	if newViewerPW {
-		changes = append(changes, "New viewer password set; viewers were logged out.")
+		changes = append(changes, "The new viewer password is set. syncwatch logged out all viewers.")
 	}
 	if len(changes) > 0 {
 		s.announce(r, "Access settings changed", strings.Join(changes, "\n"))
 	}
-	s.redirect(w, r, "/settings#access", "Access settings saved.", false)
+	s.redirect(w, r, "/settings#access", "The access settings are saved.", false)
 }
 
 var viewerRank = map[string]int{config.ViewerNone: 0, config.ViewerPassword: 1, config.ViewerOpen: 2}
@@ -756,7 +796,7 @@ func (s *Server) confirmAdmin(r *http.Request) string {
 	if h == "" {
 		return ""
 	}
-	const need = "This change lets more people in: enter the admin password to confirm it."
+	const need = "This change permits access to more people. Type the administrator password to accept the change."
 	pw := r.FormValue("confirm")
 	if pw == "" {
 		return need
@@ -764,9 +804,9 @@ func (s *Server) confirmAdmin(r *http.Request) string {
 	ok, limited := s.limitedCheck(r, func() bool { return CheckPassword(pw, h) })
 	switch {
 	case limited:
-		return "Too many failed attempts. Try again in a few minutes."
+		return errTooManyLogins
 	case !ok:
-		return "The admin password is wrong. " + need
+		return "The administrator password is not correct. " + need
 	}
 	return ""
 }
@@ -776,10 +816,10 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 		ok, limited := s.limitedCheck(r, func() bool { return CheckPassword(r.FormValue("current"), h) })
 		switch {
 		case limited:
-			s.redirect(w, r, "/settings#access", "Too many failed attempts. Try again in a few minutes.", true)
+			s.redirect(w, r, "/settings#access", errTooManyLogins, true)
 			return
 		case !ok:
-			s.redirect(w, r, "/settings#access", "The current password is wrong.", true)
+			s.redirect(w, r, "/settings#access", "The current password is not correct.", true)
 			return
 		}
 	}
@@ -789,7 +829,7 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 		return
 	}
 	if pw != r.FormValue("password2") {
-		s.redirect(w, r, "/settings#access", "The new passwords don't match.", true)
+		s.redirect(w, r, "/settings#access", "The new passwords are not the same.", true)
 		return
 	}
 	nh, err := HashPassword(pw)
@@ -802,8 +842,8 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 	if s.cfg.Get().Access.Mode == config.AccessBuiltin {
 		_ = s.startSession(w, r, RoleAdmin)
 	}
-	s.announce(r, "Admin password changed", "Other admin sessions were logged out.")
-	s.redirect(w, r, "/settings#access", "Admin password changed; other admin sessions were logged out.", false)
+	s.announce(r, "Administrator password changed", "syncwatch logged out the other administrator sessions.")
+	s.redirect(w, r, "/settings#access", "The administrator password is changed. syncwatch logged out the other administrator sessions.", false)
 }
 
 func (s *Server) handleAPIToken(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -811,9 +851,9 @@ func (s *Server) handleAPIToken(w http.ResponseWriter, r *http.Request, info req
 	if r.FormValue("op") == "revoke" {
 		_ = s.st.DeleteSecret(store.SecretAPIToken)
 		if had {
-			s.announce(r, "API token revoked", "Requests with the old token are refused.")
+			s.announce(r, "API token revoked", "syncwatch refuses requests with the old API token.")
 		}
-		s.redirect(w, r, "/settings#api", "API token revoked.", false)
+		s.redirect(w, r, "/settings#api", "The API token is revoked.", false)
 		return
 	}
 	tok := "swt_" + randomToken(24)
@@ -821,7 +861,11 @@ func (s *Server) handleAPIToken(w http.ResponseWriter, r *http.Request, info req
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	s.announce(r, strings.TrimSuffix(replacedOrAdded(had, "API token"), "."), "It reads /api/v1/status and /api/v1/ha.")
+	title := "API token generated"
+	if had {
+		title = "API token replaced"
+	}
+	s.announce(r, title, "The API token gives read access to /api/v1/status and /api/v1/ha.")
 	s.render(w, r, http.StatusOK, "settings", info, s.settingsData(info, map[string]any{"NewToken": tok}))
 }
 
@@ -846,7 +890,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 		data = []byte(r.FormValue("yaml"))
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
-		s.redirect(w, r, "/settings#import", "Choose a YAML file or paste one.", true)
+		s.redirect(w, r, "/settings#import", "Select a YAML file or paste the YAML.", true)
 		return
 	}
 	if s.stale(w, r, s.cfg.Get(), "import") {
@@ -854,7 +898,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	}
 	c, err := config.ParseYAML(data)
 	if err != nil {
-		s.redirect(w, r, "/settings#import", "Import failed: "+err.Error(), true)
+		s.redirect(w, r, "/settings#import", "Import failed. "+sentence(err.Error()), true)
 		return
 	}
 	old := s.cfg.Get()
@@ -862,12 +906,12 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	// no admin password would send everyone to a setup page whose token was
 	// never logged (the process started in proxy mode).
 	if c.Access.Mode == config.AccessBuiltin && !s.adminConfigured() {
-		s.redirect(w, r, "/settings#import", "Not imported: the file switches built-in login on, but no admin password is set, so nobody could log in. Set an admin password under Access first.", true)
+		s.redirect(w, r, "/settings#import", "Not imported. The file sets built-in login to on, but no administrator password is set. Set an administrator password in Settings → Access first.", true)
 		return
 	}
 	if weakensAccess(old, c) {
 		if msg := s.confirmAdmin(r); msg != "" {
-			s.redirect(w, r, "/settings#import", "Not imported: the file switches login off or opens viewing. "+msg, true)
+			s.redirect(w, r, "/settings#import", "Not imported. The file sets login to off or gives viewer access to more people. "+msg, true)
 			return
 		}
 	}
@@ -876,7 +920,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	changes := configChanges(old, c)
 	for _, sv := range c.Servers {
 		if sv.APIKey != "" {
-			changes = append(changes, "Server "+sv.Name+": "+replacedOrAdded(s.st.HasSecret(store.ServerAPIKeySecret(sv.ID)), "API key"))
+			changes = append(changes, replacedOrAdded(s.st.HasSecret(store.ServerAPIKeySecret(sv.ID)), "API key of the server "+sv.Name))
 		}
 	}
 	if c.Notify.DiscordWebhook != "" {
@@ -887,15 +931,15 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	}
 	n, err := settings.ImportSecrets(s.st, c)
 	if err != nil {
-		s.redirect(w, r, "/settings#import", "Import failed: "+err.Error(), true)
+		s.redirect(w, r, "/settings#import", "Import failed. "+sentence(err.Error()), true)
 		return
 	}
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#import", "Not saved: "+err.Error(), true)
+		s.redirect(w, r, "/settings#import", "Not saved. "+sentence(err.Error()), true)
 		return
 	}
 	if err := settings.DropRemovedServers(s.st, old, c); err != nil {
-		s.log.Error("deleting secrets of removed servers", "err", err)
+		s.log.Error("cannot delete the secrets of removed servers", "err", err)
 	}
 	if n > 0 {
 		s.channelsChanged() // the file may have brought a new webhook
@@ -903,12 +947,42 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	if len(changes) > 0 {
 		announce("Configuration imported", strings.Join(changes, "\n"))
 	}
-	msg := "Configuration imported."
+	msg := "The configuration is imported."
 	if n > 0 {
-		msg += fmt.Sprintf(" %d secret(s) from the file were stored encrypted.", n)
+		msg += " syncwatch encrypted and stored " + plural(n, "secret", "secrets") + " from the file."
 	}
 	if need := settings.NeedKey(s.st, c); len(need) > 0 {
-		msg += " Enter the API key again for " + strings.Join(need, ", ") + ": an API key is only sent to the URL it was entered for."
+		msg += " Type the API key again for " + strings.Join(need, ", ") + ". " + keyOnlyToURL
 	}
 	s.redirect(w, r, "/settings#import", msg, false)
+}
+
+// errTooManyLogins is the one text for every password rate limit.
+const errTooManyLogins = "Too many failed logins. Try again in 10 minutes."
+
+// fieldLabels maps the duration fields of the Checks and Collector forms to
+// the labels of settings.html, so a validation message names the field as
+// the page shows it.
+var fieldLabels = map[string]string{
+	"failing_files":       "H4 with only failed items after",
+	"stuck_sync":          "H5 stuck sync after",
+	"paused":              "H6 paused for more than",
+	"pc_offline":          "H7 PC offline for more than",
+	"conflict_window":     "H10 conflicts in the last",
+	"inactive_project":    "C1 no file change for",
+	"old_device":          "C2 device not seen for",
+	"dead_share":          "C3 folder not used by device after",
+	"event_timeout":       "Event long-poll timeout",
+	"full_check_interval": "Full check every",
+	"poll_interval":       "Poll interval (polled mode)",
+	"structure_interval":  "Structure scan every",
+	"baseline_interval":   "Baseline scan every",
+	"request_timeout":     "Request timeout",
+}
+
+func fieldLabel(name string) string {
+	if l, ok := fieldLabels[name]; ok {
+		return l
+	}
+	return name
 }

@@ -160,3 +160,12 @@ func Ago(d time.Duration) string {
 		return fmt.Sprintf("%d seconds", int(d.Seconds()))
 	}
 }
+
+// Plural writes a count with its noun: Plural(1, "failed item", "failed
+// items") is "1 failed item", Plural(3, ...) is "3 failed items".
+func Plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}

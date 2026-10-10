@@ -415,7 +415,7 @@ func TestWeeklyReport(t *testing.T) {
 	if weekly == nil {
 		t.Fatal("no weekly report")
 	}
-	if !strings.Contains(weekly.Summary, `1/2 servers OK \(SOL down\)`) || !strings.Contains(weekly.Summary, "1 error,") {
+	if !strings.Contains(weekly.Summary, `1 of 2 servers up \(SOL down\)`) || !strings.Contains(weekly.Summary, "ERROR 1 ·") {
 		t.Fatalf("health line: %s", weekly.Summary)
 	}
 	if len(weekly.Sections[2].Lines) != 1 {
@@ -801,7 +801,7 @@ func TestUndecryptableWebhookIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := New(eng, st2, h, quiet)
-	const want = "the Discord webhook can't be decrypted (secret key changed?)"
+	const want = "syncwatch cannot decrypt the Discord webhook: check the secret key"
 	if err := n.SendTest(context.Background()); err == nil || err.Error() != want {
 		t.Fatalf("SendTest: %v", err)
 	}
@@ -927,7 +927,7 @@ func TestHealthLineWording(t *testing.T) {
 	now := local(2026, 10, 6, 10, 0)
 	r := newRig(t, now, "AKKA")
 	r.at(now)
-	want := "1 server OK · 0 PCs, 0 offline > 7 days · 0 errors, 0 warnings, 0 suggestions · 0 snoozed"
+	want := "1 server up · 0 PCs, 0 offline more than 7 days · ERROR 0 · WARNING 0 · INFO 0 · 0 snoozed"
 	if got := HealthLine(r.n.cfg.Get(), r.eng.View(), now); got != want {
 		t.Fatalf("health line:\n got %s\nwant %s", got, want)
 	}
@@ -938,7 +938,7 @@ func TestHealthLineWording(t *testing.T) {
 	r.setDown("SOL", true)
 	r.at(now)
 	// The PC that has been away for 10 days is also a warning finding.
-	want = "1/2 servers OK (SOL down) · 1 PC, 1 offline > 7 days · 1 error, 1 warning, 0 suggestions · 0 snoozed"
+	want = "1 of 2 servers up (SOL down) · 1 PC, 1 offline more than 7 days · ERROR 1 · WARNING 1 · INFO 0 · 0 snoozed"
 	if got := HealthLine(r.n.cfg.Get(), r.eng.View(), now); got != want {
 		t.Fatalf("health line:\n got %s\nwant %s", got, want)
 	}
@@ -970,7 +970,7 @@ func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
 	r.setDown("SOL", true)
 	r.at(start.Add(2 * time.Minute))
 	msgs := r.sender.take()
-	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1/2 servers OK \(SOL down\)`) { // parentheses escaped for Discord
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1 of 2 servers up \(SOL down\)`) { // parentheses escaped for Discord
 		t.Fatalf("weekly report once every server reported: %+v", msgs)
 	}
 
@@ -986,7 +986,7 @@ func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
 	}
 	r.at(start.Add(5 * time.Minute))
 	msgs = r.sender.take()
-	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `0/2 servers OK \(AKKA, SOL not yet checked\)`) || strings.Contains(msgs[0].Summary, "down") {
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `0 of 2 servers up \(AKKA, SOL not contacted\)`) || strings.Contains(msgs[0].Summary, "down") {
 		t.Fatalf("weekly report after the grace period: %+v", msgs)
 	}
 }
@@ -996,7 +996,7 @@ func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
 // looked for until 12 hours after its time). A time the notifier can send
 // at quiet end is still accepted.
 func TestReminderInsideQuietHoursRejected(t *testing.T) {
-	const inside = "reminder_time must be outside quiet_hours"
+	const inside = "is inside the quiet hours"
 	for _, tc := range []struct {
 		quiet, reminder string
 		want            string // "" means accepted
@@ -1011,7 +1011,7 @@ func TestReminderInsideQuietHoursRejected(t *testing.T) {
 		{"off", "23:00", ""},
 		// Equal ends used to mean off; since the config validation of r0-g
 		// they are refused as such, before the reminder is looked at.
-		{"07:00-07:00", "23:00", "start and end are the same, use off to disable"},
+		{"07:00-07:00", "23:00", "the start and the end are the same"},
 	} {
 		c := config.Default()
 		c.Notify.QuietHours, c.Notify.ReminderTime = tc.quiet, tc.reminder
@@ -1138,7 +1138,7 @@ func TestLateOvernightLabelsDaytimeFindings(t *testing.T) {
 	if lines := m.Sections[2].Lines; len(lines) != 1 || !strings.Contains(lines[0], "SIRIUS") || !strings.Contains(lines[0], "(01:00–07:30)") {
 		t.Fatalf("opened and resolved: %+v", m.Sections[2])
 	}
-	if len(m.Sections) != 4 || !strings.Contains(m.Sections[3].Title, "since quiet hours ended") || len(m.Sections[3].Lines) != 1 || !strings.Contains(m.Sections[3].Lines[0], "SOL") {
+	if len(m.Sections) != 4 || !strings.Contains(m.Sections[3].Title, "after the end of quiet hours") || len(m.Sections[3].Lines) != 1 || !strings.Contains(m.Sections[3].Lines[0], "SOL") {
 		t.Fatalf("since quiet hours ended: %+v", m.Sections)
 	}
 	r.at(local(2026, 10, 7, 10, 2))

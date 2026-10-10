@@ -66,7 +66,7 @@ func TestBootstrapSecretsRemovedAfterImport(t *testing.T) {
 		}
 	}
 	// Everything else is kept, comments included, and the file still parses.
-	for _, keep := range []string{"# IVAR bootstrap", "https://192.168.2.10:8384", "discord_role_id", "imported into syncwatch's encrypted store"} {
+	for _, keep := range []string{"# IVAR bootstrap", "https://192.168.2.10:8384", "discord_role_id", "syncwatch imported this secret into its encrypted store"} {
 		if !strings.Contains(string(b), keep) {
 			t.Fatalf("bootstrap file lost %q:\n%s", keep, b)
 		}
@@ -85,7 +85,7 @@ func TestBootstrapSecretsRemovedAfterImport(t *testing.T) {
 	if _, err := LoadConfig(st, path, log); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(logs.String(), "still contains secrets") {
+	if !strings.Contains(logs.String(), "still contains unencrypted secrets") {
 		t.Fatalf("no warning: %s", logs.String())
 	}
 	if b2, _ := os.ReadFile(path); !bytes.Equal(b2, []byte(bootstrapYAML)) {
@@ -109,7 +109,7 @@ func TestBootstrapNullIsNotASecret(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if strings.Contains(logs.String(), "still contains secrets") {
+	if strings.Contains(logs.String(), "still contains unencrypted secrets") {
 		t.Fatalf("null values reported as secrets:\n%s", logs.String())
 	}
 	if b, _ := os.ReadFile(path); string(b) != yaml {
@@ -499,7 +499,7 @@ func TestCertificateFilesReloaded(t *testing.T) {
 	if leafOf(t, tc).VerifyHostname("second.example") != nil {
 		t.Fatal("the renewed certificate isn't served")
 	}
-	if !strings.Contains(logs.String(), "reloaded the TLS certificate") {
+	if !strings.Contains(logs.String(), "TLS certificate reloaded") {
 		t.Fatalf("reload not logged:\n%s", logs.String())
 	}
 
@@ -519,7 +519,7 @@ func TestCertificateFilesReloaded(t *testing.T) {
 	if leafOf(t, tc).VerifyHostname("second.example") != nil {
 		t.Fatal("a certificate without its key replaced the current one")
 	}
-	if !strings.Contains(logs.String(), "can't be loaded") {
+	if !strings.Contains(logs.String(), "cannot read the changed TLS certificate files") {
 		t.Fatalf("mismatch not logged:\n%s", logs.String())
 	}
 	b, _ = os.ReadFile(other + "-key.pem")
@@ -565,7 +565,7 @@ func TestSelfSignedRenewedWhileRunning(t *testing.T) {
 	if leaf.VerifyHostname("nas.lan") != nil {
 		t.Fatal("the renewed certificate lost its names")
 	}
-	if !strings.Contains(logs.String(), "renewed the self-signed certificate") {
+	if !strings.Contains(logs.String(), "self-signed certificate replaced") {
 		t.Fatalf("renewal not logged:\n%s", logs.String())
 	}
 	// The files hold the new one, for the next start.

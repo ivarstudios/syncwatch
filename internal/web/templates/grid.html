@@ -1,7 +1,7 @@
 {{define "grid"}}{{template "head" .}}
 <div class="toolbar">
-  <label class="search">Search <input type="search" id="grid-search" placeholder="Folder name or ID" autocomplete="off"></label>
-  <label class="check"><input type="checkbox" id="grid-problems"> Only problems</label>
+  <label class="search">Search <input type="search" id="grid-search" placeholder="Folder label or ID" autocomplete="off"></label>
+  <label class="check"><input type="checkbox" id="grid-problems"> Only folders with faults</label>
 </div>
 {{template "grid-body" .}}
 {{template "foot" .}}{{end}}
@@ -10,11 +10,11 @@
 
 {{define "grid-body"}}{{$vm := .Data.VM}}
 <div id="grid-body" hx-get="/frag/grid" hx-trigger="sse:update" hx-swap="outerHTML">
-  {{if not $vm.Groups}}<p class="card">No folders yet.</p>{{end}}
+  {{if not $vm.Groups}}<p class="card">There are no folders.</p>{{end}}
   <div class="grid-wide">
   {{range $gi, $g := $vm.Groups}}
     <details class="group" id="g-{{$gi}}" data-key="group:{{$g.Name}}" {{if $g.Open}}open{{end}}>
-      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with problems</span>{{else}} · <span class="c-ok">✔ all fine</span>{{end}}</summary>
+      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{else}} · <span class="c-ok">✔ no faults</span>{{end}}</summary>
       <div class="scroll">
       <table class="grid">
         <thead><tr><th scope="col" class="fcol">Folder</th>{{range $vm.Devices}}<th scope="col" class="dcol {{if .Server}}srv{{end}}" title="{{.ID}}">{{.Name}}{{if .Server}}<span class="muted"> (server)</span>{{end}}</th>{{end}}</tr></thead>
@@ -42,7 +42,7 @@
   {{end}}
   </div>
   <p class="legend muted small">
-    <span class="cell c-ok">✔ synced</span> <span class="cell c-sync">⟳ syncing or scanning</span> <span class="cell c-err">✖ error</span> <span class="cell c-warn">⚠ watch error</span>
+    <span class="cell c-ok">✔ synced</span> <span class="cell c-sync">⟳ syncing or scanning</span> <span class="cell c-err">✖ error</span> <span class="cell c-warn">⚠ file watcher error</span>
     <span class="cell c-paused">⏸ paused</span> <span class="cell c-off">○ offline</span> <span class="cell c-warn">⊘ not shared back</span> <span class="cell c-na">– not shared</span>
   </p>
 </div>

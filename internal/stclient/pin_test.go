@@ -186,7 +186,7 @@ func TestCARenewalUpdatesPin(t *testing.T) {
 	if c.Pin() != fpOf(leaf2) || len(pinned) != 2 || pinned[1] != fpOf(leaf2) {
 		t.Fatalf("pin not updated on renewal: %q, OnPin %v", c.Pin(), pinned)
 	}
-	if !strings.Contains(logs.String(), "certificate renewed") || !strings.Contains(logs.String(), "old="+ShortFP(fpOf(leaf1))) {
+	if !strings.Contains(logs.String(), "certificate replaced, new certificate pinned") || !strings.Contains(logs.String(), "old="+ShortFP(fpOf(leaf1))) {
 		t.Fatalf("renewal not logged: %s", logs.String())
 	}
 	if reached.Load() != 2 {

@@ -101,7 +101,7 @@ func (s *Server) LogSetupToken(stderr io.Writer) {
 	if tok == "" || s.cfg.Get().Access.Mode != config.AccessBuiltin {
 		return
 	}
-	const msg = "no admin password is set yet: open the dashboard and enter this one-time setup token"
+	const msg = "no administrator password is set: open the dashboard and type the setup token"
 	s.log.Warn(msg, "setup_token", tok)
 	if !s.log.Enabled(context.Background(), slog.LevelWarn) {
 		fmt.Fprintf(stderr, "syncwatch: %s: %s\n", msg, tok)
@@ -164,7 +164,7 @@ func (s *Server) routes() {
 	}), 24*time.Hour))
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.st.Ping(r.Context()); err != nil {
-			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			http.Error(w, "database not available", http.StatusServiceUnavailable)
 			return
 		}
 		_, _ = w.Write([]byte("ok\n"))
@@ -219,7 +219,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 	if !s.hostAllowed(r) {
 		s.log.Info("request for an unknown host name refused", "host", r.Host, "ip", clientIP(r))
-		http.Error(w, fmt.Sprintf("syncwatch doesn't answer to the host name %q: open it by IP address and set public_url under Settings → Notifications, or set SYNCWATCH_TLS_HOSTS to the names you use", r.Host), http.StatusMisdirectedRequest)
+		http.Error(w, fmt.Sprintf("syncwatch does not answer to the host name %q. Open the dashboard by IP address and set the dashboard URL (public_url) in Settings → Notifications, or set SYNCWATCH_TLS_HOSTS to the names that you use", r.Host), http.StatusMisdirectedRequest)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
@@ -271,11 +271,11 @@ func (s *Server) action(need string, h handler) http.HandlerFunc {
 func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	if r.Header.Get("HX-Request") == "true" || strings.HasPrefix(r.URL.Path, "/frag/") || r.URL.Path == "/events" {
 		w.Header().Set("HX-Redirect", "/login")
-		http.Error(w, "login required", http.StatusUnauthorized)
+		http.Error(w, "login necessary", http.StatusUnauthorized)
 		return
 	}
 	if info.Role != RoleNone {
-		s.render(w, r, http.StatusForbidden, "error", info, map[string]any{"Title": "Not allowed", "Message": "This page needs the admin password."})
+		s.render(w, r, http.StatusForbidden, "error", info, map[string]any{"Title": "Not permitted", "Message": "This page needs the administrator password."})
 		return
 	}
 	if !s.adminConfigured() && s.cfg.Get().Access.Mode == config.AccessBuiltin {
@@ -348,7 +348,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	pd.Nav = name
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, name, pd); err != nil {
-		s.log.Error("rendering template", "template", name, "err", err)
+		s.log.Error("cannot render the template", "template", name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -360,7 +360,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 func (s *Server) fragment(w http.ResponseWriter, name string, info requestInfo, data any) {
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, name, pageData{Role: info.Role, CSRF: info.CSRF, Alert: s.alert(info), Data: data}); err != nil {
-		s.log.Error("rendering fragment", "template", name, "err", err)
+		s.log.Error("cannot render the fragment", "template", name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -483,7 +483,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 	ok, delay := s.limiter.check(ip, now)
 	if !ok {
 		s.log.Warn("login rate limit reached", "ip", ip)
-		s.render(w, r, http.StatusTooManyRequests, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "Too many failed attempts. Try again in a few minutes."})
+		s.render(w, r, http.StatusTooManyRequests, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": errTooManyLogins})
 		return
 	}
 	wait(r, delay)
@@ -500,16 +500,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 	}
 	if role == RoleNone {
 		if s.limiter.fail(ip, now, tried...) {
-			s.log.Warn("many failed logins from different addresses; logins are slowed down for a while")
+			s.log.Warn("many failed logins from different addresses, syncwatch now slows all logins")
 		}
 		s.log.Warn("failed login", "ip", ip)
 		time.Sleep(300 * time.Millisecond)
-		s.render(w, r, http.StatusUnauthorized, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "Wrong password."})
+		s.render(w, r, http.StatusUnauthorized, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "The password is not correct."})
 		return
 	}
 	s.limiter.success(ip, role)
 	if err := s.startSession(w, r, role); err != nil {
-		http.Error(w, "could not start session", http.StatusInternalServerError)
+		http.Error(w, "cannot start the session", http.StatusInternalServerError)
 		return
 	}
 	s.log.Info("login", "role", role, "ip", ip)
@@ -526,7 +526,7 @@ func (s *Server) handleSetupPage(w http.ResponseWriter, r *http.Request, info re
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, http.StatusOK, "setup", info, map[string]any{"Title": "Set up syncwatch"})
+	s.render(w, r, http.StatusOK, "setup", info, map[string]any{"Title": "First start"})
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -541,7 +541,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	ip := clientIP(r)
 	ok, delay := s.limiter.check(ip, s.now())
 	if !ok {
-		s.render(w, r, http.StatusTooManyRequests, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "Too many failed attempts. Try again later."})
+		s.render(w, r, http.StatusTooManyRequests, "setup", info, map[string]any{"Title": "First start", "Error": "Too many failed tries. Try again in 10 minutes."})
 		return
 	}
 	wait(r, delay)
@@ -549,17 +549,17 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	got := strings.TrimSpace(r.FormValue("token"))
 	if want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 		s.limiter.fail(ip, s.now(), RoleAdmin)
-		s.render(w, r, http.StatusUnauthorized, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "Wrong setup token. It is printed in the container log."})
+		s.render(w, r, http.StatusUnauthorized, "setup", info, map[string]any{"Title": "First start", "Error": "The setup token is not correct. Copy the setup token from the log."})
 		return
 	}
 	s.limiter.success(ip, RoleAdmin)
 	pw := r.FormValue("password")
 	if err := checkNewPassword(pw); err != nil {
-		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": err.Error(), "Token": got})
+		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": err.Error(), "Token": got})
 		return
 	}
 	if pw != r.FormValue("password2") {
-		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "The passwords don't match.", "Token": got})
+		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": "The passwords are not the same.", "Token": got})
 		return
 	}
 	hash, err := HashPassword(pw)
@@ -573,8 +573,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	}
 	s.SetupToken() // clears the token
 	_ = s.startSession(w, r, RoleAdmin)
-	s.log.Info("admin password set through first-run setup", "ip", ip)
-	s.redirect(w, r, "/settings", "Admin password set. Add your Syncthing servers below.", false)
+	s.log.Info("administrator password set with the setup token", "ip", ip)
+	s.redirect(w, r, "/settings", "The administrator password is set. Add your servers below.", false)
 }
 
 // Dashboard pages.
@@ -598,7 +598,7 @@ func (s *Server) fragGrid(w http.ResponseWriter, r *http.Request, info requestIn
 
 func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	f := parseFilter(r.URL.Query())
-	s.render(w, r, http.StatusOK, "problems", info, map[string]any{"Title": "Problems", "VM": s.problems(s.eng.View(), f), "Admin": info.Role == RoleAdmin})
+	s.render(w, r, http.StatusOK, "problems", info, map[string]any{"Title": "Findings", "VM": s.problems(s.eng.View(), f), "Admin": info.Role == RoleAdmin})
 }
 
 func (s *Server) fragProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -615,7 +615,7 @@ func (s *Server) fragAlert(w http.ResponseWriter, r *http.Request, info requestI
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		http.Error(w, "server-sent events not supported", http.StatusInternalServerError)
 		return
 	}
 	ch, cancel := s.eng.Subscribe()
@@ -677,12 +677,12 @@ func (s *Server) handleSnooze(w http.ResponseWriter, r *http.Request, info reque
 			d = d.AddDate(0, 0, 1)
 		}
 		if err != nil || !d.After(now) {
-			s.redirect(w, r, backTo(r), "Pick today or a later date.", true)
+			s.redirect(w, r, backTo(r), "Select today or a later date.", true)
 			return
 		}
 		until = d
 	default:
-		s.redirect(w, r, backTo(r), "Unknown snooze length.", true)
+		s.redirect(w, r, backTo(r), "The snooze length is not valid. Select 1 day, 1 week or a date.", true)
 		return
 	}
 	reason := strings.TrimSpace(r.FormValue("reason"))
@@ -690,26 +690,26 @@ func (s *Server) handleSnooze(w http.ResponseWriter, r *http.Request, info reque
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
-	detail := "Snoozed until " + s.fmtTime(until) + "."
+	detail := "The finding is snoozed until " + s.fmtTime(until) + "."
 	if reason != "" {
 		detail += " Reason: " + reason
 	}
 	s.announceHidden(r, id, "snoozed", detail)
-	s.redirect(w, r, backTo(r), "Snoozed until "+s.fmtTime(until)+".", false)
+	s.redirect(w, r, backTo(r), "The finding is snoozed until "+s.fmtTime(until)+".", false)
 }
 
 func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	reason := strings.TrimSpace(r.FormValue("reason"))
 	if reason == "" {
-		s.redirect(w, r, backTo(r), "Give a reason for ignoring the problem.", true)
+		s.redirect(w, r, backTo(r), "Type a reason before you ignore the finding.", true)
 		return
 	}
 	if err := s.eng.Ignore(r.PathValue("id"), reason, info.Role); err != nil {
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
-	s.announceHidden(r, r.PathValue("id"), "ignored", "Ignored: "+reason)
-	s.redirect(w, r, backTo(r), "Problem ignored.", false)
+	s.announceHidden(r, r.PathValue("id"), "ignored", "The finding is ignored. Reason: "+reason)
+	s.redirect(w, r, backTo(r), "The finding is ignored.", false)
 }
 
 // announceHidden tells the channels when an urgent problem is snoozed or
@@ -717,7 +717,7 @@ func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info reque
 func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
 	for _, f := range s.eng.View().Open {
 		if f.ID == id && f.Urgent {
-			s.announce(r, "Urgent problem "+what, f.Check+" "+f.Subject+": "+f.Message+"\n"+detail)
+			s.announce(r, "Urgent finding "+what, f.Check+" "+f.Subject+": "+f.Message+"\n"+detail)
 			return
 		}
 	}
@@ -728,7 +728,7 @@ func (s *Server) handleUnsnooze(w http.ResponseWriter, r *http.Request, info req
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
-	s.redirect(w, r, backTo(r), "Snooze removed.", false)
+	s.redirect(w, r, backTo(r), "The snooze is removed.", false)
 }
 
 func backTo(r *http.Request) string {

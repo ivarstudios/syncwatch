@@ -41,11 +41,11 @@ func (e *evaluator) inactiveProjects() {
 			// devices; local edits (over SMB, say) show up as events.
 			if f.LastFileAt.After(lastAt[f.ID]) {
 				lastAt[f.ID] = f.LastFileAt
-				a.last, a.basis = f.LastFileName, "the last file pulled from another device"
+				a.last, a.basis = f.LastFileName, "the last file Syncthing pulled from another device"
 			}
 			if f.LastLocalChange.After(lastAt[f.ID]) {
 				lastAt[f.ID] = f.LastLocalChange
-				a.last, a.basis = "", "the last local change seen by syncwatch"
+				a.last, a.basis = "", "the last local change that syncwatch saw"
 			}
 		}
 	}
@@ -67,7 +67,7 @@ func (e *evaluator) inactiveProjects() {
 		details = append(details, detail("On servers", strings.Join(a.servers, ", ")))
 		e.add("C1", "", "folder:"+id, model.Finding{
 			Subject: a.label,
-			Message: fmt.Sprintf("No file in %s has changed for %s (%s was on %s); consider archiving it", a.label, Ago(idle), a.basis, last.Format("2006-01-02")),
+			Message: fmt.Sprintf("No file in folder %s changed in the last %s (%s was on %s). You can archive it", a.label, Ago(idle), a.basis, last.Format("2006-01-02")),
 			Since:   last,
 			Related: a.ids,
 			Details: details,
@@ -89,14 +89,14 @@ func (e *evaluator) oldDevices() {
 		}
 		if dv.LastSeen.IsZero() {
 			// Opens once the device has been watched for the threshold.
-			f.Message = fmt.Sprintf("%s has never connected since syncwatch started watching it, over %s ago, but is still configured on %s; consider removing it", dv.Name, Ago(th), strings.Join(e.names(dv.SeenBy), ", "))
+			f.Message = fmt.Sprintf("Device %s never connected after syncwatch started to monitor it more than %s ago, but is still configured on %s. You can remove the device", dv.Name, Ago(th), strings.Join(e.names(dv.SeenBy), ", "))
 			f.MinDuration = th
 		} else {
 			off := e.Now.Sub(dv.LastSeen)
 			if off < th {
 				continue
 			}
-			f.Message = fmt.Sprintf("%s hasn't been seen for %s but is still configured on %s; consider removing it", dv.Name, Ago(off), strings.Join(e.names(dv.SeenBy), ", "))
+			f.Message = fmt.Sprintf("Device %s is offline for %s but is still configured on %s. You can remove the device", dv.Name, Ago(off), strings.Join(e.names(dv.SeenBy), ", "))
 			f.Since = dv.LastSeen
 		}
 		e.add("C2", "", "device:"+dv.ID, f)
@@ -130,16 +130,16 @@ func (e *evaluator) deadShares() {
 				dn := e.devName(dev)
 				var msg string
 				if sv.RemoteState(fid, dev) == "notSharing" {
-					msg = fmt.Sprintf("%s is shared with %s, which doesn't share it back", f.DisplayName(), dn)
+					msg = fmt.Sprintf("Folder %s is shared with %s, which does not share it back", f.DisplayName(), dn)
 				} else if d.LastSeen.IsZero() && !e.connected(sv, dev) && !e.Snapshot.IsServerDevice(dev) {
 					// A polled server that never connected is H1/H2's business.
-					msg = fmt.Sprintf("%s is shared with %s, which has never connected to %s", f.DisplayName(), dn, sv.Name)
+					msg = fmt.Sprintf("Folder %s is shared with %s, which never connected to %s", f.DisplayName(), dn, sv.Name)
 				} else {
 					continue
 				}
 				e.add("C3", sv.ID, "dead:"+fid+":"+dev, model.Finding{
 					Subject:     fmt.Sprintf("%s → %s", f.DisplayName(), dn),
-					Message:     msg + "; consider unsharing it",
+					Message:     msg + ". You can remove the device from the folder",
 					MinDuration: th,
 					Details:     []model.Detail{detail("Folder ID", fid), detail("Device ID", dev)},
 				})

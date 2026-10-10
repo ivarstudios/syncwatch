@@ -93,16 +93,16 @@ func newLogger(level, format string) *slog.Logger {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `syncwatch %s — read-only dashboard, weekly report and urgent pings for Syncthing
+	fmt.Fprintf(os.Stderr, `syncwatch %s — read-only dashboard, weekly report and urgent messages for Syncthing
 
 Usage:
   syncwatch [serve] [flags]          run the monitor (default)
-  syncwatch probe [flags]            API probe; writes a findings report
-  syncwatch gate [flags]             read-only gate in front of one Syncthing (holds its API key; see README)
-  syncwatch reset-admin-password     set a new admin password from stdin
+  syncwatch probe [flags]            test the API of a server (writes a probe report)
+  syncwatch gate [flags]             read-only gate next to a server (keeps its API key, see README)
+  syncwatch reset-admin-password     set a new administrator password from stdin
   syncwatch import-config FILE       replace the configuration with a YAML file
   syncwatch export-config            print the configuration as YAML (no secrets)
-  syncwatch healthcheck              exit 0 if the local server answers /healthz
+  syncwatch healthcheck              exit 0 if syncwatch on this host answers /healthz
   syncwatch version
 
 Run "syncwatch <command> -h" for the flags of a command.
@@ -167,7 +167,7 @@ func main() {
 
 func dataFlags(fs *flag.FlagSet) (*string, *string) {
 	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory (env SYNCWATCH_DATA)")
-	key := fs.String("secret-key", "", "secrets key; default: env SYNCWATCH_SECRET_KEY or <data>/secret.key")
+	key := fs.String("secret-key", "", "secret key (env SYNCWATCH_SECRET_KEY, default <data>/secret.key)")
 	return data, key
 }
 
@@ -185,14 +185,14 @@ func serve(args []string) error {
 	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data, key := dataFlags(fs)
-	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, e.g. 192.168.1.10:8080 (env SYNCWATCH_LISTEN; the default is loopback only)")
-	cfgFile := fs.String("config", env("SYNCWATCH_CONFIG", ""), "bootstrap YAML imported on first start (env SYNCWATCH_CONFIG; default <data>/syncwatch.yaml)")
+	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, for example 192.168.1.10:8080 (env SYNCWATCH_LISTEN, default loopback only)")
+	cfgFile := fs.String("config", env("SYNCWATCH_CONFIG", ""), "bootstrap file that syncwatch imports on first start (env SYNCWATCH_CONFIG, default <data>/syncwatch.yaml)")
 	level := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
 	format := fs.String("log-format", env("SYNCWATCH_LOG_FORMAT", "text"), "text or json (env SYNCWATCH_LOG_FORMAT)")
 	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve HTTPS with this certificate file (env SYNCWATCH_TLS_CERT)")
-	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
-	tlsSelf := fs.Bool("tls-self-signed", selfSigned, "serve HTTPS with a self-signed certificate kept in the data directory (env SYNCWATCH_TLS_SELF_SIGNED)")
-	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "extra names or IP addresses for the self-signed certificate, comma-separated, e.g. the host's LAN address (env SYNCWATCH_TLS_HOSTS)")
+	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "private key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
+	tlsSelf := fs.Bool("tls-self-signed", selfSigned, "serve HTTPS with a self-signed certificate in the data directory (env SYNCWATCH_TLS_SELF_SIGNED)")
+	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "more names or IP addresses for the self-signed certificate, comma-separated, for example the LAN address (env SYNCWATCH_TLS_HOSTS)")
 	_ = fs.Parse(args)
 	if *cfgFile == "" {
 		*cfgFile = *data + string(os.PathSeparator) + "syncwatch.yaml"
@@ -223,15 +223,15 @@ func runGate(args []string) error {
 // container must not inherit it.
 func gateOptions(args []string) (o app.GateOptions, level string) {
 	fs := flag.NewFlagSet("gate", flag.ExitOnError)
-	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory for the gate's token, certificate and Syncthing pin (env SYNCWATCH_DATA)")
-	listen := fs.String("listen", env("SYNCWATCH_GATE_LISTEN", "127.0.0.1:8385"), "listen address; syncwatch must reach it, e.g. 192.168.1.10:8385 (env SYNCWATCH_GATE_LISTEN)")
-	syncthing := fs.String("syncthing", env("SYNCWATCH_GATE_SYNCTHING", "https://127.0.0.1:8384"), "Syncthing's GUI/API URL as the gate reaches it (env SYNCWATCH_GATE_SYNCTHING)")
-	keyFile := fs.String("syncthing-key-file", env("SYNCWATCH_GATE_SYNCTHING_KEY_FILE", ""), "file holding Syncthing's API key (env SYNCWATCH_GATE_SYNCTHING_KEY_FILE; or set SYNCWATCH_GATE_SYNCTHING_KEY)")
-	cfgXML := fs.String("syncthing-config", env("SYNCWATCH_GATE_SYNCTHING_CONFIG", ""), "Syncthing's config.xml, to read the API key from (env SYNCWATCH_GATE_SYNCTHING_CONFIG)")
-	roots := fs.String("browse-roots", env("SYNCWATCH_GATE_BROWSE_ROOTS", ""), "extra directories the token may list, comma-separated; by default only the parents of Syncthing's folders (env SYNCWATCH_GATE_BROWSE_ROOTS)")
+	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory for the gate token, certificate and pinned Syncthing fingerprint (env SYNCWATCH_DATA)")
+	listen := fs.String("listen", env("SYNCWATCH_GATE_LISTEN", "127.0.0.1:8385"), "listen address that syncwatch can reach, for example 192.168.1.10:8385 (env SYNCWATCH_GATE_LISTEN)")
+	syncthing := fs.String("syncthing", env("SYNCWATCH_GATE_SYNCTHING", "https://127.0.0.1:8384"), "API URL of Syncthing as the gate reaches it (env SYNCWATCH_GATE_SYNCTHING)")
+	keyFile := fs.String("syncthing-key-file", env("SYNCWATCH_GATE_SYNCTHING_KEY_FILE", ""), "file with the Syncthing API key (env SYNCWATCH_GATE_SYNCTHING_KEY_FILE, or the key in SYNCWATCH_GATE_SYNCTHING_KEY)")
+	cfgXML := fs.String("syncthing-config", env("SYNCWATCH_GATE_SYNCTHING_CONFIG", ""), "Syncthing config.xml to read the API key from (env SYNCWATCH_GATE_SYNCTHING_CONFIG)")
+	roots := fs.String("browse-roots", env("SYNCWATCH_GATE_BROWSE_ROOTS", ""), "more directories that the gate token can list, comma-separated (env SYNCWATCH_GATE_BROWSE_ROOTS, default the parent directories of the Syncthing folders)")
 	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve with this certificate instead of a self-signed one (env SYNCWATCH_TLS_CERT)")
-	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
-	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "extra names or addresses for the self-signed certificate (env SYNCWATCH_TLS_HOSTS)")
+	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "private key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
+	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "more names or IP addresses for the self-signed certificate, comma-separated (env SYNCWATCH_TLS_HOSTS)")
 	lvl := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
 	_ = fs.Parse(args)
 	return app.GateOptions{
@@ -246,22 +246,22 @@ func runProbe(args []string) error {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
 	var o probe.Options
 	var shares stringList
-	fs.StringVar(&o.Name, "name", "server", "server name for the report")
-	fs.StringVar(&o.URL, "url", "", "Syncthing GUI/API URL, e.g. https://192.168.3.10:8384")
-	fs.StringVar(&o.APIKey, "api-key", os.Getenv("SYNCWATCH_PROBE_API_KEY"), "API key (or env SYNCWATCH_PROBE_API_KEY)")
-	fs.StringVar(&o.Out, "out", "docs/api-findings.md", "report file to write (appends a section per server)")
-	fs.StringVar(&o.Record, "record", "", "directory to save raw (secret-free) responses as test fixtures")
+	fs.StringVar(&o.Name, "name", "server", "server name for the probe report")
+	fs.StringVar(&o.URL, "url", "", "API URL of the server, for example https://192.168.3.10:8384")
+	fs.StringVar(&o.APIKey, "api-key", os.Getenv("SYNCWATCH_PROBE_API_KEY"), "API key of the server (env SYNCWATCH_PROBE_API_KEY)")
+	fs.StringVar(&o.Out, "out", "docs/api-findings.md", "report file to write (the probe appends a section for each server)")
+	fs.StringVar(&o.Record, "record", "", "directory to save the raw API responses (without secrets) as test fixtures")
 	fs.DurationVar(&o.EventTimeout, "event-timeout", 50*time.Second, "long-poll timeout to test against the VPN idle timeout")
 	fs.DurationVar(&o.EventWait, "event-wait", 2*time.Minute, "how long to listen for events")
-	fs.StringVar(&o.Pin, "pin", "", "expected certificate fingerprint (SHA-256 hex; upper case and colons are fine), if known")
-	fs.Var(&shares, "share", "share root to browse (repeatable); default: parents of folder paths")
-	fs.StringVar(&o.ProjectPattern, "project-pattern", "", "project_pattern from your structure rules, to estimate the structure scan's load")
+	fs.StringVar(&o.Pin, "pin", "", "certificate fingerprint to accept (hex SHA-256, upper case and colons permitted), if known")
+	fs.Var(&shares, "share", "share root to browse, repeatable (default: the parent directories of the folder paths)")
+	fs.StringVar(&o.ProjectPattern, "project-pattern", "", "project_pattern from your structure rules, to estimate the load of the structure scan")
 	fs.IntVar(&o.ScanDepth, "scan-depth", 3, "nested_scan_depth for the estimate")
-	fs.IntVar(&o.ScanBudget, "scan-budget", 20000, "most directory listings the estimate may make (it extrapolates beyond)")
+	fs.IntVar(&o.ScanBudget, "scan-budget", 20000, "limit of directory listings for the estimate (the probe calculates the rest)")
 	_ = fs.Parse(args)
 	o.Shares = shares
 	if o.URL == "" || o.APIKey == "" {
-		return fmt.Errorf("probe needs --url and --api-key")
+		return fmt.Errorf("the probe needs --url and --api-key")
 	}
 	pin, err := stclient.NormalizePin(o.Pin)
 	if err != nil {
@@ -287,14 +287,14 @@ func resetPassword(args []string) error {
 		return err
 	}
 	defer st.Close()
-	fmt.Fprint(os.Stderr, "New admin password: ")
+	fmt.Fprint(os.Stderr, "New administrator password: ")
 	pw, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && pw == "" {
-		return fmt.Errorf("reading password: %w", err)
+		return fmt.Errorf("cannot read the password: %w", err)
 	}
 	pw = strings.TrimRight(pw, "\r\n")
 	if len([]rune(pw)) < web.MinPasswordLength {
-		return fmt.Errorf("the password must be at least %d characters", web.MinPasswordLength)
+		return fmt.Errorf("the password must have at least %d characters", web.MinPasswordLength)
 	}
 	h, err := web.HashPassword(pw)
 	if err != nil {
@@ -306,7 +306,7 @@ func resetPassword(args []string) error {
 	if err := st.DeleteSessions(""); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Admin password changed; all sessions were logged out.")
+	fmt.Fprintln(os.Stderr, "The new administrator password is set. syncwatch logged out all sessions.")
 	return nil
 }
 
@@ -326,12 +326,12 @@ func importConfig(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Imported %d server(s) and %d secret(s). A running syncwatch applies it within 10 seconds; otherwise it is used on the next start.\n", len(c.Servers), n)
+	fmt.Fprintf(os.Stderr, "syncwatch imported %s and %s. A syncwatch that runs uses the new configuration in less than 10 seconds. If syncwatch does not run, it uses the new configuration on the next start.\n", plural(len(c.Servers), "server", "servers"), plural(n, "secret", "secrets"))
 	if n > 0 {
-		fmt.Fprintf(os.Stderr, "The secrets are stored encrypted now, but %s still contains them in plaintext: delete it.\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "syncwatch stores the secrets encrypted. The file %s still contains them unencrypted. Delete the file.\n", fs.Arg(0))
 	}
 	if need := settings.NeedKey(st, c); len(need) > 0 {
-		fmt.Fprintf(os.Stderr, "Enter the API key again for %s: an API key is only sent to the URL it was entered for.\n", strings.Join(need, ", "))
+		fmt.Fprintf(os.Stderr, "Type the API key again for %s. syncwatch sends an API key only to the URL that you typed it for.\n", strings.Join(need, ", "))
 	}
 	return nil
 }
@@ -350,7 +350,7 @@ func exportConfig(args []string) error {
 		return err
 	}
 	if c == nil {
-		return fmt.Errorf("no configuration stored yet")
+		return fmt.Errorf("there is no stored configuration")
 	}
 	b, err := c.ExportYAML()
 	if err != nil {
@@ -393,7 +393,15 @@ func healthcheck(args []string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("the health check returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// plural writes a count with its noun: "1 server", "3 servers".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }

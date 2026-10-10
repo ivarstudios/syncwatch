@@ -1,13 +1,13 @@
 {{define "settings"}}{{template "head" .}}{{$d := .Data}}{{$csrf := .CSRF}}{{$cfg := $d.Cfg}}
 <nav class="subnav" aria-label="Settings sections">
   <a href="#servers">Servers</a><a href="#notifications">Notifications</a><a href="#checks">Checks</a>
-  <a href="#structure">Structure</a><a href="#collector">Collector</a><a href="#access">Access</a><a href="#api">API</a><a href="#import">Export / import</a>
+  <a href="#structure">Structure</a><a href="#collector">Collector</a><a href="#access">Access</a><a href="#api">API</a><a href="#import">Export and import</a>
 </nav>
 
 {{with $d.NewToken}}
 <section class="card flash ok" role="status">
   <h2>New API token</h2>
-  <p>Copy it now; it won't be shown again.</p>
+  <p>Copy the token now. syncwatch does not show it again.</p>
   <p class="mono token">{{.}}</p>
   <p class="small">Use it as <code>Authorization: Bearer &lt;token&gt;</code> for <code>GET /api/v1/status</code>.</p>
 </section>
@@ -15,19 +15,19 @@
 
 <section class="card" id="servers">
   <h2>Servers</h2>
-  <p class="muted">syncwatch only reads from Syncthing. The API key is stored encrypted, never shown again, and only sent to the URL it was entered for. Self-signed certificates are trusted on first use and pinned. Changes here are announced in the notification channels.</p>
+  <p class="muted">syncwatch only reads from Syncthing. syncwatch encrypts the API key and does not show it again. syncwatch sends an API key only to the URL that you typed it for. syncwatch accepts a self-signed certificate on first use and pins it. syncwatch sends a settings notice to Discord for each change in this section.</p>
   {{range $d.Servers}}
   <details class="server-edit" data-key="srv:{{.ID}}" {{if .CertChange}}open{{end}}>
     <summary><strong>{{.Name}}</strong> <span class="badge st-{{.Status}}">{{.StatusLabel}}</span> <span class="muted">{{.URL}}</span>{{if .Disabled}} <span class="tag">disabled</span>{{end}}</summary>
     {{if .LastError}}<p class="err-text">{{.LastError}}</p>{{end}}
     {{if .CertChange}}
     <div class="flash err">
-      <p><strong>⚠ The server presented a different TLS certificate.</strong> syncwatch stopped talking to it, so the API key isn't sent to whoever answers. Accept only if you expect this (Syncthing renews its own certificate about every 820 days, or you replaced it).</p>
+      <p><strong>⚠ The server sent a different TLS certificate.</strong> syncwatch stopped the connection. It does not send the API key to an unknown server. Caution: accept the new certificate only if you know the reason. Possible reasons: Syncthing replaced its certificate (it does this approximately every 820 days), or you replaced it.</p>
       <table class="kv"><tr><th>Pinned</th><td class="mono">{{.OldShort}}</td></tr><tr><th>New</th><td class="mono">{{.NewShort}}</td></tr><tr><th>New (full)</th><td class="mono small">{{.CertChange.New}}</td></tr></table>
       <form method="post" action="/settings/servers/{{.ID}}/accept-cert" class="grid-form">
         <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="fingerprint" value="{{.CertChange.New}}">
-        <label>Admin password or this server's API key <input type="password" name="confirm" required autocomplete="off"></label>
-        <div class="actions"><button type="submit" class="danger">Accept the new certificate</button></div>
+        <label>Administrator password or this server's API key <input type="password" name="confirm" required autocomplete="off"></label>
+        <div class="actions"><button type="submit" class="danger">Accept certificate</button></div>
       </form>
     </div>
     {{end}}
@@ -36,15 +36,15 @@
       <label>Name <input name="name" value="{{.Name}}" required></label>
       <label>API URL <input name="url" value="{{.URL}}" placeholder="https://192.168.1.10:8384" required></label>
       <label>GUI URL for links (optional) <input name="gui_url" value="{{.GUIURL}}"></label>
-      <label>API key {{if .HasKey}}<span class="muted">(set — leave empty to keep; changing the URL needs it again)</span>{{else if .KeyForOtherURL}}<span class="c-err">(entered for a different URL — enter it again)</span>{{else}}<span class="c-err">(not set)</span>{{end}} <input type="password" name="api_key" autocomplete="off"></label>
-      <p class="small">ID <code>{{.ID}}</code> · certificate {{if .PinShort}}<span class="mono">{{.PinShort}}</span>{{else}}not pinned yet{{end}}</p>
-      <label class="check"><input type="checkbox" name="reset_pin"> Forget the pinned certificate (trust the next one on first use)</label>
-      <label>To forget the pinned certificate: admin password or this server's API key <input type="password" name="confirm" autocomplete="off"></label>
-      <label class="check"><input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}> Allow a plain http:// URL (sends the API key unencrypted)</label>
-      <label class="check"><input type="checkbox" name="disabled" {{if .Disabled}}checked{{end}}> Disabled</label>
+      <label>API key {{if .HasKey}}<span class="muted">(Set. Keep the field empty to keep the API key. A new URL needs the API key again.)</span>{{else if .KeyForOtherURL}}<span class="c-err">(The API key is for a different URL. Type it again.)</span>{{else}}<span class="c-err">(not set)</span>{{end}} <input type="password" name="api_key" autocomplete="off"></label>
+      <p class="small">ID <code>{{.ID}}</code> · certificate {{if .PinShort}}<span class="mono">{{.PinShort}}</span>{{else}}not pinned{{end}}</p>
+      <label class="check"><input type="checkbox" name="reset_pin"> Remove the pinned certificate (syncwatch accepts the next certificate on first use)</label>
+      <label>To remove the pinned certificate: administrator password or this server's API key <input type="password" name="confirm" autocomplete="off"></label>
+      <label class="check"><input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}> Permit a plain http:// URL (sends the API key unencrypted)</label>
+      <label class="check"><input type="checkbox" name="disabled" {{if .Disabled}}checked{{end}}> Disabled (syncwatch does not poll this server)</label>
       <div class="actions"><button type="submit">Save</button></div>
     </form>
-    <form method="post" action="/settings/servers/{{.ID}}/delete" data-confirm="Remove {{.Name}} from syncwatch? Its API key and pinned certificate are deleted.">
+    <form method="post" action="/settings/servers/{{.ID}}/delete" data-confirm="Remove {{.Name}} from syncwatch? syncwatch deletes its API key and pinned certificate.">
       <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}"><button type="submit" class="danger link">Remove server</button>
     </form>
   </details>
@@ -57,7 +57,7 @@
       <label>API URL <input name="url" required placeholder="https://192.168.1.10:8384"></label>
       <label>GUI URL for links (optional) <input name="gui_url"></label>
       <label>API key <input type="password" name="api_key" required autocomplete="off"></label>
-      <label class="check"><input type="checkbox" name="allow_http"> Allow a plain http:// URL (sends the API key unencrypted)</label>
+      <label class="check"><input type="checkbox" name="allow_http"> Permit a plain http:// URL (sends the API key unencrypted)</label>
       <div class="actions"><button type="submit">Add server</button></div>
     </form>
   </details>
@@ -67,7 +67,7 @@
   <h2>Notifications</h2>
   <form method="post" action="/settings/notifications" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
-    <label>Discord webhook URL {{if $d.HasWebhook}}<span class="muted">(set — leave empty to keep)</span>{{else}}<span class="muted">(not set)</span>{{end}}
+    <label>Discord webhook URL {{if $d.HasWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
       <input type="password" name="discord_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"></label>
     {{if $d.HasWebhook}}<label class="check"><input type="checkbox" name="discord_webhook_clear"> Remove the webhook</label>{{end}}
     <label>Role to mention in urgent messages (role ID) <input name="discord_role_id" value="{{$cfg.Notify.DiscordRoleID}}" inputmode="numeric" placeholder="123456789012345678"></label>
@@ -75,15 +75,15 @@
     <label>Daily reminder (HH:MM or off) <input name="reminder_time" value="{{$cfg.Notify.ReminderTime}}"></label>
     <label>Weekly report day <select name="weekly_day">{{range $d.Weekdays}}<option {{if eq . $cfg.Notify.WeeklyDay}}selected{{end}}>{{.}}</option>{{end}}</select></label>
     <label>Weekly report time <input name="weekly_time" value="{{$cfg.Notify.WeeklyTime}}"></label>
-    <label>Problems listed in the weekly report <input type="number" name="weekly_top" min="1" max="25" value="{{$cfg.Notify.WeeklyTop}}"></label>
+    <label>Findings listed in the weekly report <input type="number" name="weekly_top" min="1" max="25" value="{{$cfg.Notify.WeeklyTop}}"></label>
     <label>Time zone <input name="timezone" value="{{$cfg.Timezone}}" placeholder="Europe/Stockholm"></label>
     <label>Dashboard URL for links in messages <input name="public_url" value="{{$cfg.PublicURL}}" placeholder="http://192.168.1.10:8080"></label>
     <div class="actions"><button type="submit">Save</button></div>
   </form>
-  <form method="post" action="/settings/notifications/test"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send a test message</button></form>
+  <form method="post" action="/settings/notifications/test"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
   {{if $d.Log}}
   <details data-key="notify-log"><summary>Recent notifications</summary>
-    <table class="list small"><thead><tr><th>Time</th><th>Kind</th><th>Channel</th><th>Result</th><th>Title</th></tr></thead><tbody>
+    <table class="list small"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>Result</th><th>Title</th></tr></thead><tbody>
     {{range $d.Log}}<tr><td class="nowrap">{{timefmt .SentAt}}</td><td>{{.Kind}}</td><td>{{.Channel}}</td><td>{{if .OK}}<span class="c-ok">✔ sent</span>{{else}}<span class="c-err">✖ {{.Error}}</span>{{end}}</td><td>{{.Summary}}</td></tr>{{end}}
     </tbody></table>
   </details>
@@ -96,7 +96,7 @@
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <div class="scroll">
     <table class="list">
-      <thead><tr><th>Check</th><th>Severity</th><th>Enabled</th><th>Urgent ping</th><th>Debounce</th></tr></thead>
+      <thead><tr><th>Check</th><th>Severity</th><th>Enabled</th><th>Urgent</th><th>Debounce</th></tr></thead>
       <tbody>
       {{range $d.Checks}}
       <tr><td><strong>{{.ID}}</strong> {{.Title}} <span class="muted small">{{.Category}}</span></td><td>{{.SeverityLabel}}</td>
@@ -109,14 +109,14 @@
     </div>
     <h3>Thresholds</h3>
     <div class="grid-form">
-      <label>H4 with only failing files after <input name="failing_files" value="{{$cfg.Thresholds.FailingFiles}}"></label>
+      <label>H4 with only failed items after <input name="failing_files" value="{{$cfg.Thresholds.FailingFiles}}"></label>
       <label>H5 stuck sync after <input name="stuck_sync" value="{{$cfg.Thresholds.StuckSync}}"></label>
       <label>H6 paused for more than <input name="paused" value="{{$cfg.Thresholds.Paused}}"></label>
       <label>H7 PC offline for more than <input name="pc_offline" value="{{$cfg.Thresholds.PCOffline}}"></label>
-      <label>H10 conflicts within <input name="conflict_window" value="{{$cfg.Thresholds.ConflictWindow}}"></label>
+      <label>H10 conflicts in the last <input name="conflict_window" value="{{$cfg.Thresholds.ConflictWindow}}"></label>
       <label>C1 no file change for <input name="inactive_project" value="{{$cfg.Thresholds.InactiveProject}}"></label>
       <label>C2 device not seen for <input name="old_device" value="{{$cfg.Thresholds.OldDevice}}"></label>
-      <label>C3 dead share after <input name="dead_share" value="{{$cfg.Thresholds.DeadShare}}"></label>
+      <label>C3 folder not used by device after <input name="dead_share" value="{{$cfg.Thresholds.DeadShare}}"></label>
     </div>
     <p class="small muted">Durations: 30s, 15m, 24h, 3d, 2w.</p>
     <div class="actions"><button type="submit">Save checks</button></div>
@@ -125,7 +125,7 @@
 
 <section class="card" id="structure">
   <h2>Structure rules and shares</h2>
-  <p class="muted small">Naming and placement rules (S3–S5, X2) and manual share additions/exclusions per server (by name or ID). Without a <code>project_pattern</code>, every top-level directory counts as a project folder.</p>
+  <p class="muted small">The YAML below has the structure rules for names and placement (S3–S5, X2). It can also add or exclude shares for each server (by name or ID). Without a <code>project_pattern</code>, each top-level directory is a project folder.</p>
   <form method="post" action="/settings/structure">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <textarea name="yaml" rows="22" class="mono" spellcheck="false" aria-label="Structure rules YAML">{{$d.StructureYAML}}</textarea>
@@ -137,13 +137,13 @@
   <h2>Collector</h2>
   <form method="post" action="/settings/collector" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
-    <label>Mode <select name="mode"><option value="events" {{if eq $cfg.Collector.Mode "events"}}selected{{end}}>events (live)</option><option value="polled" {{if eq $cfg.Collector.Mode "polled"}}selected{{end}}>polled (lighter on the NAS)</option></select></label>
+    <label>Mode <select name="mode"><option value="events" {{if eq $cfg.Collector.Mode "events"}}selected{{end}}>events (real time)</option><option value="polled" {{if eq $cfg.Collector.Mode "polled"}}selected{{end}}>polled (less load on the server)</option></select></label>
     <label>Event long-poll timeout <input name="event_timeout" value="{{$cfg.Collector.EventTimeout}}"></label>
-    <label>Full re-check every <input name="full_check_interval" value="{{$cfg.Collector.FullCheckInterval}}"></label>
+    <label>Full check every <input name="full_check_interval" value="{{$cfg.Collector.FullCheckInterval}}"></label>
     <label>Poll interval (polled mode) <input name="poll_interval" value="{{$cfg.Collector.PollInterval}}"></label>
     <label>Structure scan every <input name="structure_interval" value="{{$cfg.Collector.StructureInterval}}"></label>
-    <label>Baseline scan of synced folders every <input name="baseline_interval" value="{{$cfg.Collector.BaselineInterval}}"></label>
-    <label>Requests at once per server <input type="number" name="concurrency" min="1" max="16" value="{{$cfg.Collector.Concurrency}}"></label>
+    <label>Baseline scan every <input name="baseline_interval" value="{{$cfg.Collector.BaselineInterval}}"></label>
+    <label>Parallel requests for each server <input type="number" name="concurrency" min="1" max="16" value="{{$cfg.Collector.Concurrency}}"></label>
     <label>Request timeout <input name="request_timeout" value="{{$cfg.Collector.RequestTimeout}}"></label>
     <label>Mark unreachable after failures <input type="number" name="down_after_failures" min="1" max="10" value="{{$cfg.Collector.DownAfter}}"></label>
     <div class="actions"><button type="submit">Save and restart collectors</button></div>
@@ -156,49 +156,49 @@
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>Login <select name="mode">
       <option value="builtin" {{if eq $cfg.Access.Mode "builtin"}}selected{{end}}>built-in passwords</option>
-      <option value="proxy" {{if eq $cfg.Access.Mode "proxy"}}selected{{end}}>off — a reverse proxy or VPN handles access</option>
+      <option value="proxy" {{if eq $cfg.Access.Mode "proxy"}}selected{{end}}>off (a reverse proxy or VPN controls access)</option>
     </select></label>
-    <label class="check"><input type="checkbox" name="confirm_proxy"> I understand that with login off, anyone who can reach syncwatch is admin</label>
-    <label>Viewing <select name="viewer">
-      <option value="none" {{if eq $cfg.Access.Viewer "none"}}selected{{end}}>admin only</option>
+    <label class="check"><input type="checkbox" name="confirm_proxy"> I accept that with login off, each person who can reach syncwatch is an administrator</label>
+    <label>Viewer access <select name="viewer">
+      <option value="none" {{if eq $cfg.Access.Viewer "none"}}selected{{end}}>administrator only</option>
       <option value="password" {{if eq $cfg.Access.Viewer "password"}}selected{{end}}>with the viewer password</option>
       <option value="open" {{if eq $cfg.Access.Viewer "open"}}selected{{end}}>open, without login</option>
     </select></label>
-    <label>Viewer password {{if $d.HasViewerPW}}<span class="muted">(set — leave empty to keep)</span>{{end}} <input type="password" name="viewer_password" autocomplete="new-password"></label>
-    <label>Admin password <span class="muted">(to let more people in)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
+    <label>Viewer password {{if $d.HasViewerPW}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{end}} <input type="password" name="viewer_password" autocomplete="new-password"></label>
+    <label>Administrator password <span class="muted">(this change permits access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
     <div class="actions"><button type="submit">Save access</button></div>
   </form>
-  <h3>Change admin password</h3>
+  <h3>Change administrator password</h3>
   <form method="post" action="/settings/password" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}">
     <label>Current password <input type="password" name="current" autocomplete="current-password"></label>
     <label>New password <input type="password" name="password" minlength="10" autocomplete="new-password" required></label>
-    <label>Repeat <input type="password" name="password2" minlength="10" autocomplete="new-password" required></label>
+    <label>Repeat new password <input type="password" name="password2" minlength="10" autocomplete="new-password" required></label>
     <div class="actions"><button type="submit">Change password</button></div>
   </form>
 </section>
 
 <section class="card" id="api">
   <h2>JSON status API</h2>
-  <p><code>GET /api/v1/status</code> with <code>Authorization: Bearer &lt;token&gt;</code>. Read-only; never includes secrets. Token: {{if $d.HasToken}}<strong>set</strong>{{else}}not set{{end}}.</p>
+  <p>Send <code>GET /api/v1/status</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>. The API is read-only. The answer never includes secrets. API token: {{if $d.HasToken}}<strong>set</strong>{{else}}not set{{end}}.</p>
   <form method="post" action="/settings/api-token" class="inline">
     <input type="hidden" name="csrf" value="{{$csrf}}">
-    <button type="submit" name="op" value="generate">{{if $d.HasToken}}Replace the token{{else}}Generate a token{{end}}</button>
-    {{if $d.HasToken}}<button type="submit" name="op" value="revoke" class="danger">Revoke</button>{{end}}
+    <button type="submit" name="op" value="generate">{{if $d.HasToken}}Replace API token{{else}}Generate API token{{end}}</button>
+    {{if $d.HasToken}}<button type="submit" name="op" value="revoke" class="danger">Revoke API token</button>{{end}}
   </form>
 </section>
 
 <section class="card" id="import">
   <h2>Export and import</h2>
-  <p><a href="/settings/export">Download the configuration as YAML</a> (without API keys, webhooks or tokens).</p>
-  <form method="post" action="/settings/import" enctype="multipart/form-data" data-confirm="Replace the whole configuration with the imported file?">
+  <p><a href="/settings/export">Download the configuration as YAML</a> (without the API keys, the webhook URL and the API token).</p>
+  <form method="post" action="/settings/import" enctype="multipart/form-data" data-confirm="Replace the complete configuration with the imported file?">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>YAML file <input type="file" name="file" accept=".yaml,.yml,text/yaml"></label>
     <label>…or paste YAML <textarea name="yaml" rows="6" class="mono" spellcheck="false"></textarea></label>
-    <p class="small muted">Import replaces the configuration. Secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>api.token</code>) are stored encrypted; secrets not in the file are kept, but a kept API key is only used while its server's URL stays the same.</p>
-    <label>Admin password <span class="muted">(needed if the file switches login off or opens up viewing)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
+    <p class="small muted">The import replaces the configuration. syncwatch encrypts the secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>api.token</code>). Secrets that are not in the file stay as they are. syncwatch uses a kept API key only while the URL of its server does not change.</p>
+    <label>Administrator password <span class="muted">(necessary if the file sets login to off or gives viewer access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
     <div class="actions"><button type="submit">Import</button></div>
   </form>
 </section>
-<p class="muted small">Server time {{$d.Now}}</p>
+<p class="muted small">Current time {{$d.Now}}</p>
 {{template "foot" .}}{{end}}

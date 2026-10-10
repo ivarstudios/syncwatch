@@ -52,7 +52,7 @@ func (e *evaluator) sameLabelDifferentIDs() {
 		e.add("X1", "", "label:"+k, model.Finding{
 			Subject: label,
 			Related: sortedKeys(servers),
-			Message: fmt.Sprintf("Folder %q has different folder IDs on different servers (%s); it was probably added separately instead of shared", label, strings.Join(parts, ", ")),
+			Message: fmt.Sprintf("Folder %q has different folder IDs on different servers (%s). Possible cause: the folder was added separately on each server, not shared from one to the other", label, strings.Join(parts, ", ")),
 			Details: []model.Detail{detail("Folder IDs", strings.Join(parts, ", "))},
 		})
 	}

@@ -49,7 +49,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 1rem; }
 .c-ok { color: var(--ok); } .c-err, .err-text { color: var(--err); } .c-warn { color: var(--warn); } .c-sync { color: var(--sync); } .c-paused { color: var(--paused); }
 .err-text { font-size: .9rem; margin: 0 0 .5rem; word-break: break-word; }
 .ext { white-space: nowrap; }
-.flash { border-radius: 8px; padding: .6rem .8rem; margin: 0 0 1rem; }
+.flash { border-radius: 8px; padding: .6rem .8rem; margin: 0 0 1rem; white-space: pre-line; }
 .flash.ok { background: var(--ok-bg); color: var(--ok); } .flash.err { background: var(--err-bg); color: var(--err); }
 .flash.err p, .flash.err table { color: var(--text); }
 .token { font-size: 1.1rem; padding: .5rem; background: var(--card); border-radius: 6px; color: var(--text); }

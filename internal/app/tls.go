@@ -45,25 +45,25 @@ func tlsConfig(o Options, cfg *config.Config, log *slog.Logger) (*tls.Config, er
 		// Your own certificate wins over the self-signed one the image
 		// turns on by default.
 		if src.certFile == "" || src.keyFile == "" {
-			return nil, errors.New("HTTPS needs both a certificate and a key file")
+			return nil, errors.New("HTTPS needs both a certificate file and a private key file")
 		}
 	case o.TLSSelfSigned:
 		src.certFile, src.keyFile = filepath.Join(o.DataDir, "tls-cert.pem"), filepath.Join(o.DataDir, "tls-key.pem")
 		src.hosts = tlsHosts(cfg, o.Listen, o.TLSHosts, log)
 		made, err := ensureSelfSigned(src.certFile, src.keyFile, src.hosts, time.Now())
 		if err != nil {
-			return nil, fmt.Errorf("self-signed certificate: %w", err)
+			return nil, fmt.Errorf("cannot make the self-signed certificate: %w", err)
 		}
 		if made {
-			log.Info("created a self-signed certificate for the dashboard; browsers ask to trust it once", "file", src.certFile, "names", src.hosts)
+			log.Info("self-signed certificate generated for the dashboard: accept it in each browser", "file", src.certFile, "names", src.hosts)
 		}
 	default:
 		return nil, nil
 	}
 	if err := src.load(time.Now()); err != nil {
-		return nil, fmt.Errorf("loading the TLS certificate: %w", err)
+		return nil, fmt.Errorf("cannot read the TLS certificate and key files: %w", err)
 	}
-	log.Info("serving HTTPS", "certificate", src.certFile, "sha256", fingerprint(src.cert))
+	log.Info("syncwatch serves HTTPS", "certificate", src.certFile, "sha256", fingerprint(src.cert))
 	// h2: browsers allow about six HTTP/1.1 connections per host, and every
 	// open dashboard tab keeps one for its event stream.
 	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: src.get, NextProtos: []string{"h2", "http/1.1"}}, nil
@@ -116,9 +116,9 @@ func (c *certSource) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 		made, err := ensureSelfSigned(c.certFile, c.keyFile, c.hosts, now)
 		switch {
 		case err != nil:
-			c.log.Warn("renewing the self-signed certificate", "err", err)
+			c.log.Warn("cannot replace the self-signed certificate", "err", err)
 		case made:
-			c.log.Info("renewed the self-signed certificate; browsers ask to trust it again", "file", c.certFile, "names", c.hosts)
+			c.log.Info("self-signed certificate replaced: accept it again in each browser", "file", c.certFile, "names", c.hosts)
 			c.reload(now)
 		}
 	}
@@ -137,10 +137,10 @@ func (c *certSource) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 func (c *certSource) reload(now time.Time) {
 	if err := c.load(now); err != nil { // load leaves cert as it was
 		c.stamp = c.fileStamp()
-		c.log.Warn("the TLS certificate files changed but can't be loaded; keeping the previous certificate", "certificate", c.certFile, "err", err)
+		c.log.Warn("cannot read the changed TLS certificate files, the previous certificate stays in use", "certificate", c.certFile, "err", err)
 		return
 	}
-	c.log.Info("reloaded the TLS certificate", "certificate", c.certFile, "sha256", fingerprint(c.cert))
+	c.log.Info("TLS certificate reloaded", "certificate", c.certFile, "sha256", fingerprint(c.cert))
 }
 
 // fingerprint is the short SHA-256 of a certificate, as shown in the log.
@@ -177,7 +177,7 @@ func tlsHosts(cfg *config.Config, listen string, extra []string, log *slog.Logge
 		if name, ok := hostName(h); ok {
 			add(name)
 		} else {
-			log.Warn("ignoring a SYNCWATCH_TLS_HOSTS entry that is neither a host name nor an IP address", "entry", h)
+			log.Warn("SYNCWATCH_TLS_HOSTS entry ignored, it is not a host name or an IP address", "entry", h)
 		}
 	}
 	return hosts

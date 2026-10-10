@@ -196,7 +196,7 @@ func (c *Collector) rescanFolders(ctx context.Context, ids map[string]bool) {
 			s.Structure.Nested[k] = n
 		}
 	})
-	c.log.Info("project folders re-scanned after missed events", "folders", len(tops), "listings", listings.Load(), "failed", failed.Load(), "took", time.Since(now).Round(time.Millisecond))
+	c.log.Info("project folders scanned again after missed events", "folders", len(tops), "listings", listings.Load(), "failed", failed.Load(), "took", time.Since(now).Round(time.Millisecond))
 }
 
 // scan lists every share's top level and searches project folders for
@@ -260,7 +260,7 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 				return
 			}
 			if len(entries) == 0 && !c.exists(browse, st, r.Path) {
-				sh.Error = "not found on the server (is it mounted in the Syncthing container?)"
+				sh.Error = "not found on the server (check that the directory is mounted in the Syncthing container)"
 				stale(sh)
 				return
 			}
