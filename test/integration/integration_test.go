@@ -4,6 +4,10 @@
 // processes: three servers and two PCs, a fake Discord webhook and syncwatch.
 //
 //	SYNCTHING_BIN=/path/to/syncthing go test -tags integration -v -timeout 30m ./test/integration
+//
+// SW_IT_BASEPORT (default 18600) is the first of the loopback ports a run
+// uses (GUI ports from there, sync ports 1000 above, syncwatch 90 above), so
+// two runs can coexist; SW_IT_DIR keeps the working directory and its logs.
 package integration
 
 import (
@@ -99,8 +103,14 @@ func TestScenarios(t *testing.T) {
 		t.Skip("SYNCTHING_BIN not set")
 	}
 	base := 18600
-	if p, err := strconv.Atoi(os.Getenv("SW_IT_PORT")); err == nil {
-		base = p
+	for _, k := range []string{"SW_IT_BASEPORT", "SW_IT_PORT"} { // SW_IT_PORT is the old name
+		if p, err := strconv.Atoi(os.Getenv(k)); err == nil {
+			if p < 1024 || p+1004 > 65535 {
+				t.Fatalf("%s=%d: the base port must be between 1024 and %d", k, p, 65535-1004)
+			}
+			base = p
+			break
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
