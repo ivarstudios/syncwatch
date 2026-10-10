@@ -415,6 +415,66 @@ func TestPlacementAttributesMatchGroups(t *testing.T) {
 	}
 }
 
+func TestDiscordRoleID(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	for _, id := range []string{"123456", "42", "1234567890123456", "123456789012345678901", "12345678901234567a", "<@&123456789012345678>"} {
+		if _, err := ParseYAML([]byte(srv + "notifications: {discord_role_id: '" + id + "'}\n")); err == nil || !strings.Contains(err.Error(), "17-20 digits") {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+	for _, id := range []string{"12345678901234567", "777000111000000000", "12345678901234567890", ""} {
+		if _, err := ParseYAML([]byte(srv + "notifications: {discord_role_id: '" + id + "'}\n")); err != nil {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+}
+
+// The stored webhook is the canonical form, so an invisible character from a
+// paste can't turn into a 404 from Discord later.
+func TestDiscordWebhookCanonical(t *testing.T) {
+	for in, want := range map[string]string{
+		" https://DISCORD.com/api/webhooks/123/abc-DEF_1/ ":                              "https://discord.com/api/webhooks/123/abc-DEF_1",
+		"\u200bhttps://discord.com/api/webhooks/123/abc\u200b\ufeff\n":                   "https://discord.com/api/webhooks/123/abc",
+		"https://canary.discord.com/api/v10/webhooks/123/abc?thread_id=9#frag":           "https://canary.discord.com/api/v10/webhooks/123/abc?thread_id=9",
+		"HTTPS://discordapp.com/api/webhooks/123/abc":                                    "https://discordapp.com/api/webhooks/123/abc",
+		"\u00a0https://ptb.discordapp.com/api/webhooks/123/abc\u2060":                    "https://ptb.discordapp.com/api/webhooks/123/abc",
+		"https://discord.com/api/webhooks/123/" + strings.Repeat("a", 68) + "?wait=true": "https://discord.com/api/webhooks/123/" + strings.Repeat("a", 68) + "?wait=true",
+	} {
+		got, err := CanonicalDiscordWebhook(in)
+		if err != nil || got != want {
+			t.Errorf("%q: got %q %v, want %q", in, got, err, want)
+		}
+		if err := CheckDiscordWebhook(in); err != nil {
+			t.Errorf("%q refused: %v", in, err)
+		}
+	}
+	for _, in := range []string{
+		"https://discord.com/api/webhooks/abc/def",
+		"https://discord.com/api/webhooks/123/ab\u200bc",
+		"https://discord.com/api/webhooks/123/ab c",
+		"https://discord.com/api/webhooks/123/a%20b",
+		"https://discord\u200b.com/api/webhooks/123/abc",
+		"https://discord.com/api/webhooks/123/abc/def",
+		"https://discord.com/api/webhooks/123/",
+		"https://discord.com/api/webhooks/123",
+		"https://discord.com/api/webhooks/123/abc\u200bdef",
+	} {
+		if _, err := CanonicalDiscordWebhook(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+	// An import stores the canonical form.
+	c, err := ParseYAML([]byte("servers: [{name: a, url: 'https://10.0.0.1:8384'}]\nnotifications: {discord_webhook: ' https://DISCORD.com/api/webhooks/1/abc/ '}\n"))
+	if err != nil || c.Notify.DiscordWebhook != "https://discord.com/api/webhooks/1/abc" {
+		t.Fatalf("import: %q %v", c.Notify.DiscordWebhook, err)
+	}
+	AllowAnyWebhook = true
+	defer func() { AllowAnyWebhook = false }()
+	if got, err := CanonicalDiscordWebhook(" http://discord.e2e.invalid:8080/api/webhooks/1/x\u200b"); err != nil || got != "http://discord.e2e.invalid:8080/api/webhooks/1/x" {
+		t.Errorf("override: %q %v", got, err)
+	}
+}
+
 func TestStructureHelpers(t *testing.T) {
 	c, _ := ParseYAML([]byte(ivarYAML))
 	cs, err := c.Structure.Compile()

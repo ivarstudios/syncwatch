@@ -149,7 +149,7 @@ func TestPasswordChangeIsRateLimited(t *testing.T) {
 // are announced.
 func TestNotificationChangesAreAnnounced(t *testing.T) {
 	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: secret-key-akka}, {name: SOL, url: "https://b:1"}]
-notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", discord_role_id: "42"}
+notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", discord_role_id: "420000000000000000"}
 `)
 	csrf := e.csrf("/settings")
 	notify := func(f url.Values) (string, bool) {
@@ -159,7 +159,7 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 		f.Set("timezone", "Local")
 		return flash(e.post("/settings/notifications", f))
 	}
-	if msg, isErr := notify(url.Values{"discord_webhook": {"http://10.0.0.5:8080/api/webhooks/1/x"}, "discord_role_id": {"42"}}); !isErr || !strings.Contains(msg, "discord.com") {
+	if msg, isErr := notify(url.Values{"discord_webhook": {"http://10.0.0.5:8080/api/webhooks/1/x"}, "discord_role_id": {"420000000000000000"}}); !isErr || !strings.Contains(msg, "discord.com") {
 		t.Fatalf("internal webhook URL: %q %v", msg, isErr)
 	}
 	if v, _ := e.st.Secret(store.SecretDiscordWebhook); v != "https://discord.com/api/webhooks/1/old" {

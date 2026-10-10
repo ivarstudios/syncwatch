@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -254,6 +255,11 @@ func (c *Config) ApplyDefaults() {
 			*f = "off"
 		}
 	}
+	if n.DiscordWebhook != "" {
+		if u, err := CanonicalDiscordWebhook(n.DiscordWebhook); err == nil {
+			n.DiscordWebhook = u
+		}
+	}
 	// Explicit ids are reserved first, so a generated id never collides with one.
 	taken := map[string]bool{}
 	for _, s := range c.Servers {
@@ -418,8 +424,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("notifications.discord_webhook: %v", err))
 		}
 	}
-	if c.Notify.DiscordRoleID != "" && !regexp.MustCompile(`^\d+$`).MatchString(c.Notify.DiscordRoleID) {
-		errs = append(errs, errors.New("notifications.discord_role_id must be the numeric role ID"))
+	if c.Notify.DiscordRoleID != "" && !roleIDRe.MatchString(c.Notify.DiscordRoleID) {
+		errs = append(errs, errors.New("notifications.discord_role_id must be the numeric role ID (17-20 digits)"))
 	}
 	switch c.Access.Mode {
 	case AccessBuiltin, AccessProxy:
@@ -440,6 +446,8 @@ func (c *Config) Validate() error {
 // minThreshold is the shortest threshold. The engine evaluates every 30 s,
 // so anything shorter means "at once" anyway.
 const minThreshold = 10 * time.Second
+
+var roleIDRe = regexp.MustCompile(`^\d{17,20}$`)
 
 // durRange reports a duration outside [lo, hi] as an error naming the field.
 // Zero means "use the default" (ApplyDefaults fills it), so it passes.
@@ -473,23 +481,35 @@ var AllowAnyWebhook bool
 var (
 	discordHosts = map[string]bool{"discord.com": true, "discordapp.com": true, "ptb.discord.com": true,
 		"canary.discord.com": true, "ptb.discordapp.com": true, "canary.discordapp.com": true}
-	webhookPath = regexp.MustCompile(`^/api/(v\d+/)?webhooks/[^/]+/[^/]+/?$`)
+	webhookPath = regexp.MustCompile(`^/api/(v\d+/)?webhooks/\d+/[A-Za-z0-9_-]+/?$`)
 )
 
 // CheckDiscordWebhook validates a Discord webhook URL. Only Discord's own
 // hosts are accepted, so a webhook can't be pointed at an internal address.
 func CheckDiscordWebhook(raw string) error {
+	_, err := CanonicalDiscordWebhook(raw)
+	return err
+}
+
+// CanonicalDiscordWebhook validates a Discord webhook URL and returns the
+// form to store: trimmed of whitespace and invisible format characters that
+// come with a paste, lower-case host, no trailing slash and no fragment.
+func CanonicalDiscordWebhook(raw string) (string, error) {
+	raw = strings.TrimFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
 	u, err := url.Parse(raw)
 	if AllowAnyWebhook {
 		if err != nil || !webURL(raw) {
-			return errors.New("the Discord webhook must be an http(s) URL")
+			return "", errors.New("the Discord webhook must be an http(s) URL")
 		}
-		return nil
+		return raw, nil
 	}
 	if err != nil || u.Scheme != "https" || u.User != nil || !DiscordHost(raw) || !webhookPath.MatchString(u.Path) {
-		return errors.New("the Discord webhook must be a Discord webhook URL, https://discord.com/api/webhooks/…")
+		return "", errors.New("the Discord webhook must be a Discord webhook URL, https://discord.com/api/webhooks/…")
 	}
-	return nil
+	u.Host = strings.ToLower(u.Host)
+	u.Path, u.RawPath = strings.TrimSuffix(u.Path, "/"), ""
+	u.Fragment, u.RawFragment = "", ""
+	return u.String(), nil
 }
 
 // DiscordHost reports whether a URL points at one of Discord's own hosts.
