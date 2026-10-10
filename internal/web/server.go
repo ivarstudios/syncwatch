@@ -284,7 +284,7 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 	}
 	to := "/login"
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		// Only a page can be come back to; a form has to be sent again.
+		// Only a page can be returned to; a form has to be sent again.
 		to += "?next=" + urlQueryEscape(r.URL.RequestURI())
 	}
 	http.Redirect(w, r, to, http.StatusSeeOther)
