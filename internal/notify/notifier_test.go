@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -610,5 +612,243 @@ func TestDiscordPayload(t *testing.T) {
 	}
 	if escapeMD("a*b_@everyone") != `a\*b\_@`+"​"+`everyone` {
 		t.Fatal(escapeMD("a*b_@everyone"))
+	}
+}
+
+// kindSender fails messages of one kind with a given error and records the
+// rest, like Discord rejecting one notice but nothing else.
+type kindSender struct {
+	mu       sync.Mutex
+	failKind string
+	err      error
+	msgs     []Message
+	attempts map[string]int
+}
+
+func (s *kindSender) Name() string { return "discord" }
+
+func (s *kindSender) Send(_ context.Context, m Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.attempts == nil {
+		s.attempts = map[string]int{}
+	}
+	s.attempts[m.Kind]++
+	if m.Kind == s.failKind {
+		return s.err
+	}
+	s.msgs = append(s.msgs, m)
+	return nil
+}
+
+func (s *kindSender) take() []Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.msgs
+	s.msgs = nil
+	return out
+}
+
+func (s *kindSender) tried(kind string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts[kind]
+}
+
+// lockedLog is a log sink that can be read while notice goroutines write.
+type lockedLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *lockedLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *lockedLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+func pendingNotices(r *rig) int {
+	r.n.dmu.Lock()
+	defer r.n.dmu.Unlock()
+	return len(r.n.notices)
+}
+
+// queueNoticeTo sends a notice through n to the given sender and waits for
+// it to be held back.
+func queueNoticeTo(t *testing.T, r *rig, title string) {
+	t.Helper()
+	before := pendingNotices(r)
+	r.n.Notice(title, strings.Repeat("x", 100))
+	deadline := time.Now().Add(5 * time.Second)
+	for pendingNotices(r) == before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pendingNotices(r) != before+1 {
+		t.Fatal("failed notice not held back")
+	}
+}
+
+// A notice Discord rejects for good (HTTP 400) is dropped with one warning
+// instead of blocking every other notification for a day.
+func TestRejectedNoticeIsDropped(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	logs := &lockedLog{}
+	r.n.log = slog.New(slog.NewTextHandler(logs, nil))
+	sel := &kindSender{failKind: KindNotice, err: &httpError{code: 400, text: "Invalid Form Body"}}
+	r.n.SetSenders(func() []Sender { return []Sender{sel} })
+	queueNoticeTo(t, r, "Configuration imported")
+	r.setDown("AKKA", true)
+	r.at(start)
+	r.at(local(2026, 10, 6, 10, 5))
+	if msgs := sel.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
+		t.Fatalf("urgent ping held up by a rejected notice: %+v", msgs)
+	}
+	if pendingNotices(r) != 0 {
+		t.Fatal("rejected notice kept in the queue")
+	}
+	if d := r.n.Delivery(); d.Failing {
+		t.Fatalf("the rejected notice counts as a failing channel: %+v", d)
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 2 { // once held back, once dropped
+		t.Fatalf("expected two warnings, got %d:\n%s", n, logs.String())
+	}
+	for m := 6; m <= 60; m++ {
+		r.at(start.Add(time.Duration(m) * time.Minute))
+	}
+	if n := sel.tried(KindNotice); n != 2 { // the first attempt and the one retry
+		t.Fatalf("rejected notice tried %d times", n)
+	}
+}
+
+// A notice that fails for other reasons is retried, but costs each tick one
+// attempt at most: the urgent messages go out behind it.
+func TestFailingNoticeDoesNotHoldUpUrgent(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	sel := &kindSender{failKind: KindNotice, err: &httpError{code: 502}}
+	r.n.SetSenders(func() []Sender { return []Sender{sel} })
+	queueNoticeTo(t, r, "Server SOL removed")
+	queueNoticeTo(t, r, "Access settings changed")
+	r.setDown("AKKA", true)
+	r.at(start)
+	if n := sel.tried(KindNotice); n != 3 { // two first attempts, one retry
+		t.Fatalf("notices tried %d times in the tick; want one retry", n)
+	}
+	r.at(local(2026, 10, 6, 10, 5))
+	if msgs := sel.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
+		t.Fatalf("urgent ping held up by a failing notice: %+v", msgs)
+	}
+	if n := sel.tried(KindNotice); n != 4 {
+		t.Fatalf("notices tried %d times by now; want one retry per tick", n)
+	}
+	if pendingNotices(r) != 2 {
+		t.Fatalf("%d notices pending; both should be kept", pendingNotices(r))
+	}
+	// The failure still backs off the next attempt, and the notices go out
+	// once the channel takes them.
+	sel.mu.Lock()
+	sel.failKind = ""
+	sel.mu.Unlock()
+	r.at(local(2026, 10, 6, 10, 5).Add(30 * time.Second))
+	if n := sel.tried(KindNotice); n != 4 {
+		t.Fatalf("retried within the back-off: %d attempts", n)
+	}
+	r.at(local(2026, 10, 6, 10, 6))
+	if msgs := sel.take(); len(msgs) != 2 || msgs[0].Kind != KindNotice || msgs[1].Kind != KindNotice {
+		t.Fatalf("after the back-off: %+v", msgs)
+	}
+	if pendingNotices(r) != 0 {
+		t.Fatal("notices still pending after they were sent")
+	}
+}
+
+// A webhook that can't be decrypted (the secret key changed) must show up
+// in the test button, the banner and the notification log, not vanish.
+func TestUndecryptableWebhookIsReported(t *testing.T) {
+	dir := t.TempDir()
+	keyA, keyB := make([]byte, 32), make([]byte, 32)
+	keyB[0] = 1
+	st, err := store.Open(filepath.Join(dir, "db.sqlite"), keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSecret(store.SecretDiscordWebhook, "https://discord.com/api/webhooks/1/x"); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	st2, err := store.Open(filepath.Join(dir, "db.sqlite"), keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	h, _ := config.NewHolder(config.Default())
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	eng, err := engine.New(st2, model.NewHub(nil), h, nil, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := New(eng, st2, h, quiet)
+	const want = "the Discord webhook can't be decrypted (secret key changed?)"
+	if err := n.SendTest(context.Background()); err == nil || err.Error() != want {
+		t.Fatalf("SendTest: %v", err)
+	}
+	if d := n.Delivery(); !d.Failing || d.Error != want {
+		t.Fatalf("delivery state: %+v", d)
+	}
+	if log, _ := st2.Notifications(10); len(log) != 1 || log[0].OK || log[0].Error != want || log[0].Channel != "discord" {
+		t.Fatalf("notification log: %+v", log)
+	}
+}
+
+// blockingSender holds a send until the test releases it with a result.
+type blockingSender struct {
+	started chan struct{}
+	release chan error
+}
+
+func (b *blockingSender) Name() string { return "discord" }
+
+func (b *blockingSender) Send(context.Context, Message) error {
+	b.started <- struct{}{}
+	return <-b.release
+}
+
+// A failure of the old webhook that lands after the webhook was replaced
+// must not set the banner or the back-off for the new one: "retry at once"
+// has to mean that.
+func TestStaleFailureDoesNotUndoChannelChange(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	slow := &blockingSender{started: make(chan struct{}), release: make(chan error)}
+	r.n.SetSenders(func() []Sender { return []Sender{slow} })
+	r.setDown("AKKA", true)
+	r.at(start)
+	r.now = local(2026, 10, 6, 10, 5)
+	r.eng.Evaluate()
+	done := make(chan struct{})
+	go func() {
+		r.n.Tick(context.Background(), r.now)
+		close(done)
+	}()
+	<-slow.started
+	r.n.SetSenders(func() []Sender { return []Sender{r.sender} })
+	r.n.ChannelsChanged() // the admin saved a new webhook meanwhile
+	slow.release <- errors.New("discord: HTTP 404: Unknown Webhook")
+	<-done
+	if d := r.n.Delivery(); d.Failing {
+		t.Fatalf("old channel's failure shown for the new channel: %+v", d)
+	}
+	r.at(r.now.Add(30 * time.Second))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
+		t.Fatalf("new webhook not tried at once: %+v", m)
 	}
 }
