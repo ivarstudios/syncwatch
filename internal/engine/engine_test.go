@@ -94,9 +94,11 @@ func TestFreezeWhileServerDown(t *testing.T) {
 	r := newRig(t)
 	r.hub.Update("a", func(s *model.Server) {
 		s.Folders["f"] = &model.Folder{ID: "f", Label: "LIVE-F", Path: "/s/X/LIVE-F", State: "error", Error: "boom", Completion: map[string]*model.Completion{}}
-		s.Devices["B-ID"] = &model.Device{ID: "B-ID", Name: "B"}
+		s.Devices["B-ID"] = &model.Device{ID: "B-ID", Name: "B", LastSeen: r.now.Add(-time.Hour)}
 	})
-	r.hub.Update("b", func(s *model.Server) { s.Devices["A-ID"] = &model.Device{ID: "A-ID", Name: "A"} })
+	r.hub.Update("b", func(s *model.Server) {
+		s.Devices["A-ID"] = &model.Device{ID: "A-ID", Name: "A", LastSeen: r.now.Add(-time.Hour)}
+	})
 	v := r.at(0)
 	h4 := find(v, "H4", "LIVE-F")
 	h2 := find(v, "H2", "A ↔ B")

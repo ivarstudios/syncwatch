@@ -24,6 +24,15 @@ const (
 type Snapshot struct {
 	At      time.Time
 	Servers []*Server // in configuration order
+	// Disabled are the servers that are disabled in the configuration. The
+	// collector does not poll them, but their devices are servers, not PCs.
+	Disabled []DisabledServer
+}
+
+// DisabledServer is a server that is disabled in the configuration, with
+// the device ID it had when syncwatch polled it last ("" if never).
+type DisabledServer struct {
+	ID, Name, MyID string
 }
 
 // Server returns the server with the given ID, or nil.
@@ -46,8 +55,21 @@ func (s *Snapshot) ServerByDeviceID(dev string) *Server {
 	return nil
 }
 
-// IsServerDevice reports whether a device ID belongs to a polled server.
-func (s *Snapshot) IsServerDevice(dev string) bool { return s.ServerByDeviceID(dev) != nil }
+// DisabledByDeviceID returns the disabled server with the given Syncthing device ID, or nil.
+func (s *Snapshot) DisabledByDeviceID(dev string) *DisabledServer {
+	for i := range s.Disabled {
+		if s.Disabled[i].MyID != "" && s.Disabled[i].MyID == dev {
+			return &s.Disabled[i]
+		}
+	}
+	return nil
+}
+
+// IsServerDevice reports whether a device ID belongs to a polled server or
+// to a server that is disabled in the configuration.
+func (s *Snapshot) IsServerDevice(dev string) bool {
+	return s.ServerByDeviceID(dev) != nil || s.DisabledByDeviceID(dev) != nil
+}
 
 // Server is everything the monitor knows about one Syncthing instance.
 type Server struct {
@@ -60,6 +82,7 @@ type Server struct {
 	LastError   string
 	LastContact time.Time
 	DownSince   time.Time
+	UpSince     time.Time // when the status last became up (after the start of syncwatch or a failure); set by the hub
 	Cert        CertInfo
 	CertChange  *CertChange
 	Mode        string // "events" or "polled"
@@ -84,7 +107,8 @@ type Server struct {
 	Structure      *Structure
 	Rate           Rate // current transfer rate over all connections
 
-	RemoteStates map[string]map[string]string // last known remoteState by folder ID, then device ID; see RemoteState
+	RemoteStates    map[string]map[string]string     // last known remoteState by folder ID, then device ID; see RemoteState
+	LastCompletions map[string]map[string]Completion // last completion of a connected, valid device by folder ID, then device ID; see LastCompletion
 }
 
 // Rate is a server's transfer rate between its two latest traffic readings.
@@ -166,9 +190,20 @@ func (s *Server) RemoteState(folderID, dev string) string {
 	return s.RemoteStates[folderID][dev]
 }
 
+// LastCompletion is a device's completion of a folder as the server reported
+// it last while the device was connected and its remote state was valid.
+// Syncthing reports "unknown" as soon as the device disconnects, and the
+// stuck sync check (H5) keeps the view of the last connection while the
+// device is away instead of starting again at every disconnect.
+func (s *Server) LastCompletion(folderID, dev string) (Completion, bool) {
+	c, ok := s.LastCompletions[folderID][dev]
+	return c, ok
+}
+
 // RememberRemoteStates records the remote states known now for RemoteState
-// and forgets those of folders and devices that are no longer shared. The
-// hub calls it after every update.
+// and the completion of connected devices with a valid state for
+// LastCompletion, and forgets both for folders and devices that are no
+// longer shared. The hub calls it after every update.
 func (s *Server) RememberRemoteStates() {
 	for id, f := range s.Folders {
 		for dev, c := range f.Completion {
@@ -182,17 +217,34 @@ func (s *Server) RememberRemoteStates() {
 				s.RemoteStates[id] = map[string]string{}
 			}
 			s.RemoteStates[id][dev] = c.RemoteState
+			if cn := s.Connections[dev]; c.RemoteState != "valid" || cn == nil || !cn.Connected {
+				continue
+			}
+			if s.LastCompletions == nil {
+				s.LastCompletions = map[string]map[string]Completion{}
+			}
+			if s.LastCompletions[id] == nil {
+				s.LastCompletions[id] = map[string]Completion{}
+			}
+			s.LastCompletions[id][dev] = *c
 		}
 	}
-	for id, devs := range s.RemoteStates {
-		f := s.Folders[id]
+	forgetUnshared(s.RemoteStates, s.Folders)
+	forgetUnshared(s.LastCompletions, s.Folders)
+}
+
+// forgetUnshared deletes the entries of folders and devices that are no
+// longer shared from a map by folder ID, then device ID.
+func forgetUnshared[V any](m map[string]map[string]V, folders map[string]*Folder) {
+	for id, devs := range m {
+		f := folders[id]
 		for dev := range devs {
 			if f == nil || !f.SharedWithDevice(dev) {
 				delete(devs, dev)
 			}
 		}
 		if len(devs) == 0 {
-			delete(s.RemoteStates, id)
+			delete(m, id)
 		}
 	}
 }
@@ -360,7 +412,7 @@ type NestedDir struct {
 
 // Clone returns a deep copy.
 func (s *Snapshot) Clone() *Snapshot {
-	out := &Snapshot{At: s.At, Servers: make([]*Server, len(s.Servers))}
+	out := &Snapshot{At: s.At, Servers: make([]*Server, len(s.Servers)), Disabled: slices.Clone(s.Disabled)}
 	for i, sv := range s.Servers {
 		out.Servers[i] = sv.Clone()
 	}
@@ -395,6 +447,10 @@ func (s *Server) Clone() *Server {
 	c.RemoteStates = make(map[string]map[string]string, len(s.RemoteStates))
 	for k, m := range s.RemoteStates {
 		c.RemoteStates[k] = maps.Clone(m)
+	}
+	c.LastCompletions = make(map[string]map[string]Completion, len(s.LastCompletions))
+	for k, m := range s.LastCompletions {
+		c.LastCompletions[k] = maps.Clone(m)
 	}
 	c.PendingDevices = slices.Clone(s.PendingDevices)
 	c.PendingFolders = slices.Clone(s.PendingFolders)
@@ -447,6 +503,7 @@ type DeviceView struct {
 	ID        string
 	Name      string
 	IsServer  bool
+	Disabled  bool      // a server that is disabled in the configuration (IsServer is set)
 	ServerID  string    // set when IsServer
 	LastSeen  time.Time // latest across servers
 	Connected bool      // connected to at least one reachable server
@@ -456,7 +513,9 @@ type DeviceView struct {
 }
 
 // Devices unifies devices by ID across all servers. Servers come first, in
-// configuration order, then PCs sorted by name.
+// configuration order, then the disabled servers, then PCs sorted by name. A
+// disabled server is not polled: like a PC, it is connected when a polled
+// server has a connection to it.
 func (s *Snapshot) Devices() []*DeviceView {
 	byID := map[string]*DeviceView{}
 	var order []string
@@ -480,6 +539,13 @@ func (s *Snapshot) Devices() []*DeviceView {
 			dv.LastSeen = sv.LastContact
 		}
 	}
+	for _, ds := range s.Disabled {
+		if ds.MyID == "" || byID[ds.MyID] != nil {
+			continue
+		}
+		dv := add(ds.MyID)
+		dv.IsServer, dv.Disabled, dv.ServerID, dv.Name = true, true, ds.ID, ds.Name
+	}
 	for _, sv := range s.Servers {
 		for id, d := range sv.Devices {
 			if id == sv.MyID {
@@ -492,11 +558,12 @@ func (s *Snapshot) Devices() []*DeviceView {
 			if dv.Name == "" {
 				dv.Name = d.Name
 			}
-			if d.LastSeen.After(dv.LastSeen) && !dv.IsServer {
+			polled := dv.IsServer && !dv.Disabled
+			if d.LastSeen.After(dv.LastSeen) && !polled {
 				dv.LastSeen = d.LastSeen
 			}
 			if cn, ok := sv.Connections[id]; ok && cn.Connected && sv.Status == StatusUp {
-				if !dv.IsServer {
+				if !polled {
 					dv.Connected = true
 					if cn.StartedAt.After(dv.LastSeen) || dv.LastSeen.IsZero() {
 						dv.LastSeen = s.At
@@ -543,6 +610,9 @@ func ShortID(id string) string {
 func (s *Snapshot) DeviceName(id string) string {
 	if sv := s.ServerByDeviceID(id); sv != nil {
 		return sv.Name
+	}
+	if ds := s.DisabledByDeviceID(id); ds != nil {
+		return ds.Name
 	}
 	for _, sv := range s.Servers {
 		if d, ok := sv.Devices[id]; ok && d.Name != "" {

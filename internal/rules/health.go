@@ -2,6 +2,8 @@ package rules
 
 import (
 	"fmt"
+	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,11 +30,53 @@ func (e *evaluator) health() {
 	e.offlinePCs()
 }
 
+// refusedKey matches the error of a server that refuses the API key or the
+// gate token: the client keeps "HTTP 401" or "HTTP 403" in its text.
+var refusedKey = regexp.MustCompile(`HTTP 40[13]\b`)
+
+// httpAnswer matches the error of a server that answered with an HTTP
+// status: the network path to it works.
+var httpAnswer = regexp.MustCompile(`HTTP \d{3}\b`)
+
+// netReasons are the texts that the collector gives the failures of a
+// connection (see collector.shortErr).
+var netReasons = []string{"timeout", "connection refused", "no route to host", "network unreachable",
+	"connection reset", "connection closed early", "host name not found", "host name lookup failed"}
+
+// networkFailure reports whether a server is down because syncwatch cannot
+// connect to it, not because of an answer or the configuration. From one
+// site, a server that is off and a network path that is down (the VPN
+// between two sites) look the same.
+func networkFailure(err string) bool {
+	if httpAnswer.MatchString(err) {
+		return false
+	}
+	for _, r := range netReasons {
+		if strings.Contains(err, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // H1, H3
 func (e *evaluator) serverReachability(sv *model.Server) {
 	switch sv.Status {
 	case model.StatusDown:
 		msg := fmt.Sprintf("Server %s is unreachable", sv.Name)
+		details := []model.Detail{
+			detail("URL", sv.URL),
+			timeDetail("Down since", sv.DownSince),
+			timeDetail("Last contact", sv.LastContact),
+			detail("Error", sv.LastError),
+		}
+		if refusedKey.MatchString(sv.LastError) {
+			// The server answers: it is not unreachable.
+			msg = fmt.Sprintf("Server %s refuses the API key or the gate token", sv.Name)
+			details = append(details, detail("What to do", "Type the API key or the gate token again in Settings → Servers."))
+		} else if networkFailure(sv.LastError) {
+			details = append(details, detail("Possible causes", "The server is off or does not answer, or the network path to it (for example the VPN between the sites) is down."))
+		}
 		if sv.LastError != "" {
 			msg += ": " + sv.LastError
 		}
@@ -40,12 +84,7 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			Subject: sv.Name,
 			Message: msg,
 			Since:   sv.DownSince,
-			Details: []model.Detail{
-				detail("API URL", sv.URL),
-				timeDetail("Down from", sv.DownSince),
-				timeDetail("Last contact", sv.LastContact),
-				detail("Error", sv.LastError),
-			},
+			Details: details,
 		})
 	case model.StatusCertChanged:
 		cc := sv.CertChange
@@ -123,7 +162,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				Severity:    model.Warn,
 				Message:     fmt.Sprintf("The file watcher of folder %s on %s failed. Syncthing finds changes only with its periodic scans (%s)", name, sv.Name, f.WatchError),
 				MinDuration: watcherGrace,
-				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("File watcher error", f.WatchError)},
+				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("Watch error", f.WatchError)},
 			})
 			e.soft[id] = true
 		}
@@ -154,8 +193,8 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				Paths:       paths,
 				Details: []model.Detail{
 					detail("Folder ID", f.ID), detail("Path", f.Path), detail("State", f.State),
-					detail("Error", f.Error), detail("File watcher error", f.WatchError),
-					detail("Failed items", fmt.Sprint(nErr)),
+					detail("Error", f.Error), detail("Watch error", f.WatchError),
+					detail("Failing items", fmt.Sprint(nErr)),
 				},
 			})
 		} else if busyStates[f.State] || f.NeedItems > 0 {
@@ -165,7 +204,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				MinDuration: e.Config.Thresholds.StuckSync.D(),
 				Details: []model.Detail{
 					detail("Folder ID", f.ID), detail("State", f.State),
-					detail("Remaining items", fmt.Sprint(f.NeedItems)), detail("Remaining bytes", fmt.Sprint(f.NeedBytes)),
+					detail("Items left", fmt.Sprint(f.NeedItems)), detail("Bytes left", fmt.Sprint(f.NeedBytes)),
 				},
 			})
 		}
@@ -178,28 +217,64 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			}
 			dn := e.devName(dev)
 			conn := sv.Connections[dev]
-			connected := conn != nil && conn.Connected
+			// The connections of a server that cannot be reached are old data.
+			connected := sv.Status == model.StatusUp && conn != nil && conn.Connected
+			state := sv.RemoteState(f.ID, dev)
 			switch {
-			case sv.RemoteState(f.ID, dev) == "paused" && !e.Snapshot.IsServerDevice(dev):
+			case state == "paused" && e.Snapshot.ServerByDeviceID(dev) == nil:
+				// A polled server reports its paused folders itself.
 				e.add("H6", sv.ID, "remote-paused:"+f.ID+":"+dev, model.Finding{
 					Subject:     fmt.Sprintf("%s on %s", name, dn),
 					Message:     fmt.Sprintf("Device %s paused folder %s (seen from %s)", dn, name, sv.Name),
 					MinDuration: e.Config.Thresholds.Paused.D(),
 					Details:     []model.Detail{detail("Folder ID", f.ID), detail("Device ID", dev)},
 				})
-			case connected && c.RemoteState == "valid" && c.Percent < 100:
-				e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
-					Subject:     fmt.Sprintf("%s on %s", name, dn),
-					Message:     fmt.Sprintf("Device %s is stuck at %.0f%% of folder %s for more than %s (seen from %s)", dn, c.Percent, name, Ago(e.Config.Thresholds.StuckSync.D()), sv.Name),
-					MinDuration: e.Config.Thresholds.StuckSync.D(),
-					Details: []model.Detail{
-						detail("Folder ID", f.ID), detail("Device ID", dev),
-						detail("Completion", fmt.Sprintf("%.1f%%", c.Percent)), detail("Remaining items", fmt.Sprint(c.NeedItems)),
-					},
-				})
+			case connected && c.RemoteState == "valid":
+				if stuck(*c) {
+					e.stuckDevice(sv, f, dev, *c, false)
+				}
+			case state == "valid" || state == "":
+				// The device is away, or Syncthing does not report its state
+				// yet: H5 holds the view of the last connection, so that the
+				// time away neither counts as stuck nor ends the finding.
+				// After a restart of syncwatch there is no such view; then
+				// what Syncthing reports now must do.
+				last, ok := sv.LastCompletion(f.ID, dev)
+				if !ok {
+					last = *c
+				}
+				if stuck(last) {
+					e.stuckDevice(sv, f, dev, last, true)
+				}
 			}
 		}
 	}
+}
+
+// stuck reports whether a device still needs something of a folder.
+// Syncthing reports 100 percent when only directories, empty files or
+// deletions are missing, so the remaining items count too.
+func stuck(c model.Completion) bool { return c.Percent < 100 || c.NeedItems > 0 }
+
+// floorPercent cuts a percentage to one decimal, so that a device that
+// still needs some bytes never shows 100 percent (99.994 is 99.9).
+func floorPercent(p float64) float64 { return math.Floor(p*10) / 10 }
+
+// H5 for a device. held: the device is away and c is its last known
+// completion (see model.Finding.Held).
+func (e *evaluator) stuckDevice(sv *model.Server, f *model.Folder, dev string, c model.Completion, held bool) {
+	name, dn := f.DisplayName(), e.devName(dev)
+	pct := strconv.FormatFloat(floorPercent(c.Percent), 'f', -1, 64)
+	e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
+		Subject:     fmt.Sprintf("%s on %s", name, dn),
+		Message:     fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), sv.Name),
+		MinDuration: e.Config.Thresholds.StuckSync.D(),
+		Held:        held,
+		Details: []model.Detail{
+			detail("Folder ID", f.ID), detail("Device ID", dev),
+			detail("Completion", fmt.Sprintf("%.1f%%", floorPercent(c.Percent))), detail("Items left", fmt.Sprint(c.NeedItems)),
+		},
+	})
 }
 
 // H6 for devices paused in a server's configuration.
@@ -226,9 +301,23 @@ func (e *evaluator) pending(sv *model.Server) {
 		if name == "" {
 			name = model.ShortID(p.DeviceID)
 		}
+		msg := fmt.Sprintf("Unknown device %s requests a connection to %s", name, sv.Name)
+		if on := e.configuredOn(p.DeviceID, sv.ID); len(on) > 0 || e.Snapshot.IsServerDevice(p.DeviceID) {
+			// Not an unknown device: use the name that the servers know,
+			// and show the name that the device sends as a value.
+			name = e.devName(p.DeviceID)
+			if e.Snapshot.IsServerDevice(p.DeviceID) {
+				msg = fmt.Sprintf("Server %s requests a connection to %s", name, sv.Name)
+			} else {
+				msg = fmt.Sprintf("Device %s (known on %s) requests a connection to %s", name, strings.Join(on, ", "), sv.Name)
+			}
+			if p.Name != "" {
+				msg += fmt.Sprintf(" as %q", p.Name)
+			}
+		}
 		e.add("H9", sv.ID, "pending-device:"+p.DeviceID, model.Finding{
 			Subject: fmt.Sprintf("%s on %s", name, sv.Name),
-			Message: fmt.Sprintf("Unknown device %s requests a connection to %s", name, sv.Name),
+			Message: msg,
 			Since:   p.Time,
 			Details: []model.Detail{detail("Device ID", p.DeviceID), detail("Address", p.Address), timeDetail("First offered", p.Time)},
 		})
@@ -246,6 +335,18 @@ func (e *evaluator) pending(sv *model.Server) {
 			Details: []model.Detail{detail("Folder ID", p.FolderID), detail("Offered by", p.OfferedBy), timeDetail("First offered", p.Time)},
 		})
 	}
+}
+
+// configuredOn returns the names of the servers, other than except, that
+// have a device configured.
+func (e *evaluator) configuredOn(dev, except string) []string {
+	var on []string
+	for _, sv := range e.Snapshot.Servers {
+		if _, ok := sv.Devices[dev]; ok && sv.ID != except && sv.MyID != dev {
+			on = append(on, sv.Name)
+		}
+	}
+	return on
 }
 
 // H10
@@ -282,10 +383,15 @@ func (e *evaluator) relays(sv *model.Server) {
 		e.add("H11", sv.ID, "relay:"+id, model.Finding{
 			Subject: fmt.Sprintf("%s ↔ %s", sv.Name, dn),
 			Message: fmt.Sprintf("Device %s is connected to %s through a relay, which is slow", dn, sv.Name),
-			Details: []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Connection type", c.Type)},
+			Details: []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Type", c.Type)},
 		})
 	}
 }
+
+// linkGrace is how long two servers can be without a connection to each
+// other after a start before H2 opens: Syncthing needs some seconds to
+// connect, and a short reconnect is no fault.
+const linkGrace = 2 * time.Minute
 
 // H2: two polled servers that have each other configured should always be connected.
 func (e *evaluator) links() {
@@ -312,18 +418,26 @@ func (e *evaluator) links() {
 			if (ca != nil && ca.Connected) || (cb != nil && cb.Connected) {
 				continue
 			}
+			// The condition starts when the link dropped, or when it could
+			// form again: a start of Syncthing on a server, or syncwatch
+			// reaching a server again. A link that dropped before that
+			// opens at once, a new one after linkGrace.
 			since := da.LastSeen
-			if db.LastSeen.After(since) {
-				since = db.LastSeen
+			for _, t := range []time.Time{db.LastSeen, a.StartTime, b.StartTime, a.UpSince, b.UpSince} {
+				if t.After(since) {
+					since = t
+				}
 			}
 			e.add("H2", a.ID, "link:"+b.ID, model.Finding{
-				Subject: fmt.Sprintf("%s ↔ %s", a.Name, b.Name),
-				Message: fmt.Sprintf("Servers %s and %s are not connected to each other", a.Name, b.Name),
-				Related: []string{b.ID},
-				Since:   since,
+				Subject:     fmt.Sprintf("%s ↔ %s", a.Name, b.Name),
+				Message:     fmt.Sprintf("Servers %s and %s are not connected to each other", a.Name, b.Name),
+				Related:     []string{b.ID},
+				Since:       since,
+				MinDuration: linkGrace,
 				Details: []model.Detail{
 					timeDetail(a.Name+" last saw "+b.Name, da.LastSeen),
 					timeDetail(b.Name+" last saw "+a.Name, db.LastSeen),
+					detail("What to check", "The VPN or network between the servers, and Syncthing on both servers."),
 				},
 			})
 		}
@@ -406,6 +520,7 @@ func (e *evaluator) versions() {
 // device that never connected at all isn't "offline": only C2 reports it.
 func (e *evaluator) offlinePCs() {
 	th := e.Config.Thresholds
+	loc := e.Config.Location()
 	for _, dv := range e.Snapshot.Devices() {
 		if dv.IsServer || dv.Connected || dv.LastSeen.IsZero() || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) {
 			continue
@@ -419,7 +534,7 @@ func (e *evaluator) offlinePCs() {
 		}
 		e.add("H7", "", "device:"+dv.ID, model.Finding{
 			Subject: dv.Name,
-			Message: fmt.Sprintf("PC %s is offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.Format("2006-01-02")),
+			Message: fmt.Sprintf("PC %s is offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.In(loc).Format("2006-01-02 15:04")),
 			Since:   dv.LastSeen,
 			Related: dv.SeenBy,
 			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},

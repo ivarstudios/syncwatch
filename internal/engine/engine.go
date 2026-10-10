@@ -33,6 +33,7 @@ type Engine struct {
 	mu          sync.Mutex
 	open        map[string]*store.Record
 	obs         map[string]store.Observation
+	holds       map[string]time.Time // held observations: when their timer stopped (see hold)
 	snoozes     map[string]store.Snooze
 	persisted   map[string]time.Time // last LastSeen written per open record
 	snap        *model.Snapshot
@@ -58,7 +59,7 @@ func New(st *store.Store, hub *model.Hub, cfg *config.Holder, now func() time.Ti
 	}
 	e := &Engine{
 		st: st, hub: hub, cfg: cfg, now: now, log: log,
-		open: map[string]*store.Record{}, persisted: map[string]time.Time{},
+		open: map[string]*store.Record{}, holds: map[string]time.Time{}, persisted: map[string]time.Time{},
 		subs: map[chan uint64]struct{}{}, trigger: make(chan struct{}, 1),
 		snap: &model.Snapshot{},
 	}
@@ -223,6 +224,23 @@ func (z *freezer) anyStale(ids []string) bool {
 	return false
 }
 
+// anyPresentStale reports whether one of the servers that are still in the
+// configuration is stale.
+func (z *freezer) anyPresentStale(ids []string) bool {
+	for _, id := range ids {
+		if z.present[id] && z.stale[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// absenceCheck reports whether a check says that a device is absent: H7
+// (PC offline) and C2 (inactive device). A server that cannot be reached
+// can still have the device connected, so such a finding can only be
+// judged while every server that has the device configured is reachable.
+func absenceCheck(check string) bool { return check == "H7" || check == "C2" }
+
 // gone reports whether the servers a finding depends on have left the
 // configuration (removed or disabled): it can't be judged again, and there
 // is nobody to report it resolved either.
@@ -271,8 +289,12 @@ func (z *freezer) frozen(f model.Finding) bool {
 		return z.unknown[f.Server]
 	}
 	if f.Server == "" {
-		// A cross-server finding is judged on whichever related servers
-		// are reachable; only when none is can nothing be said about it.
+		if absenceCheck(f.Check) && z.anyPresentStale(f.Related) {
+			return true
+		}
+		// Other cross-server findings are judged on whichever related
+		// servers are reachable; only when none is can nothing be said
+		// about them.
 		return z.allStale(f.Related)
 	}
 	if z.isStale(f.Server) || z.anyStale(f.Related) {
@@ -294,6 +316,45 @@ func (z *freezer) frozen(f model.Finding) bool {
 	return false
 }
 
+// heldPersist is how often the moved timer of a held observation is
+// written to the database. After a restart of syncwatch, at most this much
+// of the time held counts as time towards the minimum duration.
+const heldPersist = 10 * time.Minute
+
+// hold stops the timer of a held finding's observation: the time from now
+// until the hold ends does not count towards its minimum duration (H5
+// counts only the time a device is connected). A held finding starts no
+// observation.
+func (e *Engine) hold(id string, now time.Time, add map[string]store.Observation) {
+	o, ok := e.obs[id]
+	if !ok {
+		return
+	}
+	from, ok := e.holds[id]
+	if !ok {
+		e.holds[id] = now
+		return
+	}
+	if now.Sub(from) >= heldPersist {
+		o.Since = o.Since.Add(now.Sub(from))
+		e.obs[id], e.holds[id], add[id] = o, now, o
+	}
+}
+
+// release starts the timer of an observation again after a hold: the
+// observation starts later by the time it was held.
+func (e *Engine) release(id string, now time.Time, add map[string]store.Observation) {
+	from, ok := e.holds[id]
+	if !ok {
+		return
+	}
+	delete(e.holds, id)
+	if o, ok := e.obs[id]; ok {
+		o.Since = o.Since.Add(now.Sub(from))
+		e.obs[id], add[id] = o, o
+	}
+}
+
 func findingServers(f model.Finding) []string {
 	var out []string
 	if f.Server != "" {
@@ -313,6 +374,7 @@ func (e *Engine) Evaluate() {
 	snap := e.hub.Snapshot()
 	now := e.now()
 	snap.At = now
+	snap.Disabled = e.disabledServers(cfg)
 	conflicts, err := e.st.ConflictsSince(now.Add(-cfg.Thresholds.ConflictWindow.D()))
 	if err != nil {
 		e.log.Warn("cannot read the conflict history", "err", err)
@@ -322,14 +384,23 @@ func (e *Engine) Evaluate() {
 
 	e.mu.Lock()
 	produced := map[string]bool{}
+	held := map[string]bool{}
 	current := map[string]model.Finding{}
 	obsAdd := map[string]store.Observation{}
 	var obsRemove []string
 	for _, f := range fs {
 		produced[f.ID] = true
+		if f.Held {
+			// Judged from a last known state: like a frozen finding, and
+			// its timer stops.
+			held[f.ID] = true
+			e.hold(f.ID, now, obsAdd)
+			continue
+		}
 		if z.frozen(f) {
 			continue
 		}
+		e.release(f.ID, now, obsAdd)
 		o, ok := e.obs[f.ID]
 		if !ok {
 			o = store.Observation{Since: now, Servers: findingServers(f)}
@@ -355,6 +426,7 @@ func (e *Engine) Evaluate() {
 			continue
 		}
 		delete(e.obs, id)
+		delete(e.holds, id)
 		obsRemove = append(obsRemove, id)
 	}
 
@@ -421,7 +493,7 @@ func (e *Engine) Evaluate() {
 			e.log.Info("finding closed", "reason", "server removed or disabled", "check", rec.Check, "subject", rec.Subject, "id", id)
 			continue
 		}
-		if z.frozen(rec.Finding) {
+		if z.frozen(rec.Finding) || held[id] {
 			if !rec.Stale {
 				rec.Stale = true
 				e.save(rec)
@@ -465,6 +537,22 @@ func (e *Engine) Evaluate() {
 	}
 }
 
+// disabledServers lists the servers that are disabled in the configuration,
+// with the device ID each had when it was polled last. The collector does
+// not poll them, but their devices are servers, not PCs (no H7, C2, C3 or
+// PC counts for a NAS that an administrator disabled).
+func (e *Engine) disabledServers(cfg *config.Config) []model.DisabledServer {
+	var out []model.DisabledServer
+	for _, s := range cfg.Servers {
+		if !s.Disabled {
+			continue
+		}
+		id, _ := e.st.ServerDeviceID(s.ID)
+		out = append(out, model.DisabledServer{ID: s.ID, Name: s.Name, MyID: id})
+	}
+	return out
+}
+
 func (e *Engine) save(r *store.Record) {
 	if err := e.st.SaveRecord(r); err != nil {
 		e.log.Error("cannot save the finding", "id", r.ID, "err", err)
@@ -485,6 +573,9 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 	h := fnv.New64a()
 	w := func(parts ...any) {
 		fmt.Fprintln(h, parts...)
+	}
+	for _, ds := range snap.Disabled {
+		w("disabled", ds.ID, ds.Name, ds.MyID)
 	}
 	for _, sv := range snap.Servers {
 		w(sv.ID, sv.Status, sv.Version, sv.LastError, sv.Loaded, sv.Mode, sv.Cert.NotAfter.Unix())

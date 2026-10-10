@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -672,5 +673,240 @@ func TestDetectShares(t *testing.T) {
 	got = DetectShares(a, nil, []string{"/s/A-LIVE-1SOURCE/"}, cs)
 	if len(got) != 0 {
 		t.Fatalf("exclude: %+v", got)
+	}
+}
+
+// H5 for a device that is away is made from the completion of its last
+// connection and marked held; the engine then keeps it as it is.
+func TestStuckDeviceHeldWhileAway(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now}
+	f := folder("s", "LIVE-STUCK", "/s/AKKA-LIVE-1SOURCE/LIVE-STUCK", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 7, RemoteState: "unknown"}
+	akka.Folders["s"] = f
+	akka.RemoteStates = map[string]map[string]string{"s": {pcID: "valid"}}
+	akka.LastCompletions = map[string]map[string]model.Completion{"s": {pcID: {Percent: 99, NeedItems: 3, RemoteState: "valid"}}}
+	h5 := mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS")
+	if !h5.Held || !strings.Contains(h5.Message, "99%") || h5.DetailValue("Items left") != "3" {
+		t.Fatalf("away: %+v", h5)
+	}
+	// Connected and valid: judged from live data.
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f.Completion[pcID].RemoteState = "valid"
+	if h5 = mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS"); h5.Held || !strings.Contains(h5.Message, "40%") {
+		t.Fatalf("connected: %+v", h5)
+	}
+	// The connections of a server that is down are old data.
+	akka.Status = model.StatusDown
+	if h5 = mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS"); !h5.Held {
+		t.Fatalf("server down: %+v", h5)
+	}
+	// Synced in its last connection: nothing to hold.
+	akka.Status = model.StatusUp
+	akka.Connections[pcID].Connected = false
+	akka.LastCompletions["s"][pcID] = model.Completion{Percent: 100, RemoteState: "valid"}
+	mustNot(t, run(t, c, akka), "H5", "MORTIS")
+	// Paused or not shared back in its last connection: H6 or C3, not H5.
+	akka.LastCompletions["s"][pcID] = model.Completion{Percent: 50, RemoteState: "valid"}
+	akka.RemoteStates["s"][pcID] = "notSharing"
+	f.Completion[pcID].RemoteState = "unknown"
+	mustNot(t, run(t, c, akka), "H5", "MORTIS")
+}
+
+// A server that is disabled in the configuration is not polled, but its
+// device is a server, not a PC: no H7, C2, C3 (never connected) or H8 for
+// it. H5, H6 and H11 report it as before, seen from the polled servers.
+func TestDisabledServerIsNotAPC(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("akka", "AKKA", akkaID)
+	a.Devices[solID] = &model.Device{ID: solID, Name: "SOL-NAS", LastSeen: now.Add(-100 * 24 * time.Hour)}
+	a.Folders["f"] = folder("f", "LIVE-F", "/s/AKKA-LIVE-1SOURCE/LIVE-F", solID)
+	a.Folders["f"].Completion[solID] = &model.Completion{Percent: 100, RemoteState: "paused"}
+	never := folder("n", "LIVE-N", "/s/AKKA-LIVE-1SOURCE/LIVE-N", solID)
+	a.Folders["n"] = never
+	snap := &model.Snapshot{At: now, Servers: []*model.Server{a}}
+	in := Input{Snapshot: snap, Config: c, Now: now}
+	// As a PC (the device ID is not known): H7 or C2.
+	mustFind(t, Evaluate(in), "C2", "SOL-NAS")
+	snap.Disabled = []model.DisabledServer{{ID: "sol", Name: "SOL", MyID: solID}}
+	fs := Evaluate(in)
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, fs, check, "SOL")
+	}
+	// The remote pause is still reported: SOL does not report it itself.
+	mustFind(t, fs, "H6", "Device SOL paused folder LIVE-F")
+	a.Devices[solID].LastSeen = now.Add(-10 * 24 * time.Hour)
+	a.Connections[solID] = &model.Connection{Connected: true, ClientVersion: "v2.0.9", Type: "relay-client"}
+	fs = Evaluate(in)
+	mustNot(t, fs, "H8", "SOL")
+	mustNot(t, fs, "H7", "SOL")
+	mustFind(t, fs, "H11", "Device SOL is connected to AKKA through a relay")
+	var dv *model.DeviceView
+	for _, d := range snap.Devices() {
+		if d.ID == solID {
+			dv = d
+		}
+	}
+	if dv == nil || !dv.IsServer || !dv.Disabled || dv.ServerID != "sol" || dv.Name != "SOL" || !dv.Connected || dv.Version != "v2.0.9" {
+		t.Fatalf("device view of the disabled server: %+v", dv)
+	}
+	if !snap.IsServerDevice(solID) || snap.ServerByDeviceID(solID) != nil || snap.DeviceName(solID) != "SOL" {
+		t.Fatal("the disabled server's device ID is a server, but not a polled one")
+	}
+	// Never connected, with C2 off: C3 says it for a PC, not for a server.
+	off := false
+	c.Checks["C2"] = config.Check{Enabled: &off}
+	a.Devices[solID].LastSeen = time.Time{}
+	delete(a.Connections, solID)
+	mustNot(t, Evaluate(in), "C3", "SOL")
+	snap.Disabled = nil
+	mustFind(t, Evaluate(in), "C3", "SOL-NAS, which never connected to AKKA")
+}
+
+// A server that refuses the API key or the gate token answers: H1 says so
+// and tells what to do, and keeps "unreachable" for the other reasons.
+func TestServerRefusesKey(t *testing.T) {
+	c := ivarConfig(t)
+	sol := server("sol", "SOL", solID)
+	sol.Status, sol.DownSince = model.StatusDown, now.Add(-10*time.Minute)
+	for _, tc := range []struct {
+		err, msg string
+		refused  bool
+	}{
+		{"/rest/system/status: HTTP 403 (check the API key)", "Server SOL refuses the API key or the gate token: /rest/system/status: HTTP 403 (check the API key)", true},
+		{"/rest/system/status: HTTP 401 (check the API key)", "Server SOL refuses the API key or the gate token: /rest/system/status: HTTP 401 (check the API key)", true},
+		{"timeout", "Server SOL is unreachable: timeout", false},
+		{"/rest/system/status: HTTP 4031 nonsense", "Server SOL is unreachable: /rest/system/status: HTTP 4031 nonsense", false},
+		{"/rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the gate's API key", "Server SOL is unreachable: /rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the gate's API key", false},
+	} {
+		sol.LastError = tc.err
+		h1 := mustFind(t, run(t, c, sol), "H1", "SOL")
+		if h1.Message != tc.msg {
+			t.Errorf("%q: message %q, want %q", tc.err, h1.Message, tc.msg)
+		}
+		if got := h1.DetailValue("What to do") != ""; got != tc.refused {
+			t.Errorf("%q: 'What to do' row %v, want %v", tc.err, got, tc.refused)
+		}
+		if !h1.Urgent || h1.Check != "H1" {
+			t.Errorf("%q: H1 must stay the urgent check: %+v", tc.err, h1)
+		}
+	}
+}
+
+// A PC that cannot store 18 files (names that Windows does not permit) is
+// at 99.994 percent: H5 must not say 100 percent, and it names the count.
+// At exactly 100 percent with items left (only directories or empty files
+// missing) the device is stuck too.
+func TestStuckDevicePercentIsNeverRoundedUp(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-ANNA", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f := folder("f", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 99.99389790763612, NeedItems: 18, NeedBytes: 28, RemoteState: "valid"}
+	akka.Folders["f"] = f
+	h5 := mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+	if strings.Contains(h5.Message, "100") || strings.Contains(h5.DetailValue("Completion"), "100") {
+		t.Fatalf("rounded up to 100 percent: %q, %q", h5.Message, h5.DetailValue("Completion"))
+	}
+	if want := "Device PC-SHARED-ANNA is stuck at 99.9% of folder LIVE-FJORD-4FINALS for more than 24 hours (18 remaining items, seen from AKKA)"; h5.Message != want {
+		t.Fatalf("message %q, want %q", h5.Message, want)
+	}
+	if h5.DetailValue("Completion") != "99.9%" || h5.DetailValue("Items left") != "18" {
+		t.Fatalf("details %v", h5.Details)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 1, RemoteState: "valid"}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !strings.Contains(h5.Message, "stuck at 40% of folder") || !strings.Contains(h5.Message, "(1 remaining item,") || h5.DetailValue("Completion") != "40.0%" {
+		t.Fatalf("40 percent: %q %v", h5.Message, h5.Details)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 100, NeedItems: 3, RemoteState: "valid"}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !strings.Contains(h5.Message, "stuck at 100% of folder") || !strings.Contains(h5.Message, "3 remaining items") {
+		t.Fatalf("100 percent with items left: %q", h5.Message)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "valid"}
+	mustNot(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+}
+
+// From one site, a server that is off and a VPN that is down look the
+// same: H1 for a network failure, and H2, name both in a detail row and
+// keep their messages.
+func TestTwoSiteFaultsNameTheNetwork(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	akka.Devices[solID] = &model.Device{ID: solID, Name: "SOL", LastSeen: now.Add(-time.Hour)}
+	sol.Devices[akkaID] = &model.Device{ID: akkaID, Name: "AKKA", LastSeen: now.Add(-time.Hour)}
+	h2 := mustFind(t, run(t, c, akka, sol), "H2", "AKKA ↔ SOL")
+	if h2.Message != "Servers AKKA and SOL are not connected to each other" || !strings.Contains(h2.DetailValue("What to check"), "VPN") {
+		t.Fatalf("H2: %q %v", h2.Message, h2.Details)
+	}
+	sol.Status, sol.DownSince = model.StatusDown, now.Add(-10*time.Minute)
+	for _, tc := range []struct {
+		err     string
+		network bool
+	}{
+		{"timeout", true},
+		{"no route to host", true},
+		{"connection refused", true},
+		{"host name not found", true},
+		{"/rest/system/status: HTTP 403 (check the API key)", false},
+		{"/rest/db/status: HTTP 500 timeout waiting for the folder", false},
+		{"no API key configured", false},
+		{"the API URL changed: type the API key again in Settings → Servers", false},
+		{"tls: failed to verify certificate: x509: certificate signed by unknown authority", false},
+	} {
+		sol.LastError = tc.err
+		h1 := mustFind(t, run(t, c, akka, sol), "H1", "SOL")
+		if got := h1.DetailValue("Possible causes") != ""; got != tc.network {
+			t.Errorf("%q: 'Possible causes' row %v, want %v", tc.err, got, tc.network)
+		}
+		if tc.network && h1.Message != "Server SOL is unreachable: "+tc.err {
+			t.Errorf("%q: message %q", tc.err, h1.Message)
+		}
+	}
+}
+
+// A pending device that another server knows is not an unknown device: H9
+// uses the name that the servers know, and quotes the name it sends.
+func TestPendingDeviceKnownOnAnotherServer(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	sol.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-BJORN"}
+	hostile := "BJÖRN @everyone\nlevel=ERROR msg=\"forged\" \u202egnp.exe"
+	stranger := "PENDING-6666666-6666666-6666666-6666666-6666666-6666666-6666666"
+	akka.PendingDevices = []model.PendingDevice{
+		{DeviceID: pcID, Name: hostile, Time: now},
+		{DeviceID: stranger, Name: "stranger", Time: now},
+		{DeviceID: solID, Name: "sol", Time: now},
+	}
+	fs := run(t, c, akka, sol)
+	h9 := mustFind(t, fs, "H9", "PC-SHARED-BJORN on AKKA")
+	want := "Device PC-SHARED-BJORN (known on SOL) requests a connection to AKKA as " + strconv.Quote(hostile)
+	if h9.Message != want {
+		t.Fatalf("known device:\n got %s\nwant %s", h9.Message, want)
+	}
+	if strings.ContainsAny(h9.Message, "\n\u202e") {
+		t.Fatal("the name that the device sends must not put control characters into the message")
+	}
+	mustFind(t, fs, "H9", "Unknown device stranger requests a connection to AKKA")
+	mustFind(t, fs, "H9", `Server SOL requests a connection to AKKA as "sol"`)
+}
+
+// H7 gives the last contact as a date and a time in the configured time
+// zone; the detail value stays UTC (RFC 3339) for the API.
+func TestPCOfflineLastSeenInConfiguredZone(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	akka := server("akka", "AKKA", akkaID)
+	last := time.Date(2026, 9, 26, 15, 30, 38, 0, time.UTC)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: last}
+	h7 := mustFind(t, run(t, c, akka), "H7", "MORTIS")
+	if want := "PC MORTIS is offline for 8 days (last seen 2026-09-26 17:30)"; h7.Message != want {
+		t.Fatalf("message %q, want %q", h7.Message, want)
+	}
+	if v := h7.DetailValue("Last seen"); v != "2026-09-26T15:30:38Z" {
+		t.Fatalf("detail value %q", v)
 	}
 }

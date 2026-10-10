@@ -90,6 +90,11 @@ type Finding struct {
 	Since time.Time `json:"-"`
 	// Urgent is set from the check configuration.
 	Urgent bool `json:"urgent"`
+	// Held marks a finding whose condition cannot be seen now, from the
+	// last known state (H5 for a device that is away). The engine keeps an
+	// open record open and stale, opens no new one and stops the timer of
+	// its observation. Not stored.
+	Held bool `json:"-"`
 }
 
 // FindingID is a stable hash of a check, server and subject key.
