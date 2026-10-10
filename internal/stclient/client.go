@@ -380,9 +380,7 @@ func (c *Client) fetchOnce(ctx context.Context, ep endpoint, q url.Values, timeo
 	if err != nil {
 		return nil, err
 	}
-	if ep != epHealth {
-		req.Header.Set("X-API-Key", c.opts.APIKey)
-	}
+	req.Header.Set("X-API-Key", c.opts.APIKey)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -427,7 +425,9 @@ func (c *Client) getJSON(ctx context.Context, ep endpoint, q url.Values, out any
 	return nil
 }
 
-// Health calls /rest/noauth/health. It needs no API key.
+// Health calls /rest/noauth/health. Syncthing needs no API key there and
+// ignores it, but it is sent like everywhere else so that a gate that wants
+// its token on every /rest path lets the call through.
 func (c *Client) Health(ctx context.Context) error {
 	var out struct {
 		Status string `json:"status"`

@@ -112,10 +112,9 @@ func TestOnlyAllowlistedGETs(t *testing.T) {
 		if r.path == "/rest/config" || strings.HasPrefix(r.path, "/rest/config/gui") || strings.HasPrefix(r.path, "/rest/config/options") {
 			t.Errorf("forbidden config endpoint requested: %s", r.path)
 		}
-		if r.path == "/rest/noauth/health" && r.apiKey != "" {
-			t.Errorf("API key sent to noauth endpoint")
-		}
-		if r.path != "/rest/noauth/health" && r.apiKey != "k" {
+		// Also on /rest/noauth/health: a gate may require its token on every
+		// /rest path, and Syncthing ignores the key there.
+		if r.apiKey != "k" {
 			t.Errorf("%s: missing API key", r.path)
 		}
 		seen[r.path] = true
