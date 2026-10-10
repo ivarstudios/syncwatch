@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/settings"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -543,5 +544,48 @@ func TestUnknownHostNameRefused(t *testing.T) {
 	resp.Body.Close()
 	if tok, _ := e.st.Secret(store.SecretAPIToken); resp.StatusCode != http.StatusMisdirectedRequest || tok != "swt_test_token" {
 		t.Fatalf("POST from a rebinding page: %d, token %q", resp.StatusCode, tok)
+	}
+}
+
+// The delivery error text can quote the channel's answer, so the API shows
+// it to admins only; viewers, open viewing and token holders get failing
+// and since.
+func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
+	e := adminEnv(t, twoServers+"access: {viewer: open}\n")
+	e.setDelivery(notify.Delivery{Failing: true, Since: time.Now(), Error: "discord: HTTP 404: Unknown Webhook"})
+	status := func(c *http.Client, bearer string) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 || !strings.Contains(string(b), `"failing": true`) {
+			t.Fatalf("API: %d %s", resp.StatusCode, b)
+		}
+		return string(b)
+	}
+	if body := status(e.http, ""); !strings.Contains(body, "Unknown Webhook") {
+		t.Fatalf("admin session: no error text in %s", body)
+	}
+	if body := status(http.DefaultClient, ""); strings.Contains(body, "Unknown Webhook") {
+		t.Fatal("open viewing sees the error text")
+	}
+	if body := status(http.DefaultClient, "swt_test_token"); strings.Contains(body, "Unknown Webhook") {
+		t.Fatal("token holder sees the error text")
+	}
+	e2 := newEnv(t, twoServers+"access: {mode: proxy}\n")
+	e2.setDelivery(notify.Delivery{Failing: true, Since: time.Now(), Error: "discord: HTTP 404: Unknown Webhook"})
+	req, _ := http.NewRequest(http.MethodGet, e2.srv.URL+"/api/v1/status", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), "Unknown Webhook") {
+		t.Fatal("proxy mode (everyone is admin): no error text")
 	}
 }
