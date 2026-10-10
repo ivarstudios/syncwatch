@@ -7,7 +7,7 @@
 # https://<nas>:8080/healthz. See "Where to run syncwatch" in the README.
 #
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch/data
-#    chown 65534:65534 /share/CACHEDEV1_DATA/Containers/syncwatch/data
+#    chown 65532:65532 /share/CACHEDEV1_DATA/Containers/syncwatch/data
 #    chmod 700 /share/CACHEDEV1_DATA/Containers/syncwatch/data
 #    Caution: keep this directory private. secret.key in it decrypts the
 #    stored Syncthing API keys.
@@ -25,7 +25,7 @@ services:
     image: ghcr.io/ivarstudios/syncwatch:1.0.0
     container_name: syncwatch
     restart: unless-stopped
-    user: "65534:65534"
+    user: "65532:65532"          # the user of the image. It must own the data directory
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

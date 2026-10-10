@@ -29,7 +29,7 @@ services:
     image: ghcr.io/ivarstudios/syncwatch:1.0.0   # also use the digest, see Updates
     container_name: syncwatch
     restart: unless-stopped
-    user: "65534:65534"          # a non-root user that owns ./data
+    user: "65532:65532"          # the user of the image. It must own ./data
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -46,12 +46,14 @@ services:
 Caution: keep `data` private. `secret.key` in it decrypts the stored API keys.
 
 ```sh
-mkdir data && sudo chown 65534:65534 data && chmod 700 data   # the same user as the user: line
+mkdir data && sudo chown 65532:65532 data && chmod 700 data   # the same user as the user: line
 docker compose up -d
 docker logs syncwatch                       # shows the setup token
 ```
 
-The image runs as a non-root user with a read-only root file system. It writes only to `/data`: an SQLite database, `secret.key` and, with self-signed HTTPS, its certificate. The image makes `/data` with mode 0700. A bind mount keeps the mode of the host directory. syncwatch sets the database files to mode 0600 at each start. Make a backup of `/data` (see [Backup and restore](#backup-and-restore)).
+The image runs as the non-root user 65532 with a read-only root file system. A named volume gets the owner 65532 from the image. A bind mount works with any user ID that owns the directory: use that ID in the `user:` line. If the user cannot write to `/data`, syncwatch stops at the start with "permission denied" in the log.
+
+The image writes only to `/data`: an SQLite database, `secret.key` and, with self-signed HTTPS, its certificate. The image makes `/data` with mode 0700. A bind mount keeps the mode of the host directory. syncwatch sets the database files to mode 0600 at each start. Make a backup of `/data` (see [Backup and restore](#backup-and-restore)).
 
 If you lose `secret.key`, or change `SYNCWATCH_SECRET_KEY`, syncwatch cannot decrypt the stored API keys and the webhook. The dashboard then shows an H1 finding for each server with the reason that the API key is not readable. The notification banner reports that the webhook is not readable. Type the API keys and the webhook again.
 
@@ -130,7 +132,7 @@ To restore a backup:
 
 1. Stop the container.
 2. Replace the contents of the data directory with the backup.
-3. Give the files to the user of the container: `chown -R 65532:65532 data && chmod 700 data`. The image runs as user 65532. syncwatch sets the database files to mode 0600 at the start.
+3. Give the files to the user of the `user:` line: `chown -R 65532:65532 data && chmod 700 data`. syncwatch sets the database files to mode 0600 at the start.
 4. Start the container.
 
 A restored backup has the findings and the notifications of its time. syncwatch then reports the changes after the time of the backup again. For example, it sends a resolved message for a finding that resolved after the backup.
