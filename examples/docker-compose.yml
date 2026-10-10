@@ -9,6 +9,9 @@
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch/data
 #    chown 65532:65532 /share/CACHEDEV1_DATA/Containers/syncwatch/data
 #    chmod 700 /share/CACHEDEV1_DATA/Containers/syncwatch/data
+#    65532 is the user of the image. A different user ID also works if it
+#    owns the directory and is in the user: line below. If the user cannot
+#    write to the directory, the log shows "permission denied" at the start.
 #    Caution: keep this directory private. secret.key in it decrypts the
 #    stored Syncthing API keys.
 # 2. If necessary, copy examples/ivar.yaml to data/syncwatch.yaml. syncwatch
