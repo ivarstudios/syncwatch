@@ -11,7 +11,7 @@ This is the plain-language list of the changes from the review (13 branches, `si
 5. **Configuration values:** syncwatch now refuses values outside the ranges in the README (durations up to 10 years, thresholds from 10 seconds, role IDs with 17 to 20 digits, server IDs from `a-z`, `0-9` and `-`). A stored configuration with a value outside a range stops the next start with a message. Correct it with `syncwatch import-config`.
 6. **Reminder time:** a `reminder_time` in the evening part of the quiet hours is an error now, because syncwatch could never send it. Change it before the update if you have one.
 7. **Data directory:** run `chmod 700` on the data directory of a bind mount. The image makes `/data` with mode 0700, and syncwatch sets the database files to mode 0600.
-8. **Integrations:** scripts that read the health line of `/api/v1/status` see "not contacted" for servers without a result. `/api/v1/status` and `/api/v1/ha` have new folder counts (`scanning`, `watch_error`) and the status value `watch error`. The field `notifications.error` is present only for administrator sessions, not for API tokens.
+8. **Integrations:** read [Integrations: changes to /api/v1 after 78ef2d8](#integrations-changes-to-apiv1-after-78ef2d8) at the end of this file. Scripts must use the stable values (`check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`), not the health line or the finding messages.
 9. **Findings on Linux servers:** the IDs of S3 to S7 findings keep the case of the path now. After the update, such findings resolve and open again one time (one resolved message and one urgent message for S3). Snoozes and ignores on the old IDs do not apply to the new IDs.
 10. **Watcher errors:** an open H4 finding that was only a file watcher error resolves at the update and opens again as a WARNING after 1 hour.
 
@@ -124,3 +124,42 @@ This is the plain-language list of the changes from the review (13 branches, `si
 ## Documentation
 
 - The README, plan.md, the examples and the comments in the Dockerfile and the workflows follow the STE style guide of the review. The check titles, the page names and the labels are the names of the product text rewrite: Findings page, administrator, urgent message, settings notice, full check, structure scan, pinned certificate, ERROR, WARNING, INFO.
+
+## Integrations: changes to /api/v1 after 78ef2d8
+
+This list is for scripts, Home Assistant and other programs that read `GET /api/v1/status` or `GET /api/v1/ha`. `78ef2d8` is the version before the review. Use the stable values: `check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`, and the status values. The texts for persons (the health line, `findings[].message`) can change in each version.
+
+**Unchanged.** `findings[].severity` is `ERROR`, `WARN` or `INFO` (upper case). The keys of `counts` are `error`, `warn`, `info`, `snoozed` and `urgent`. r1 adds the key `ignored`. The detail values and the time fields are the same as before (UTC, RFC 3339).
+
+Changes of the first round (r0) and of the text rewrite:
+
+1. **Host check.** The API answers only to known host names, also for requests with an API token. A request with a different `Host` header gets `421`. Add the name to `SYNCWATCH_TLS_HOSTS`, or set `public_url`.
+2. **`notifications.error`** is present only for a request with the administrator role: an administrator session, or each request in proxy mode. A request with an API token or a viewer session does not get it.
+3. **`servers[].folders`** has the new counts `scanning` and `watch_error`. The counts use the folder state of the dashboard: `paused`, `error`, `watch_error`, `scanning`, `idle` (up to date), and `syncing` for all other folders. Before, a folder that scanned counted in `syncing`. A folder with only a file watcher error counted in `idle`.
+4. **`/api/v1/ha`** has the new counts `folders_scanning` and `folders_watch_error`. The field `status` has the new value `watch error`.
+5. **The health line** has new words:
+
+| 78ef2d8 | Now |
+|---|---|
+| `2 servers OK` | `2 servers up` |
+| `1/2 servers OK (SOL down)` | `1 of 2 servers up (SOL down)` |
+| `1/2 servers OK (SOL down)`, before the first contact | `1 of 2 servers up (SOL not contacted)` |
+| `6 PCs, 0 offline > 3 minutes` | `6 PCs, 0 offline more than 3 minutes` |
+| `0 errors, 2 warnings, 0 suggestions` | `ERROR 0 · WARNING 2 · INFO 0` |
+| `1 servers OK`, `1 PCs` | `1 server up`, `1 PC` |
+
+6. **`findings[].message`** has new texts. For example, the H4 text `Sync stopped for …` is now `Folder … cannot sync: …`. Use `check`, `id` and `details[].key`, not the message.
+7. **`findings[].details[].key`.** The text rewrite changed 7 keys. r1 restores the keys of 78ef2d8: `Watch error`, `Failing items`, `Items left`, `Bytes left`, `Type`, `URL` and `Down since`. The dashboard shows these keys with the labels of the text rewrite (for example `Remaining items`). r0 added the keys `Based on` (C1) and `Folder` (X1).
+8. **Finding IDs.** On a case-sensitive server, the IDs of S3 to S7 findings keep the case of the path. This changes the IDs one time at the update. A file watcher error is a separate H4 finding with its own ID: `WARN` after 1 hour, never urgent.
+
+Changes of the second round (r1):
+
+9. **`health_counts`** (new) has the numbers of the health line: `servers`, `servers_up`, `servers_disabled`, `pcs`, `pcs_offline` and `pcs_unknown`. A PC is offline only when each server that knows the PC is up. Else the PC is unknown.
+10. **Disabled servers.** `servers[]` also lists the disabled servers, with `status` `disabled`. `devices[]` marks their device IDs as servers (`server: true`), not as PCs. Before, a disabled server was not in `servers[]` and counted as a PC.
+11. **`servers[].folders.stale`** is `true` when the server is not up (unreachable, not contacted or with a changed certificate). The folder counts are then the last known state.
+12. **`findings[].ignored`** and **`counts.ignored`** (new). `findings[].snoozed` and `counts.snoozed` do not change: they include the ignored findings.
+13. **`servers[].uptime_s`** is `null` when syncwatch does not know the uptime. Before, the key was not in the answer.
+14. **Authorization.** syncwatch accepts the word `Bearer` in any case (for example `bearer`).
+15. **Error answers** are JSON (`{"error": "…"}`) with `Content-Type: application/json`, also the `421` of the Host check for `/api/v1/*`. Before, the content type was `text/plain`.
+16. **The health line** has new texts. Ignored findings have their own count (`1 ignored`). A server with a changed certificate shows as `SOL certificate changed` instead of `SOL down`, and a disabled server as `SOL disabled`. The line also counts the PCs whose state is not known.
+17. **`findings[].details`** of H1 and H2 have new rows with advice, with new keys. The other keys do not change.

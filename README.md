@@ -397,7 +397,25 @@ syncwatch keeps the keys to your Syncthing servers. Report a vulnerability in pr
 
 ## JSON status API
 
-Send `GET /api/v1/status` with the header `Authorization: Bearer <token>`. Make the API token under Settings → API. The answer has the health line, the counts, the notification state, the servers, the devices and the open findings. The API is read-only and never includes secrets. A logged-in browser session also works. The field `notifications.error` is present only for administrator sessions. The folder counts have `scanning` and `watch_error`. The API values stay `error`, `warn` and `info` for the severity.
+Send `GET /api/v1/status` with the header `Authorization: Bearer <token>` (the word `Bearer` in any case). Make the API token under Settings → API. A logged-in browser session also works. The answer has the health line, the counts, the notification state, the servers, the devices and the open findings. The API is read-only and never includes secrets.
+
+Scripts must use the stable values of this table, not the texts. The health line and `findings[].message` are texts for persons, and a new version can change them. The changes after the version 78ef2d8 are in [docs/CHANGES-review.md](docs/CHANGES-review.md#integrations-changes-to-apiv1-after-78ef2d8).
+
+| Field | Values |
+|---|---|
+| `findings[].severity` | `ERROR`, `WARN` or `INFO` (upper case, unchanged after 78ef2d8). The dashboard shows `WARN` as WARNING. |
+| `findings[].check`, `findings[].id` | the check ID (for example `H4`) and the stable ID of the finding |
+| `findings[].details[].key` | the name of a detail row, for example `Watch error` or `Items left`. The dashboard shows some keys with a different label. |
+| `findings[].snoozed`, `findings[].ignored` | `snoozed` is `true` for a snoozed or an ignored finding. `ignored` is `true` only for an ignored finding. |
+| `counts` | the keys `error`, `warn`, `info` and `urgent` for the findings that are not snoozed or ignored. `snoozed` counts the snoozed and the ignored findings, `ignored` only the ignored findings. |
+| `health_counts` | `servers`, `servers_up`, `servers_disabled`, `pcs`, `pcs_offline`, `pcs_unknown` |
+| `servers[].status` | `up`, `down`, `cert-changed`, `unknown` (not contacted after the start) or `disabled` |
+| `servers[].folders` | the counts `total`, `idle`, `syncing`, `scanning`, `error`, `watch_error` and `paused`. `stale` is `true` when the server is not up: the counts are then the last known state. |
+| `servers[].uptime_s` | seconds, or `null` when syncwatch does not know the uptime |
+| `devices[].server` | `true` for a server, also for a disabled server. `false` for a PC. |
+| `notifications` | `failing` and `since`. `error` is present only for the administrator role. |
+
+The time fields are UTC (RFC 3339). An error answer is JSON (`{"error": "…"}`) with `Content-Type: application/json`.
 
 ```sh
 curl -k -H "Authorization: Bearer $TOKEN" https://192.168.1.10:8080/api/v1/status   # -k: the self-signed certificate
