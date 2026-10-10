@@ -142,7 +142,7 @@ func (d *Discord) usable() error {
 		return nil
 	}
 	if u, err := url.Parse(d.URL); err != nil || u.Scheme != "https" || !config.DiscordHost(d.URL) {
-		return errors.New("Discord: the stored webhook is not a Discord webhook URL (https://discord.com/api/webhooks/…). Save the webhook URL again.")
+		return unusableError("Discord: the stored webhook is not a Discord webhook URL (https://discord.com/api/webhooks/…). Save the webhook URL again.")
 	}
 	return nil
 }
@@ -167,7 +167,7 @@ func (d *Discord) Send(ctx context.Context, m Message) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.URL, bytes.NewReader(body))
 		if err != nil {
-			return fmt.Errorf("Discord: the webhook URL is not valid")
+			return unusableError("Discord: the webhook URL is not valid")
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := hc.Do(req)
@@ -233,6 +233,24 @@ func (e *httpError) Error() string {
 func rejected(err error) bool {
 	var e *httpError
 	return errors.As(err, &e) && e.code >= 400 && e.code < 500 && e.code != http.StatusTooManyRequests
+}
+
+// unusableError is a webhook that syncwatch cannot use until an
+// administrator saves it again: a retry cannot help.
+type unusableError string
+
+func (e unusableError) Error() string { return string(e) }
+
+// transient says whether a failure can end without a change of the
+// webhook: Discord or the network is down (HTTP 5xx or 429, a timeout, no
+// connection). A refused, redirected or unusable webhook cannot.
+func transient(err error) bool {
+	var e *httpError
+	if errors.As(err, &e) {
+		return e.code >= 500 || e.code == http.StatusTooManyRequests
+	}
+	var u unusableError
+	return !errors.As(err, &u)
 }
 
 // discordError is the readable part of a Discord error reply: its message

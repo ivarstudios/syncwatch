@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,7 @@ const (
 	keyOvernight = "notify.overnight_done"
 	keyReminder  = "notify.last_reminder"
 	keyWeekly    = "notify.last_weekly"
+	keyAnnounced = "notify.announced" // see announcedRun
 )
 
 // Notifier decides what to send and when.
@@ -44,6 +47,8 @@ type Notifier struct {
 
 	mu        sync.Mutex
 	httpProxy *http.Client
+	runs      []announcedRun // under mu; read from the store at first use
+	runsRead  bool
 
 	dmu       sync.Mutex
 	delivered map[string]map[string]bool // message key → channels that already have it
@@ -51,6 +56,7 @@ type Notifier struct {
 	failures  int                        // failed ticks in a row, for the back-off
 	retryAt   time.Time
 	state     Delivery
+	missed    time.Time         // first failure since the last catch-up; see missedBlips
 	lastErr   map[string]string // channel → error already in the notification log
 	notices   []pendingNotice   // settings notices that couldn't be delivered yet
 	noticeSeq int
@@ -122,6 +128,11 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 		n.state.Failing, n.state.Since = true, now
 	}
 	n.state.Error = err.Error()
+	// Kept until the catch-up went out: a new webhook or a successful test
+	// message clears the banner, not what the channel missed.
+	if n.missed.IsZero() {
+		n.missed = now
+	}
 }
 
 // New creates a notifier that builds its senders from the stored secrets.
@@ -150,10 +161,14 @@ func (n *Notifier) defaultSenders() []Sender {
 		n.log.Error("cannot read the Discord webhook", "err", err)
 		// Fails like a dead webhook, so the banner, the notification log
 		// and the test button all say why.
-		out = append(out, &brokenChannel{err: errors.New("syncwatch cannot decrypt the Discord webhook: check the secret key")})
+		out = append(out, &brokenChannel{err: errUndecryptable})
 	}
 	return out
 }
+
+// errUndecryptable is the failure of every send while the stored webhook
+// cannot be decrypted.
+var errUndecryptable error = unusableError("syncwatch cannot decrypt the Discord webhook: check the secret key")
 
 // brokenChannel stands in for the Discord channel while its webhook can't
 // be read. Every send fails with the reason.
@@ -247,14 +262,21 @@ func (n *Notifier) fail(now time.Time, gen int, err error) {
 		// Nothing is marked as sent; it all goes out once a channel exists.
 		return
 	}
-	// Back off while a channel keeps failing: 1, 2, 4 … 30 minutes.
+	// Back off while a channel keeps failing: 1, 2, 4, 5, 5 … minutes while
+	// Discord or the network is down, 1, 2, 4 … 30 minutes while Discord
+	// refuses the webhook or syncwatch cannot use it (only a new webhook
+	// helps, and saving one tries again at once).
 	n.dmu.Lock()
 	if gen != n.gen {
 		n.dmu.Unlock()
 		return
 	}
 	n.failures++
-	d := min(time.Minute<<min(n.failures-1, 5), 30*time.Minute)
+	limit := 30 * time.Minute
+	if transient(err) {
+		limit = 5 * time.Minute
+	}
+	d := min(time.Minute<<min(n.failures-1, 5), limit)
 	n.retryAt = now.Add(d)
 	n.dmu.Unlock()
 	n.log.Warn("cannot send the notification", "err", err, "retry_in", d)
@@ -322,16 +344,69 @@ func ids(rs []*store.Record) []string {
 
 func (n *Notifier) urgent(ctx context.Context, cfg *config.Config, v *engine.View, now time.Time) error {
 	due := dueRecords(cfg, v, now)
-	if len(due) == 0 {
+	n.dmu.Lock()
+	since, failing := n.missed, n.state.Failing
+	n.dmu.Unlock()
+	var missed []store.HistoryEntry
+	if !since.IsZero() {
+		var err error
+		if missed, err = n.missedBlips(cfg, v, since, now); err != nil {
+			return err
+		}
+		if len(missed) == 0 && !failing {
+			n.clearMissed(since) // delivery works and nothing was missed
+		}
+	}
+	if len(due) == 0 && len(missed) == 0 {
 		return nil
 	}
-	m := UrgentMessage(cfg, due)
+	// The catch-up goes with the urgent findings, or alone: then it is also
+	// the next try of a failing channel.
+	m := MissedMessage(cfg, due, missed, since, now)
 	m.Key = "urgent:" + strings.Join(ids(due), ",")
+	for _, h := range missed {
+		m.Key += fmt.Sprintf(";%s@%d", h.FindingID, h.ResolvedAt.UnixMilli())
+	}
 	if err := n.send(ctx, now, m); err != nil {
 		return err
 	}
 	n.src.MarkPinged(ids(due), now)
+	if !since.IsZero() {
+		n.remember(now, listedRuns(missed))
+		n.clearMissed(since)
+	}
 	return nil
+}
+
+// missedBlips are the urgent findings that resolved after notifications
+// started to fail (since), were due before they resolved and were never
+// announced: nobody heard of them. Snoozed and ignored ones are left out,
+// as in the overnight summary, and so are the ones it listed.
+func (n *Notifier) missedBlips(cfg *config.Config, v *engine.View, since, now time.Time) ([]store.HistoryEntry, error) {
+	hist, err := n.st.HistoryBetween(since, now.Add(time.Second))
+	if err != nil {
+		return nil, err
+	}
+	var out []store.HistoryEntry
+	for _, h := range hist {
+		if !h.Urgent || h.ResolvedAt.IsZero() || h.ResolvedAt.Before(since) {
+			continue
+		}
+		if h.ResolvedAt.Before(h.OpenedAt.Add(cfg.Debounce(h.Check))) || n.announced(h) || hidden(v, h, now) {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// clearMissed ends the catch-up period that started at since.
+func (n *Notifier) clearMissed(since time.Time) {
+	n.dmu.Lock()
+	defer n.dmu.Unlock()
+	if n.missed.Equal(since) {
+		n.missed = time.Time{}
+	}
 }
 
 func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Time) error {
@@ -350,6 +425,7 @@ func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Ti
 		return err
 	}
 	n.src.MarkResolvedNotified(ids(pend), now)
+	n.remember(now, resolvedRuns(pend))
 	return nil
 }
 
@@ -396,14 +472,7 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		if !dueAt.Before(end) || h.ResolvedAt.Before(dueAt) {
 			continue
 		}
-		if n.announced(h) {
-			continue
-		}
-		// Not when it is ignored or snoozed, now or when it resolved.
-		if _, z := v.Snoozed(h.FindingID, now); z {
-			continue
-		}
-		if _, z := v.Snoozed(h.FindingID, h.ResolvedAt); z {
+		if n.announced(h) || hidden(v, h, now) {
 			continue
 		}
 		blips = append(blips, h)
@@ -416,19 +485,100 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		}
 		n.src.MarkPinged(append(ids(due), ids(day)...), now)
 		n.src.MarkResolvedNotified(ids(pend), now)
+		n.remember(now, append(resolvedRuns(pend), listedRuns(blips)...))
 	}
 	return n.st.SetSetting(keyOvernight, marker)
 }
 
-// announced reports whether an occurrence of a finding was pinged: its
-// record was pinged before the occurrence resolved. A re-open that carried
-// PingedAt over counts as the same, already announced problem.
+// hidden reports whether an occurrence is ignored or snoozed, now or when
+// it resolved.
+func hidden(v *engine.View, h store.HistoryEntry, now time.Time) bool {
+	if _, z := v.Snoozed(h.FindingID, now); z {
+		return true
+	}
+	_, z := v.Snoozed(h.FindingID, h.ResolvedAt)
+	return z
+}
+
+// announced reports whether an occurrence of a finding was announced: an
+// urgent message went out for it before it resolved (a re-open that
+// carried PingedAt over is the same, already announced problem), or a
+// summary listed it. The record knows this only for its latest run of
+// occurrences: a re-open after the "resolved" message starts a new record,
+// so older occurrences are looked up in the announced runs.
 func (n *Notifier) announced(h store.HistoryEntry) bool {
+	at := h.ResolvedAt.UnixMilli()
+	for _, run := range n.announcedRuns() {
+		if run.ID == h.FindingID && run.From <= at && at <= run.To {
+			return true
+		}
+	}
 	r, err := n.st.Record(h.FindingID)
 	if err != nil || r == nil || r.PingedAt.IsZero() {
 		return false
 	}
 	return !r.PingedAt.After(h.ResolvedAt)
+}
+
+// announcedRun is a run of occurrences of one finding that a notification
+// announced, by their resolve times (Unix ms): from the urgent message to
+// the resolve that the "resolved" message reported, or one occurrence that
+// a summary listed.
+type announcedRun struct {
+	ID   string `json:"id"`
+	From int64  `json:"from"`
+	To   int64  `json:"to"`
+}
+
+// announcedKeep is how long announced runs are kept: longer than the
+// overnight summary looks back.
+const announcedKeep = 3 * 24 * time.Hour
+
+// resolvedRuns are the runs that resolved messages for rs report.
+func resolvedRuns(rs []*store.Record) []announcedRun {
+	var out []announcedRun
+	for _, r := range rs {
+		out = append(out, announcedRun{ID: r.ID, From: r.PingedAt.UnixMilli(), To: r.ResolvedAt.UnixMilli()})
+	}
+	return out
+}
+
+// listedRuns are the runs of occurrences that a summary lists.
+func listedRuns(hs []store.HistoryEntry) []announcedRun {
+	var out []announcedRun
+	for _, h := range hs {
+		out = append(out, announcedRun{ID: h.FindingID, From: h.ResolvedAt.UnixMilli(), To: h.ResolvedAt.UnixMilli()})
+	}
+	return out
+}
+
+// announcedRuns returns the announced runs, read from the store once.
+func (n *Notifier) announcedRuns() []announcedRun {
+	if !n.runsRead {
+		if _, err := n.st.JSONSetting(keyAnnounced, &n.runs); err != nil {
+			n.log.Warn("cannot read the list of announced findings", "err", err)
+		}
+		n.runsRead = true
+	}
+	return n.runs
+}
+
+// remember adds announced runs, removes old ones and saves the list, so a
+// restart does not announce an occurrence again.
+func (n *Notifier) remember(now time.Time, add []announcedRun) {
+	if len(add) == 0 {
+		return
+	}
+	keep := []announcedRun{}
+	for _, run := range n.announcedRuns() {
+		if run.To >= now.Add(-announcedKeep).UnixMilli() {
+			keep = append(keep, run)
+		}
+	}
+	n.runs = append(keep, add...)
+	if err := n.st.SetJSONSetting(keyAnnounced, n.runs); err != nil {
+		n.log.Warn("cannot save the list of announced findings", "err", err)
+	}
 }
 
 func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.View, local, now time.Time) error {
@@ -540,7 +690,13 @@ func (n *Notifier) checked(cfg *config.Config, v *engine.View, now time.Time) bo
 // SendTest sends a test message to every configured channel.
 func (n *Notifier) SendTest(ctx context.Context) error {
 	cfg := n.cfg.Get()
-	m := Message{Kind: KindTest, Title: "syncwatch test message", Summary: "Notifications from syncwatch reach this channel.", Color: ColorInfo, URL: cfg.PublicURL}
+	// With a role, the test mentions it like an urgent message does, so a
+	// wrong role ID shows now and not at the first incident.
+	summary := "Notifications from syncwatch reach this channel. Urgent messages mention no role."
+	if cfg.Notify.DiscordRoleID != "" {
+		summary = "Notifications from syncwatch reach this channel. This test message mentions the role, the same as urgent messages. If your phone did not notify you, check the role ID and that you have the role."
+	}
+	m := Message{Kind: KindTest, Mention: cfg.Notify.DiscordRoleID != "", Title: "syncwatch test message", Summary: summary, Color: ColorInfo, URL: cfg.PublicURL}
 	gen := n.generation()
 	senders := n.senders()
 	if len(senders) == 0 {
@@ -568,20 +724,24 @@ func (n *Notifier) SendTest(ctx context.Context) error {
 // key or certificate pin, access settings). It is sent at once, also during
 // quiet hours, without a mention, so a change nobody expected is noticed.
 func (n *Notifier) Notice(title, summary string) {
-	n.notice(n.senders(), true, title, summary)
+	gen := n.generation()
+	n.notice(n.senders(), gen, true, title, summary)
 }
 
 // NoticeLater captures the channels configured now and returns a function
 // that sends a notice to them. A change that replaces or removes a channel
 // is announced with it, so the channel that loses messages hears about it.
 func (n *Notifier) NoticeLater() func(title, summary string) {
+	gen := n.generation()
 	senders := n.senders()
 	// Those channels may be gone by then; their failures aren't the
 	// current channels' and don't count towards the banner.
-	return func(title, summary string) { n.notice(senders, false, title, summary) }
+	return func(title, summary string) { n.notice(senders, gen, false, title, summary) }
 }
 
-func (n *Notifier) notice(senders []Sender, current bool, title, summary string) {
+// notice sends a settings notice to senders, built in channel generation
+// built.
+func (n *Notifier) notice(senders []Sender, built int, current bool, title, summary string) {
 	cfg := n.cfg.Get()
 	now := n.now()
 	n.dmu.Lock()
@@ -589,12 +749,16 @@ func (n *Notifier) notice(senders []Sender, current bool, title, summary string)
 	key := fmt.Sprintf("notice:%d:%d", now.UnixNano(), n.noticeSeq)
 	gen := n.gen
 	n.dmu.Unlock()
-	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: summary, Color: ColorWarn, URL: cfg.PublicURL, Key: key}
+	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: summary, Color: ColorNotice, URL: cfg.PublicURL, Key: key}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		if err := n.sendTo(ctx, now, m, senders, current, gen); errors.Is(err, errNoChannel) {
 			n.log.Info("settings notice not sent: no Discord webhook is configured", "title", title)
+		} else if rejected(err) && built == n.generation() {
+			// The retry would go to the same channels, which refuse it:
+			// one decision, one log line.
+			n.log.Warn("settings notice discarded, Discord refused it", "title", title, "err", err)
 		} else if err != nil {
 			n.log.Warn("cannot send the settings notice, syncwatch retries it with the next notifications", "title", title, "err", err)
 			n.queueNotice(m, now)
@@ -825,13 +989,122 @@ func UrgentMessage(cfg *config.Config, rs []*store.Record) Message {
 	title := fmt.Sprintf("🚨 %d new urgent findings", len(rs))
 	if len(rs) == 1 {
 		title = "🚨 " + config.CatalogByID[rs[0].Check].Title + ": " + rs[0].Subject
-	}
-	var lines []string
-	for _, r := range rs {
-		lines = append(lines, findingLine(r, dashboard(cfg)))
+	} else {
+		// A phone notification shows only the title.
+		title += where(cfg, rs)
 	}
 	return Message{Kind: KindUrgent, Mention: true, Title: title, Color: colorFor(rs), URL: dashboard(cfg),
-		Sections: []Section{{Title: "New findings", Lines: limitLines(lines, 25)}}}
+		Sections: []Section{{Title: "New findings", Lines: limitLines(urgentLines(cfg, rs), 25)}}}
+}
+
+// where names the servers (in configuration order) and the checks of
+// findings: " on AKKA, SOL: H1, S3".
+func where(cfg *config.Config, rs []*store.Record) string {
+	servers, checks := map[string]bool{}, map[string]bool{}
+	for _, r := range rs {
+		for _, id := range append([]string{r.Server}, r.Related...) {
+			servers[id] = id != ""
+		}
+		for _, c := range r.Checks {
+			checks[c] = true
+		}
+	}
+	var names, gone, ids []string
+	for _, s := range cfg.Servers {
+		if servers[s.ID] {
+			names = append(names, s.Name)
+			delete(servers, s.ID)
+		}
+	}
+	for id, ok := range servers {
+		if ok {
+			gone = append(gone, id) // removed from the configuration since
+		}
+	}
+	sort.Strings(gone)
+	names = append(names, gone...)
+	for _, c := range config.Catalog {
+		if checks[c.ID] {
+			ids = append(ids, c.ID)
+		}
+	}
+	out := ""
+	if len(names) > 0 {
+		out += " on " + strings.Join(names, ", ")
+	}
+	if len(ids) > 0 {
+		out += ": " + strings.Join(ids, ", ")
+	}
+	return out
+}
+
+// urgentLines writes one line per finding. Findings of one check on other
+// servers whose subject and message differ only in the server name (an S3
+// for a directory that both NAS sync) share the first one's line:
+// "… _(also on SOL)_".
+func urgentLines(cfg *config.Config, rs []*store.Record) []string {
+	type line struct {
+		r    *store.Record
+		also []string
+		on   map[string]bool
+	}
+	var lines []*line
+	same := map[string]*line{}
+	for _, r := range rs {
+		k := sameKey(cfg, r)
+		if l := same[k]; k != "" && l != nil && !l.on[r.Server] {
+			l.also = append(l.also, serverName(cfg, r.Server))
+			l.on[r.Server] = true
+			continue
+		}
+		l := &line{r: r, on: map[string]bool{r.Server: true}}
+		lines = append(lines, l)
+		if k != "" && same[k] == nil {
+			same[k] = l
+		}
+	}
+	var out []string
+	for _, l := range lines {
+		s := findingLine(l.r, "")
+		if len(l.also) > 0 {
+			s += " _(also on " + escapeMD(andList(l.also)) + ")_"
+		}
+		out = append(out, s+detailsLink(dashboard(cfg), l.r.ID))
+	}
+	return out
+}
+
+// sameKey is what a finding has in common with the same finding on another
+// server: its checks, severity, subject and message with its server's name
+// taken out. "" for a finding that is not on one server, or that is about
+// the server itself (H1: two servers down are two problems).
+func sameKey(cfg *config.Config, r *store.Record) string {
+	if r.Server == "" {
+		return ""
+	}
+	name := regexp.MustCompile(`\b` + regexp.QuoteMeta(serverName(cfg, r.Server)) + `\b`)
+	if strings.TrimSpace(name.ReplaceAllString(r.Subject, "")) == "" {
+		return ""
+	}
+	return fmt.Sprint(r.Checks, r.Severity, r.Stale) + "\x00" + name.ReplaceAllString(r.Subject, "\x01") + "\x00" + name.ReplaceAllString(r.Message, "\x01")
+}
+
+// serverName is the configured name of a server, or its ID.
+func serverName(cfg *config.Config, id string) string {
+	for _, s := range cfg.Servers {
+		if s.ID == id {
+			return s.Name
+		}
+	}
+	return id
+}
+
+// andList joins names: "SOL", "SOL and SIRIUS", "AKKA, SOL and SIRIUS".
+func andList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // ResolvedMessage announces that pinged findings are resolved.
@@ -869,7 +1142,7 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 		resL = append(resL, resolvedLine(r))
 	}
 	for _, h := range blips {
-		blipL = append(blipL, historyLine(h, true)+fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04")))
+		blipL = append(blipL, blipLine(cfg, h))
 	}
 	for _, r := range day {
 		dayL = append(dayL, findingLine(r, dashboard(cfg)))
@@ -890,20 +1163,75 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 		}}
 }
 
+// blipLine is an occurrence that opened and resolved without a message,
+// with its times.
+func blipLine(cfg *config.Config, h store.HistoryEntry) string {
+	return historyLine(h, true) + fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04"))
+}
+
+// MissedMessage reports the urgent findings that opened and resolved while
+// notifications failed, from since to now, without a mention. With new
+// urgent findings rs it is their urgent message with one more section.
+func MissedMessage(cfg *config.Config, rs []*store.Record, missed []store.HistoryEntry, since, now time.Time) Message {
+	var m Message
+	switch {
+	case len(rs) > 0:
+		m = UrgentMessage(cfg, rs)
+	case len(missed) == 1:
+		m = Message{Kind: KindResolved, Title: "✅ Resolved while the notifications failed: " + config.CatalogByID[missed[0].Check].Title + ": " + missed[0].Subject}
+	default:
+		m = Message{Kind: KindResolved, Title: fmt.Sprintf("✅ %d urgent findings resolved while the notifications failed", len(missed))}
+	}
+	if len(rs) == 0 {
+		m.Color, m.URL = ColorResolved, dashboard(cfg)
+	}
+	if len(missed) == 0 {
+		return m
+	}
+	var lines []string
+	for _, h := range missed {
+		lines = append(lines, blipLine(cfg, h))
+	}
+	from, to := since.In(cfg.Location()), now.In(cfg.Location())
+	span := from.Format("15:04") + "–" + to.Format("15:04")
+	if from.Format("2006-01-02") != to.Format("2006-01-02") {
+		span = from.Format("2006-01-02 15:04") + "–" + to.Format("15:04")
+	}
+	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span + ")", Lines: limitLines(lines, 20)})
+	return m
+}
+
 // HealthLine summarises the deployment in one line.
 func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 	var parts []string
 	snap := v.Snapshot
 	if snap != nil {
-		up, total := 0, 0
-		var down, unknown []string
+		// Disabled servers are not polled and not in the snapshot.
+		disabled := map[string]bool{}
+		var off []string
+		for _, s := range cfg.Servers {
+			if s.Disabled {
+				disabled[s.ID] = true
+				off = append(off, s.Name)
+			}
+		}
+		up, total, loaded := 0, len(off), false
+		known := map[string]bool{} // up and loaded: its view of the PCs is current
+		var down, cert, unknown []string
 		for _, sv := range snap.Servers {
+			if disabled[sv.ID] {
+				continue
+			}
 			total++
+			loaded = loaded || sv.Loaded
 			switch sv.Status {
 			case model.StatusUp:
 				up++
+				known[sv.ID] = sv.Loaded
 			case model.StatusUnknown:
 				unknown = append(unknown, sv.Name)
+			case model.StatusCertChanged:
+				cert = append(cert, sv.Name)
 			default:
 				down = append(down, sv.Name)
 			}
@@ -912,30 +1240,53 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			parts = append(parts, plural(total, "server")+" up")
 		} else {
 			var why []string
-			if len(down) > 0 {
-				why = append(why, strings.Join(down, ", ")+" down")
-			}
-			if len(unknown) > 0 {
-				why = append(why, strings.Join(unknown, ", ")+" not contacted")
+			for _, g := range []struct {
+				names []string
+				state string
+			}{{down, "down"}, {cert, "certificate changed"}, {unknown, "not contacted"}, {off, "disabled"}} {
+				if len(g.names) > 0 {
+					why = append(why, strings.Join(g.names, ", ")+" "+g.state)
+				}
 			}
 			parts = append(parts, fmt.Sprintf("%d of %d servers up (%s)", up, total, strings.Join(why, ", ")))
 		}
-		pcs, offline := 0, 0
-		for _, d := range snap.Devices() {
-			if d.IsServer {
-				continue
+		if !loaded {
+			// No server answered a full check since the start: the PCs are
+			// not known, which is not "0 PCs".
+			parts = append(parts, "PCs unknown")
+		} else {
+			pcs, offline, unsure := 0, 0, 0
+			for _, d := range snap.Devices() {
+				if d.IsServer {
+					continue
+				}
+				pcs++
+				if d.Connected || (!d.LastSeen.IsZero() && now.Sub(d.LastSeen) <= cfg.Thresholds.PCOffline.D()) {
+					continue
+				}
+				// Offline only when every server that has the PC configured
+				// can say so; else the PC can be connected to one of the others.
+				if allKnown(known, d.SeenBy) {
+					offline++
+				} else {
+					unsure++
+				}
 			}
-			pcs++
-			if !d.Connected && (d.LastSeen.IsZero() || now.Sub(d.LastSeen) > cfg.Thresholds.PCOffline.D()) {
-				offline++
+			pc := fmt.Sprintf("%s, %d offline more than %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D()))
+			if unsure > 0 {
+				pc += fmt.Sprintf(", %d unknown", unsure)
 			}
+			parts = append(parts, pc)
 		}
-		parts = append(parts, fmt.Sprintf("%s, %d offline more than %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
 	}
-	var errs, warns, infos, snoozed int
+	var errs, warns, infos, snoozed, ignored int
 	for _, r := range v.Open {
-		if _, ok := v.Snoozed(r.ID, now); ok {
-			snoozed++
+		if z, ok := v.Snoozed(r.ID, now); ok {
+			if z.Kind == store.IgnoreKind {
+				ignored++
+			} else {
+				snoozed++
+			}
 			continue
 		}
 		switch r.Severity {
@@ -949,7 +1300,20 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 	}
 	parts = append(parts, fmt.Sprintf("ERROR %d · WARNING %d · INFO %d", errs, warns, infos))
 	parts = append(parts, fmt.Sprintf("%d snoozed", snoozed))
+	if ignored > 0 {
+		parts = append(parts, fmt.Sprintf("%d ignored", ignored))
+	}
 	return strings.Join(parts, " · ")
+}
+
+// allKnown reports whether every one of the servers is up and loaded.
+func allKnown(known map[string]bool, ids []string) bool {
+	for _, id := range ids {
+		if !known[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // plural writes a count with its noun: "1 server", "2 servers".
@@ -964,19 +1328,20 @@ func plural(n int, noun string) string {
 func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry, now time.Time) Message {
 	from := now.Add(-7 * 24 * time.Hour)
 	var newL, resL []string
-	nNew, nRes := 0, 0
 	for _, h := range hist {
+		// ERROR and WARNING findings only, and not the snoozed or ignored
+		// ones (as in the overnight summary); the counts are of the lines.
+		if h.Severity < model.Warn {
+			continue
+		}
+		if _, z := v.Snoozed(h.FindingID, now); z {
+			continue
+		}
 		if !h.OpenedAt.Before(from) {
-			nNew++
-			if h.Severity >= model.Warn {
-				newL = append(newL, historyLine(h, false))
-			}
+			newL = append(newL, historyLine(h, false))
 		}
 		if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) {
-			nRes++
-			if h.Severity >= model.Warn {
-				resL = append(resL, historyLine(h, true))
-			}
+			resL = append(resL, historyLine(h, true))
 		}
 	}
 	var top []string
@@ -1005,8 +1370,8 @@ func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry
 	}
 	return Message{Kind: KindWeekly, Title: "📋 Weekly Syncthing report", Summary: summary, Color: color, URL: dashboard(cfg),
 		Sections: []Section{
-			{Title: fmt.Sprintf("New this week (%d)", nNew), Lines: limitLines(newL, 8)},
-			{Title: fmt.Sprintf("Resolved this week (%d)", nRes), Lines: limitLines(resL, 8)},
+			{Title: fmt.Sprintf("New this week (%d)", len(newL)), Lines: limitLines(newL, 8)},
+			{Title: fmt.Sprintf("Resolved this week (%d)", len(resL)), Lines: limitLines(resL, 8)},
 			{Title: "Most important open findings", Lines: top},
 		}}
 }

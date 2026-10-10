@@ -30,6 +30,7 @@ const (
 	ColorWarn     = 0xF29900
 	ColorInfo     = 0x1A73E8
 	ColorResolved = 0x188038
+	ColorNotice   = 0x80868B // grey: a settings notice is not a finding
 )
 
 // Message is one notification, rendered per channel.
@@ -126,10 +127,15 @@ func findingLine(r *store.Record, url string) string {
 	if r.Stale {
 		line += " _(server unreachable, last known state)_"
 	}
-	if url != "" {
-		line += fmt.Sprintf(" — [details](%s/problems#f-%s)", strings.TrimRight(url, "/"), r.ID)
+	return line + detailsLink(url, r.ID)
+}
+
+// detailsLink links a finding on the dashboard's Findings page.
+func detailsLink(url, id string) string {
+	if url == "" {
+		return ""
 	}
-	return line
+	return fmt.Sprintf(" — [details](%s/problems#f-%s)", strings.TrimRight(url, "/"), id)
 }
 
 func resolvedLine(r *store.Record) string {

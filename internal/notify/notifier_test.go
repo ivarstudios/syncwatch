@@ -228,23 +228,42 @@ func TestRetryOnlyResendsToFailedChannels(t *testing.T) {
 }
 
 // A dead webhook is retried at growing intervals, logged once, and reported
-// as failing until a send succeeds.
+// as failing until a send succeeds. A webhook that Discord refuses waits up
+// to 30 minutes (only a new webhook helps, and saving one tries at once); a
+// failure that ends without a change (Discord or the network down) waits
+// at most 5 minutes.
 func TestFailingChannelBacksOff(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
+	// The urgent message is due at 10:05. Tick every minute for an hour.
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		// 10:05, :06, :08, :12, :20 and :36 (back-off 1, 2, 4, 8, 16, 30 min).
+		{&httpError{code: 404, text: "Unknown Webhook"}, 6},
+		// 10:05, :06, :08, :12, then every 5 minutes until 11:02.
+		{&httpError{code: 502}, 14},
+	} {
+		r := newRig(t, start, "AKKA")
+		r.sender.fail(tc.err)
+		r.setDown("AKKA", true)
+		r.at(start)
+		for m := 1; m <= 65; m++ {
+			r.at(start.Add(time.Duration(m) * time.Minute))
+		}
+		r.sender.mu.Lock()
+		attempts := r.sender.attempts
+		r.sender.mu.Unlock()
+		if attempts != tc.want {
+			t.Fatalf("%v: %d attempts in an hour; want %d", tc.err, attempts, tc.want)
+		}
+	}
 	r := newRig(t, start, "AKKA")
-	r.sender.fail(errors.New("discord: HTTP 404: Unknown Webhook"))
+	r.sender.fail(&httpError{code: 404, text: "Unknown Webhook"})
 	r.setDown("AKKA", true)
 	r.at(start)
-	// The urgent message is due at 10:05. Tick every minute for an hour:
-	// attempts at 10:05, :06, :08, :12, :20 and :36 (back-off 1, 2, 4, 8, 16, 30 min).
 	for m := 1; m <= 65; m++ {
 		r.at(start.Add(time.Duration(m) * time.Minute))
-	}
-	r.sender.mu.Lock()
-	attempts := r.sender.attempts
-	r.sender.mu.Unlock()
-	if attempts != 6 {
-		t.Fatalf("%d attempts in an hour; want 6", attempts)
 	}
 	d := r.n.Delivery()
 	if !d.Failing || !d.Since.Equal(local(2026, 10, 6, 10, 5)) || !strings.Contains(d.Error, "404") {
@@ -699,7 +718,8 @@ func queueNoticeTo(t *testing.T, r *rig, title string) {
 }
 
 // A notice Discord rejects for good (HTTP 400) is dropped with one warning
-// instead of blocking every other notification for a day.
+// instead of blocking every other notification for a day. The channel it
+// went to is still the configured one, so it is dropped at once.
 func TestRejectedNoticeIsDropped(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA")
@@ -708,7 +728,11 @@ func TestRejectedNoticeIsDropped(t *testing.T) {
 	r.n.log = slog.New(slog.NewTextHandler(logs, nil))
 	sel := &kindSender{failKind: KindNotice, err: &httpError{code: 400, text: "Invalid Form Body"}}
 	r.n.SetSenders(func() []Sender { return []Sender{sel} })
-	queueNoticeTo(t, r, "Configuration imported")
+	r.n.Notice("Configuration imported", strings.Repeat("x", 100))
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "settings notice") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 	r.setDown("AKKA", true)
 	r.at(start)
 	r.at(local(2026, 10, 6, 10, 5))
@@ -721,13 +745,13 @@ func TestRejectedNoticeIsDropped(t *testing.T) {
 	if d := r.n.Delivery(); d.Failing {
 		t.Fatalf("the rejected notice counts as a failing channel: %+v", d)
 	}
-	if n := strings.Count(logs.String(), "level=WARN"); n != 2 { // once held back, once dropped
-		t.Fatalf("expected two warnings, got %d:\n%s", n, logs.String())
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 || !strings.Contains(logs.String(), "discarded") { // dropped at once
+		t.Fatalf("expected one warning, got %d:\n%s", n, logs.String())
 	}
 	for m := 6; m <= 60; m++ {
 		r.at(start.Add(time.Duration(m) * time.Minute))
 	}
-	if n := sel.tried(KindNotice); n != 2 { // the first attempt and the one retry
+	if n := sel.tried(KindNotice); n != 1 { // the first attempt, no retry
 		t.Fatalf("rejected notice tried %d times", n)
 	}
 }
@@ -970,7 +994,7 @@ func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
 	r.setDown("SOL", true)
 	r.at(start.Add(2 * time.Minute))
 	msgs := r.sender.take()
-	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1 of 2 servers up \(SOL down\)`) { // parentheses escaped for Discord
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1 of 3 servers up \(SOL down, OLD disabled\)`) { // parentheses escaped for Discord
 		t.Fatalf("weekly report once every server reported: %+v", msgs)
 	}
 
