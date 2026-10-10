@@ -821,7 +821,12 @@ func TestOvernightSkipsIgnoredAndSnoozed(t *testing.T) {
 // before its time: an urgent ping at 07:59, or the overnight summary at
 // 07:00.
 func TestReminderSkipsRecentlyAnnounced(t *testing.T) {
-	r := newRig(t, local(2026, 10, 6, 7, 54), "AKKA", "SOL")
+	r := newRig(t, local(2026, 10, 6, 7, 54), "AKKA", "SOL") // Tuesday
+	c := r.n.cfg.Get().Clone()
+	c.Notify.WeeklyDay = "off" // Monday's report would still be caught up
+	if err := r.n.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
 	r.setDown("AKKA", true)
 	r.at(r.now)
 	r.at(local(2026, 10, 6, 7, 59))
