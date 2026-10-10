@@ -299,11 +299,11 @@ func TestFolderHealth(t *testing.T) {
 	if h4.MinDuration != time.Hour {
 		t.Fatalf("H4 for failing files only: min duration %v, want 1h", h4.MinDuration)
 	}
-	w := mustFind(t, fs, "H4", "File watcher failed for LIVE-WATCH")
+	w := mustFind(t, fs, "H4", "The file watcher of folder LIVE-WATCH")
 	if w.MinDuration != time.Hour || w.Severity != model.Warn || w.Urgent {
 		t.Fatalf("a watcher error alone must be a non-urgent warning after 1 h: %+v", w)
 	}
-	mustNot(t, fs, "H4", "Sync stopped for LIVE-WATCH")
+	mustNot(t, fs, "H4", "Folder LIVE-WATCH on AKKA cannot sync")
 	h5 := mustFind(t, fs, "H5", "LIVE-STUCK on AKKA")
 	if h5.MinDuration != 24*time.Hour {
 		t.Fatal("H5 min duration")
@@ -313,7 +313,7 @@ func TestFolderHealth(t *testing.T) {
 	if h6.MinDuration != 72*time.Hour {
 		t.Fatal("H6 min duration")
 	}
-	mustFind(t, fs, "H6", "MORTIS has paused folder LIVE-REMOTE")
+	mustFind(t, fs, "H6", "Device MORTIS paused folder LIVE-REMOTE")
 	mustFind(t, fs, "H10", "2 new sync conflict")
 }
 
@@ -345,16 +345,16 @@ func TestWatcherErrorIsNotUrgent(t *testing.T) {
 	// A folder error next to it is still urgent at once, as its own finding.
 	f.State, f.Error = "error", "folder marker missing"
 	fs = run(t, c, a)
-	stop := mustFind(t, fs, "H4", "Sync stopped for LIVE-W")
+	stop := mustFind(t, fs, "H4", "Folder LIVE-W on A cannot sync")
 	if !stop.Urgent || stop.Severity != model.Error || stop.MinDuration != 0 || strings.Contains(stop.Message, "watcher") {
 		t.Fatalf("folder error with a watcher error: %+v", stop)
 	}
-	if again := mustFind(t, fs, "H4", "File watcher failed"); again.ID == stop.ID || again.Urgent {
+	if again := mustFind(t, fs, "H4", "The file watcher of folder"); again.ID == stop.ID || again.Urgent {
 		t.Fatal("the watcher warning must stay separate and non-urgent")
 	}
 	// Failing files keep their own threshold.
 	f.State, f.Error, f.PullErrors = "idle", "", 2
-	stop = mustFind(t, run(t, c, a), "H4", "Sync stopped for LIVE-W")
+	stop = mustFind(t, run(t, c, a), "H4", "Folder LIVE-W on A cannot sync")
 	if stop.MinDuration != time.Hour || stop.Severity != model.Error || !stop.Urgent {
 		t.Fatalf("failing files with a watcher error: %+v", stop)
 	}
@@ -384,8 +384,8 @@ func TestRemoteStateSurvivesDisconnect(t *testing.T) {
 	mustNot(t, fs, "C3", "")
 	akka.RemoteStates = map[string]map[string]string{"r": {pcID: "paused"}, "d": {pcID: "notSharing"}}
 	fs = run(t, c, akka)
-	mustFind(t, fs, "H6", "MORTIS has paused folder LIVE-REMOTE")
-	mustFind(t, fs, "C3", "LIVE-DEAD is shared with MORTIS, which doesn't share it back")
+	mustFind(t, fs, "H6", "Device MORTIS paused folder LIVE-REMOTE")
+	mustFind(t, fs, "C3", "Folder LIVE-DEAD is shared with MORTIS, which does not share it back")
 	r.Completion[pcID].RemoteState, d.Completion[pcID].RemoteState = "valid", "valid"
 	fs = run(t, c, akka)
 	mustNot(t, fs, "H6", "MORTIS")
@@ -434,7 +434,7 @@ func TestVersionTieBreakIsNumeric(t *testing.T) {
 	akka.Connections[pc2ID] = &model.Connection{Connected: true, ClientVersion: "v2.1.9", Type: "tcp-server"}
 	fs := run(t, c, akka, sol)
 	mustNot(t, fs, "H8", "MORTIS runs")
-	mustFind(t, fs, "H8", "VENUS runs Syncthing v2.1.9; the servers run v2.1.10")
+	mustFind(t, fs, "H8", "VENUS runs Syncthing v2.1.9. The servers run v2.1.10")
 	for _, c := range []struct {
 		a, b string
 		less bool
@@ -529,15 +529,15 @@ func TestCleanup(t *testing.T) {
 	fs := run(t, c, akka, sol)
 	mustFind(t, fs, "C1", "LIVE-OLD")
 	mustNot(t, fs, "C1", "LIVE-NEW")
-	c3 := mustFind(t, fs, "C3", "VENUS, which has never connected to AKKA")
+	c3 := mustFind(t, fs, "C3", "VENUS, which never connected to AKKA")
 	if c3.MinDuration != 30*24*time.Hour {
 		t.Fatal("C3 min duration")
 	}
-	mustFind(t, fs, "C3", "doesn't share it back")
+	mustFind(t, fs, "C3", "does not share it back")
 	// A device no server has ever seen gets C2 alone: not H7 (it was never
 	// online) and not one C3 per folder on top.
 	c2 := mustFind(t, fs, "C2", "NEWPC")
-	if c2.MinDuration != 90*24*time.Hour || !strings.Contains(c2.Message, "has never connected since syncwatch started watching it, over 90 days ago") {
+	if c2.MinDuration != 90*24*time.Hour || !strings.Contains(c2.Message, "never connected after syncwatch started to monitor it more than 90 days ago") {
 		t.Fatalf("C2 never-seen: %v %s", c2.MinDuration, c2.Message)
 	}
 	mustNot(t, fs, "H7", "NEWPC")
@@ -546,7 +546,7 @@ func TestCleanup(t *testing.T) {
 	off := false
 	c.Checks["C2"] = config.Check{Enabled: &off}
 	fs = run(t, c, akka, sol)
-	mustFind(t, fs, "C3", "NEWPC, which has never connected to AKKA")
+	mustFind(t, fs, "C3", "NEWPC, which never connected to AKKA")
 	mustNot(t, fs, "H7", "NEWPC")
 }
 

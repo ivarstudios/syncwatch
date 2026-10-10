@@ -36,7 +36,7 @@ func (e *evaluator) overlaps(sv *model.Server) {
 				if i < j {
 					e.add("S1", sv.ID, "same:"+fa.ID+":"+fb.ID, model.Finding{
 						Subject: fmt.Sprintf("%s and %s on %s", fa.DisplayName(), fb.DisplayName(), sv.Name),
-						Message: fmt.Sprintf("Syncthing folders %s and %s have the same path on %s; files would be synced twice", fa.DisplayName(), fb.DisplayName(), sv.Name),
+						Message: fmt.Sprintf("Syncthing folders %s and %s have the same path on %s. Syncthing syncs the files 2 times", fa.DisplayName(), fb.DisplayName(), sv.Name),
 						Details: []model.Detail{
 							detail("Folder", fa.ID+" — "+fa.Path),
 							detail("Folder", fb.ID+" — "+fb.Path),
@@ -50,7 +50,7 @@ func (e *evaluator) overlaps(sv *model.Server) {
 			}
 			e.add("S1", sv.ID, "overlap:"+fb.ID+":"+fa.ID, model.Finding{
 				Subject: fmt.Sprintf("%s inside %s on %s", fb.DisplayName(), fa.DisplayName(), sv.Name),
-				Message: fmt.Sprintf("Syncthing folder %s is inside folder %s on %s; files would be synced twice", fb.DisplayName(), fa.DisplayName(), sv.Name),
+				Message: fmt.Sprintf("Syncthing folder %s is inside Syncthing folder %s on %s. Syncthing syncs the files 2 times", fb.DisplayName(), fa.DisplayName(), sv.Name),
 				Details: []model.Detail{
 					detail("Inner folder", fb.ID+" — "+fb.Path),
 					detail("Outer folder", fa.ID+" — "+fa.Path),
@@ -73,7 +73,7 @@ func (e *evaluator) shareRoots(sv *model.Server) {
 			}
 			e.add("S2", sv.ID, "share-root:"+f.ID, model.Finding{
 				Subject: fmt.Sprintf("%s on %s", sh.Name, sv.Name),
-				Message: fmt.Sprintf("Share root %s on %s is itself a Syncthing folder (%s); sync project folders individually instead", sh.Name, sv.Name, f.DisplayName()),
+				Message: fmt.Sprintf("Share root %s on %s is a Syncthing folder (%s). Sync each project folder as a separate Syncthing folder", sh.Name, sv.Name, f.DisplayName()),
 				Details: []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path)},
 			})
 			break
@@ -136,7 +136,7 @@ func (e *evaluator) directories(sv *model.Server) {
 			var reasons []dirReason
 			isProject := cs.IsProject(d.Name)
 			if cs.HasProjectPattern() && !isProject {
-				reasons = append(reasons, dirReason{"S4", "name doesn't match the project pattern"})
+				reasons = append(reasons, dirReason{"S4", "name does not match the project pattern"})
 			}
 			if isProject {
 				reasons = append(reasons, e.placement(sh, d)...)
@@ -155,7 +155,7 @@ func (e *evaluator) directories(sv *model.Server) {
 				reasons = append(reasons, dirReason{"S6", "same name also in " + strings.Join(elsewhere, ", ")})
 			}
 			if isProject && len(d.FolderIDs) == 0 {
-				reasons = append(reasons, dirReason{"S7", "not covered by any Syncthing folder"})
+				reasons = append(reasons, dirReason{"S7", "not in any Syncthing folder"})
 			}
 			if len(reasons) == 0 {
 				continue
@@ -176,7 +176,7 @@ func (e *evaluator) placement(sh *model.Share, d *model.Dir) []dirReason {
 	case len(tokens) > 1:
 		out = append(out, dirReason{"S5", "name has more than one type token (" + strings.Join(tokens, ", ") + ")"})
 	case len(tokens) == 1 && shareType != "" && !strings.EqualFold(tokens[0], shareType):
-		out = append(out, dirReason{"S5", fmt.Sprintf("name says %s but the share is %s", tokens[0], shareType)})
+		out = append(out, dirReason{"S5", fmt.Sprintf("type token %s does not match share type %s", tokens[0], shareType)})
 	}
 	if cs.ShareType != nil {
 		for _, p := range cs.Placement {
@@ -186,7 +186,7 @@ func (e *evaluator) placement(sh *model.Share, d *model.Dir) []dirReason {
 			for _, k := range sortedKeys(p.Must) {
 				want := p.Must[k]
 				if !config.AttrSatisfies(sh.Attrs[k], want) {
-					out = append(out, dirReason{"S5", fmt.Sprintf("names matching %s must be in a share where %s is %s", p.Source, k, want)})
+					out = append(out, dirReason{"S5", fmt.Sprintf("names that match %s must be in a share where %s is %s", p.Source, k, want)})
 				}
 			}
 		}
@@ -233,7 +233,7 @@ func (e *evaluator) addDir(sv *model.Server, sh *model.Share, d *model.Dir, reas
 		Category: model.CatStructure,
 		Server:   sv.ID,
 		Subject:  fmt.Sprintf("%s/%s on %s", sh.Name, d.Name, sv.Name),
-		Message:  fmt.Sprintf("%s in %s on %s: %s", d.Name, sh.Name, sv.Name, strings.Join(texts, "; ")),
+		Message:  fmt.Sprintf("Directory %s in share %s on %s: %s", d.Name, sh.Name, sv.Name, strings.Join(texts, " · ")),
 		Details:  details,
 		Link:     e.link(sv.ID),
 		Urgent:   urgent,
