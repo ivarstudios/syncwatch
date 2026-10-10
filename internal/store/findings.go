@@ -151,6 +151,13 @@ func (s *Store) HistoryResolve(id string, at time.Time) error {
 	return err
 }
 
+// HistoryResolveNote closes the open occurrence of a finding and adds a
+// note to its message, e.g. why it was closed without being fixed.
+func (s *Store) HistoryResolveNote(id string, at time.Time, note string) error {
+	_, err := s.db.Exec(`UPDATE history SET resolved_at=?, message=message || ? WHERE finding_id=? AND resolved_at=0`, ms(at), " ("+note+")", id)
+	return err
+}
+
 // HistoryBetween returns occurrences that opened or resolved in [from, to).
 func (s *Store) HistoryBetween(from, to time.Time) ([]HistoryEntry, error) {
 	rows, err := s.db.Query(`SELECT finding_id, check_id, severity, category, server, subject, message, urgent, opened_at, resolved_at

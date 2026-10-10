@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +267,69 @@ func TestRaisedThresholdKeepsOpenFinding(t *testing.T) {
 	}
 	if find(r.at(6*time.Hour), "H6", "LIVE-P") == nil {
 		t.Fatal("a new pause should open after the raised threshold")
+	}
+}
+
+// A server that is removed or disabled in the settings leaves the hub.
+// Its findings can't be judged again and nobody fixed anything, so they
+// are closed quietly: no "resolved" message, and the history says why.
+func TestRemovedServerClosesItsFindingsQuietly(t *testing.T) {
+	r := newRig(t)
+	old := r.now.Add(-10 * 24 * time.Hour)
+	for _, id := range []string{"a", "b"} {
+		r.hub.Update(id, func(s *model.Server) { s.Devices["PC-ID"] = &model.Device{ID: "PC-ID", Name: "PC", LastSeen: old} })
+	}
+	r.hub.Update("b", func(s *model.Server) {
+		s.Folders["f"] = &model.Folder{ID: "f", Label: "LIVE-F", Path: "/s/X/LIVE-F", State: "error", Error: "boom", Completion: map[string]*model.Completion{}}
+	})
+	v := r.at(0)
+	h4, h7 := find(v, "H4", "LIVE-F"), find(v, "H7", "PC")
+	if h4 == nil || h7 == nil {
+		t.Fatalf("expected H4 and H7, got %d findings", len(v.Open))
+	}
+	r.eng.MarkPinged([]string{h4.ID}, r.now)
+	// B goes down (H4 freezes, H1 opens and is pinged), then the admin
+	// removes B from the settings.
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
+	v = r.at(time.Minute)
+	h1 := find(v, "H1", "B")
+	if h1 == nil || find(v, "H4", "LIVE-F") == nil {
+		t.Fatalf("expected H1 and a frozen H4, got %d findings", len(v.Open))
+	}
+	r.eng.MarkPinged([]string{h1.ID}, r.now)
+	r.hub.SetServers([]*model.Server{{ID: "a", Name: "A", PathSep: "/"}})
+	v = r.at(time.Minute)
+	if find(v, "H1", "B") != nil || find(v, "H4", "LIVE-F") != nil {
+		t.Fatalf("B's findings should be closed, got %d findings", len(v.Open))
+	}
+	if g := find(v, "H7", "PC"); g == nil || len(g.Related) != 1 || g.Related[0] != "a" {
+		t.Fatalf("H7 should carry on with the remaining server: %+v", g)
+	}
+	if pend, _ := r.st.PendingResolved(); len(pend) != 0 {
+		t.Fatalf("no 'resolved' message is due for a removed server, got %d", len(pend))
+	}
+	hist, _ := r.st.HistoryBetween(r.now.Add(-time.Hour), r.now.Add(time.Hour))
+	closed := 0
+	for _, h := range hist {
+		if h.Server == "b" {
+			if h.ResolvedAt.IsZero() || !strings.Contains(h.Message, "server removed or disabled") {
+				t.Fatalf("history entry not closed with a note: %+v", h)
+			}
+			closed++
+		}
+	}
+	if closed != 2 {
+		t.Fatalf("expected 2 closed entries for B, got %d", closed)
+	}
+	// Removing the last server that sees the PC closes H7 the same way.
+	r.hub.SetServers(nil)
+	if v = r.at(time.Minute); len(v.Open) != 0 {
+		t.Fatalf("expected everything closed, got %+v", v.Open[0])
+	}
+	if pend, _ := r.st.PendingResolved(); len(pend) != 0 {
+		t.Fatal("no 'resolved' message is due")
+	}
+	if obs, _ := r.st.Observations(); len(obs) != 0 {
+		t.Fatalf("observations of removed servers should be dropped: %v", obs)
 	}
 }

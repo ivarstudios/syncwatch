@@ -213,6 +213,36 @@ func (z *freezer) anyStale(ids []string) bool {
 	return false
 }
 
+// gone reports whether the servers a finding depends on have left the
+// configuration (removed or disabled): it can't be judged again, and there
+// is nobody to report it resolved either.
+func (z *freezer) gone(f model.Finding) bool {
+	if f.Server != "" && !z.present[f.Server] {
+		return true
+	}
+	return len(f.Related) > 0 && !z.anyPresent(f.Related)
+}
+
+// keepObservation reports whether a condition that is no longer produced
+// keeps its timer: while the servers it depends on can't be judged (the
+// open record's rule, else all of its servers stale), unless they have
+// left the configuration.
+func (z *freezer) keepObservation(rec *store.Record, o store.Observation) bool {
+	if rec != nil {
+		return !z.gone(rec.Finding) && z.frozen(rec.Finding)
+	}
+	return z.anyPresent(o.Servers) && z.allStale(o.Servers)
+}
+
+func (z *freezer) anyPresent(ids []string) bool {
+	for _, id := range ids {
+		if z.present[id] {
+			return true
+		}
+	}
+	return false
+}
+
 // structureCheck reports whether a check needs the structure scan (S3 and
 // the per-directory checks S4–S7).
 func structureCheck(check string) bool {
@@ -311,10 +341,7 @@ func (e *Engine) Evaluate() {
 		if produced[id] {
 			continue
 		}
-		// An observation with an open record follows it; one without is
-		// kept while the servers it depends on are all unreachable.
-		rec := e.open[id]
-		if (rec != nil && z.frozen(rec.Finding)) || (rec == nil && z.allStale(o.Servers)) {
+		if z.keepObservation(e.open[id], o) {
 			continue
 		}
 		delete(e.obs, id)
@@ -356,6 +383,20 @@ func (e *Engine) Evaluate() {
 	}
 	for id, rec := range e.open {
 		if _, ok := current[id]; ok {
+			continue
+		}
+		if z.gone(rec.Finding) {
+			// The server was removed or disabled in the settings: close the
+			// finding quietly, a "resolved" message would be misleading.
+			rec.ResolvedAt, rec.LastSeen, rec.ResolvedNotifiedAt = now, now, now
+			e.save(rec)
+			if err := e.st.HistoryResolveNote(id, now, "server removed or disabled"); err != nil {
+				e.log.Warn("writing history", "err", err)
+			}
+			delete(e.open, id)
+			delete(e.persisted, id)
+			changed = true
+			e.log.Info("finding closed", "reason", "server removed or disabled", "check", rec.Check, "subject", rec.Subject, "id", id)
 			continue
 		}
 		if z.frozen(rec.Finding) {
