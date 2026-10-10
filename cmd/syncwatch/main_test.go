@@ -1,6 +1,28 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+// The gate has its own listen variable, so a gate container doesn't inherit
+// the image's SYNCWATCH_LISTEN=:8080 meant for serve.
+func TestGateListen(t *testing.T) {
+	t.Setenv("SYNCWATCH_LISTEN", ":8080")
+	t.Setenv("SYNCWATCH_GATE_LISTEN", "")
+	t.Setenv("SYNCWATCH_GATE_BROWSE_ROOTS", "")
+	if o, _ := gateOptions(nil); o.Listen != "127.0.0.1:8385" || o.BrowseRoots != nil {
+		t.Fatalf("defaults: listen %q, browse roots %q", o.Listen, o.BrowseRoots)
+	}
+	t.Setenv("SYNCWATCH_GATE_LISTEN", ":8385")
+	t.Setenv("SYNCWATCH_GATE_BROWSE_ROOTS", "/srv/extra, D:\\Extra")
+	if o, _ := gateOptions(nil); o.Listen != ":8385" || !slices.Equal(o.BrowseRoots, []string{"/srv/extra", `D:\Extra`}) {
+		t.Fatalf("from env: listen %q, browse roots %q", o.Listen, o.BrowseRoots)
+	}
+	if o, level := gateOptions([]string{"--listen", "192.0.2.1:9", "--log-level", "debug"}); o.Listen != "192.0.2.1:9" || level != "debug" {
+		t.Fatalf("from flags: listen %q, level %q", o.Listen, level)
+	}
+}
 
 func TestHealthURL(t *testing.T) {
 	cases := []struct {

@@ -21,19 +21,20 @@ import (
 
 // GateOptions configure `syncwatch gate`.
 type GateOptions struct {
-	DataDir    string // the gate's own token, certificate and Syncthing pin
-	Listen     string
-	Syncthing  string // Syncthing's GUI/API URL, seen from the gate
-	KeyFile    string // a file holding Syncthing's API key
-	Key        string // or the key itself
-	ConfigXML  string // or Syncthing's config.xml, to read the key from
-	Token      string // the token syncwatch presents; default: <data>/gate-token
-	TLSCert    string
-	TLSKey     string
-	TLSHosts   []string
-	Log        *slog.Logger
-	OnListen   func(addr string) // for tests
-	TokenReady func(tok string)  // for tests
+	DataDir     string // the gate's own token, certificate and Syncthing pin
+	Listen      string
+	Syncthing   string   // Syncthing's GUI/API URL, seen from the gate
+	KeyFile     string   // a file holding Syncthing's API key
+	Key         string   // or the key itself
+	ConfigXML   string   // or Syncthing's config.xml, to read the key from
+	Token       string   // the token syncwatch presents; default: <data>/gate-token
+	BrowseRoots []string // directories the token may list besides the parents of Syncthing's folders
+	TLSCert     string
+	TLSKey      string
+	TLSHosts    []string
+	Log         *slog.Logger
+	OnListen    func(addr string) // for tests
+	TokenReady  func(tok string)  // for tests
 }
 
 // RunGate serves the read-only gate until ctx is cancelled.
@@ -61,9 +62,13 @@ func RunGate(ctx context.Context, o GateOptions) error {
 	pin := ""
 	if b, err := os.ReadFile(pinFile); err == nil {
 		pin = strings.TrimSpace(string(b))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		// Only a missing file means first use. Starting without the pin
+		// would trust whatever answers as Syncthing.
+		return fmt.Errorf("reading Syncthing's certificate pin: %w", err)
 	}
 	g, err := gate.New(gate.Options{
-		Syncthing: o.Syncthing, APIKey: key, Token: tok, Pin: pin, Log: log,
+		Syncthing: o.Syncthing, APIKey: key, Token: tok, Pin: pin, BrowseRoots: o.BrowseRoots, Log: log,
 		OnPin: func(fp string) {
 			if err := os.WriteFile(pinFile, []byte(fp+"\n"), 0o600); err != nil {
 				log.Error("saving Syncthing's certificate pin", "err", err)
@@ -90,6 +95,7 @@ func RunGate(ctx context.Context, o GateOptions) error {
 		TLSConfig:         tc,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 		// No write timeout: event long-polls stay open for minutes.
 	}
 	errc := make(chan error, 1)

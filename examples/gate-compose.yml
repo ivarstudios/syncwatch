@@ -6,7 +6,7 @@
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data
 #    chown 1000:1000 /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data
 #    (the user: line below; it must also be able to read config.xml).
-# 2. Adjust the two paths, the user and the LAN address below.
+# 2. Adjust the two paths, the user and the LAN address (three lines) below.
 # 3. docker compose up -d. `docker logs syncwatch-gate` shows the gate token
 #    once (it is also in data/gate-token).
 # 4. In syncwatch, Settings → Servers → SOL: URL https://192.168.2.10:8385
@@ -30,10 +30,15 @@ services:
     # GUI on 127.0.0.1 (trusted: same machine).
     network_mode: host
     environment:
-      - SYNCWATCH_LISTEN=192.168.2.10:8385            # the NAS's LAN address
+      - SYNCWATCH_GATE_LISTEN=192.168.2.10:8385       # the NAS's LAN address
       - SYNCWATCH_TLS_HOSTS=192.168.2.10
+      - SYNCWATCH_HEALTHCHECK_URL=https://192.168.2.10:8385/healthz   # the image's healthcheck
       - SYNCWATCH_GATE_SYNCTHING=https://127.0.0.1:8384
       - SYNCWATCH_GATE_SYNCTHING_CONFIG=/syncthing/config.xml
+      # The structure scan may list the parents of Syncthing's folders and
+      # what is under them. Directories added with shares.add in syncwatch
+      # that lie elsewhere go here, comma-separated:
+      # - SYNCWATCH_GATE_BROWSE_ROOTS=/share/CACHEDEV1_DATA/Extra
     volumes:
       - /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data:/data
       # Syncthing's own config.xml, read-only: the gate reads the API key

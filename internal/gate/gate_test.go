@@ -9,12 +9,16 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,30 +34,61 @@ const (
 
 // fakeSyncthing answers the allowlisted endpoints and records what it got.
 type fakeSyncthing struct {
-	mu   sync.Mutex
-	reqs []*http.Request
+	mu      sync.Mutex
+	reqs    []*http.Request
+	sep     string        // pathSeparator in /rest/system/status; "/" when empty
+	folders []string      // folder paths in /rest/config/folders; /s/LIVE-F when nil
+	down    bool          // answer 500 to everything
+	delay   time.Duration // wait this long before answering version and events
 }
 
 func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, r.Clone(context.Background()))
+	sep, folders, down, delay := f.sep, f.folders, f.down, f.delay
 	f.mu.Unlock()
 	if r.URL.Path != "/rest/noauth/health" && r.Header.Get("X-API-Key") != realKey {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
+	}
+	if down {
+		http.Error(w, "down", http.StatusInternalServerError)
+		return
+	}
+	if r.URL.Path == "/rest/system/version" || r.URL.Path == "/rest/events" {
+		time.Sleep(delay)
+	}
+	if sep == "" {
+		sep = "/"
+	}
+	if folders == nil {
+		folders = []string{"/s/LIVE-F"}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/rest/noauth/health":
 		_, _ = w.Write([]byte(`{"status":"OK"}`))
 	case "/rest/system/status":
-		_, _ = w.Write([]byte(`{"myID":"AAAA","startTime":"2026-10-04T10:00:00Z","pathSeparator":"/"}`))
+		s, _ := json.Marshal(sep)
+		_, _ = w.Write([]byte(`{"myID":"AAAA","startTime":"2026-10-04T10:00:00Z","pathSeparator":` + string(s) + `}`))
 	case "/rest/events":
 		_, _ = w.Write([]byte(`[{"id":1,"type":"StateChanged","time":"2026-10-04T10:00:00Z","data":{"folder":"f","from":"idle","to":"scanning"}},
 			{"id":2,"type":"ConfigSaved","time":"2026-10-04T10:00:01Z","data":{"gui":{"apiKey":"` + realKey + `","password":"$2a$hash"}}}]`))
 	case "/rest/config/folders":
-		_, _ = w.Write([]byte(`[{"id":"f","label":"LIVE-F","path":"/s/LIVE-F","rescanIntervalS":3600,
-			"devices":[{"deviceID":"AAAA","encryptionPassword":""},{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]}]`))
+		// The first folder carries the devices, one with a secret.
+		var out []string
+		for i, p := range folders {
+			s, _ := json.Marshal(p)
+			f := `{"id":"f` + strconv.Itoa(i) + `","label":"LIVE-F","path":` + string(s) + `,"rescanIntervalS":3600`
+			if i == 0 {
+				f += `,"devices":[{"deviceID":"AAAA","encryptionPassword":""},{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]`
+			}
+			out = append(out, f+"}")
+		}
+		_, _ = w.Write([]byte("[" + strings.Join(out, ",") + "]"))
+	case "/rest/system/browse":
+		s, _ := json.Marshal(r.URL.Query().Get("current") + "sub")
+		_, _ = w.Write([]byte("[" + string(s) + "]"))
 	case "/rest/system/shutdown", "/rest/config":
 		t := "must never be reached"
 		_, _ = w.Write([]byte(`{"error":"` + t + `"}`))
@@ -62,10 +97,30 @@ func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// set changes the path separator and folder list Syncthing reports.
+func (f *fakeSyncthing) set(sep string, folders []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sep, f.folders = sep, folders
+}
+
 func (f *fakeSyncthing) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.reqs)
+}
+
+// countPath counts the requests for one path.
+func (f *fakeSyncthing) countPath(path string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.reqs {
+		if r.URL.Path == path {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeSyncthing) last() *http.Request {
@@ -146,8 +201,8 @@ func TestGateToken(t *testing.T) {
 	if k := st.last().Header.Get("X-API-Key"); k != realKey {
 		t.Fatalf("Syncthing got key %q", k)
 	}
-	// Health needs no token and gets no key.
-	if code, _ := get(t, gs, http.MethodGet, "/rest/noauth/health", ""); code != 200 || st.last().Header.Get("X-API-Key") != "" {
+	// Syncthing's health needs the token too, but Syncthing gets no key for it.
+	if code, _ := get(t, gs, http.MethodGet, "/rest/noauth/health", token); code != 200 || st.last().Header.Get("X-API-Key") != "" {
 		t.Fatalf("health: %d, key sent %q", code, st.last().Header.Get("X-API-Key"))
 	}
 	// The gate's own health answer, for the container healthcheck.
@@ -156,9 +211,36 @@ func TestGateToken(t *testing.T) {
 	}
 }
 
+// Without the token every answer is the same 403, so the allowlist, the
+// methods and Syncthing's health can't be probed; only /healthz is open.
+func TestGateTokenBeforePath(t *testing.T) {
+	st, _, gs := setup(t)
+	for _, c := range []struct{ method, path, tok string }{
+		{http.MethodGet, "/rest/system/status", ""},
+		{http.MethodGet, "/rest/config", ""},
+		{http.MethodGet, "/nothing", ""},
+		{http.MethodPost, "/rest/system/status", ""},
+		{http.MethodPost, "/healthz", ""},
+		{http.MethodGet, "/rest/noauth/health", ""},
+		{http.MethodGet, "/rest/noauth/health", "wrong"},
+		{http.MethodGet, "/rest/system/status?x=1", realKey},
+	} {
+		if code, _ := get(t, gs, c.method, c.path, c.tok); code != http.StatusForbidden {
+			t.Errorf("%s %s token %q: %d, want 403", c.method, c.path, c.tok, code)
+		}
+	}
+	if st.count() != 0 {
+		t.Fatal("a request without the gate token reached Syncthing")
+	}
+	if code, body := get(t, gs, http.MethodGet, "/healthz", ""); code != 200 || body != "ok\n" {
+		t.Fatalf("healthz: %d %q", code, body)
+	}
+}
+
 func TestGateRemovesSecrets(t *testing.T) {
 	st, _, gs := setup(t)
-	code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1&events=StateChanged,ConfigSaved", token)
+	mask := strings.Join(stclient.EventMask, ",")
+	code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1&events="+mask, token)
 	if code != 200 || strings.Contains(body, realKey) || strings.Contains(body, "hash") {
 		t.Fatalf("events: %d %s", code, body)
 	}
@@ -166,8 +248,8 @@ func TestGateRemovesSecrets(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &evs); err != nil || len(evs) != 2 || evs[0]["data"] == nil || evs[1]["data"] != nil {
 		t.Fatalf("events after cleaning: %v %s", err, body)
 	}
-	if q := st.last().URL.RawQuery; q != "since=0&timeout=1&events=StateChanged,ConfigSaved" && q != "since=0&timeout=1&events=StateChanged%2CConfigSaved" {
-		t.Fatalf("query not passed on: %q", q)
+	if q := st.last().URL.Query(); q.Get("since") != "0" || q.Get("timeout") != "1" || q.Get("events") != mask || len(q) != 3 {
+		t.Fatalf("query not passed on: %q", st.last().URL.RawQuery)
 	}
 	code, body = get(t, gs, http.MethodGet, "/rest/config/folders", token)
 	if code != 200 || strings.Contains(body, "untrusted-secret") || strings.Contains(body, "encryptionPassword") {
@@ -175,6 +257,336 @@ func TestGateRemovesSecrets(t *testing.T) {
 	}
 	if !strings.Contains(body, `"rescanIntervalS":3600`) || !strings.Contains(body, `"deviceID":"BBBB"`) {
 		t.Fatalf("folders lost other fields: %s", body)
+	}
+}
+
+// Only the parameters syncwatch's client sends pass, with the values it
+// sends; everything else is a 400 that never reaches Syncthing.
+func TestGateQueryAllowlist(t *testing.T) {
+	st, _, gs := setup(t)
+	mask := strings.Join(stclient.EventMask, ",")
+	passed := 0
+	for _, c := range []struct {
+		path string
+		want int
+	}{
+		{"/rest/system/status", 200},
+		{"/rest/system/status?", 200},
+		{"/rest/system/status?folder=f", 400},
+		{"/rest/system/version?x", 400},
+		{"/metrics?x=1", 400},
+		{"/rest/noauth/health?x=1", 400},
+		{"/rest/db/status?folder=f", 200},
+		{"/rest/db/status?folder=f&folder=g", 400},
+		{"/rest/db/status?folder=f&device=D", 400},
+		{"/rest/db/completion?folder=f&device=D", 200},
+		{"/rest/db/completion?folder=f&device=D&x=", 400},
+		{"/rest/folder/errors?folder=f&page=1&perpage=5", 200},
+		{"/rest/folder/errors?folder=f&page=0&perpage=5", 400},
+		{"/rest/folder/errors?folder=f&page=1&perpage=x", 400},
+		{"/rest/events", 200},
+		{"/rest/events?since=0&timeout=1&events=" + mask, 200},
+		{"/rest/events?since=7&timeout=600", 200},
+		{"/rest/events?timeout=601", 400},
+		{"/rest/events?timeout=-1", 400},
+		{"/rest/events?timeout=1s", 400},
+		{"/rest/events?since=x", 400},
+		{"/rest/events?since=-1", 400},
+		{"/rest/events?limit=5", 400},
+		{"/rest/events?events=StartupComplete", 400},
+		{"/rest/events?events=StateChanged,ConfigSaved", 400},
+		{"/rest/events?events=" + mask + ",LoginAttempt", 400},
+		{"/rest/events?events=" + mask + ",", 400},
+		{"/rest/events?events=" + mask + "&events=" + mask, 400},
+		{"/rest/system/status?%zz", 400},
+		{"/rest/system/status?a;b", 400},
+	} {
+		code, body := get(t, gs, http.MethodGet, c.path, token)
+		if code != c.want {
+			t.Errorf("%s: %d %s, want %d", c.path, code, strings.TrimSpace(body), c.want)
+		}
+		if code == 200 {
+			passed++
+		} else if !strings.HasPrefix(body, "syncwatch gate: query not allowed: ") {
+			t.Errorf("%s: body %q", c.path, body)
+		}
+	}
+	if n := st.count(); n != passed {
+		t.Fatalf("%d requests reached Syncthing, %d passed", n, passed)
+	}
+	// The mask may come in any order; what was checked is what is sent.
+	rev := slices.Clone(stclient.EventMask)
+	slices.Reverse(rev)
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?events="+strings.Join(rev, ",")+"&since=3", token); code != 200 {
+		t.Fatalf("reversed mask: %d", code)
+	}
+	if q := st.last().URL.Query(); q.Get("events") != strings.Join(rev, ",") || q.Get("since") != "3" || len(q) != 2 {
+		t.Fatalf("forwarded query %q", st.last().URL.RawQuery)
+	}
+}
+
+// browse lists only directories under the parents of Syncthing's folders
+// and under the extra roots; the path is cleaned before it is checked and
+// the cleaned path is what Syncthing gets.
+func TestGateBrowseRoots(t *testing.T) {
+	st, g, gs := setup(t)
+	st.set("/", []string{"/s/LIVE-F", "/srv/data/x", "/top", "rel", "~/Sync", "/"})
+	g.o.BrowseRoots = []string{"/extra", " "}
+	type tc struct {
+		current, fwd string
+		want         int
+	}
+	run := func(cases []tc) {
+		t.Helper()
+		for _, c := range cases {
+			reached := st.countPath("/rest/system/browse")
+			code, body := get(t, gs, http.MethodGet, "/rest/system/browse?current="+url.QueryEscape(c.current), token)
+			if code != c.want {
+				t.Errorf("current=%q: %d %s, want %d", c.current, code, strings.TrimSpace(body), c.want)
+				continue
+			}
+			if c.want != 200 {
+				if st.countPath("/rest/system/browse") != reached {
+					t.Errorf("current=%q: refused but reached Syncthing", c.current)
+				}
+				continue
+			}
+			if got := st.last().URL.Query().Get("current"); got != c.fwd {
+				t.Errorf("current=%q: Syncthing got %q, want %q", c.current, got, c.fwd)
+			}
+			if !strings.Contains(body, "sub") {
+				t.Errorf("current=%q: answer %q", c.current, body)
+			}
+		}
+	}
+	run([]tc{
+		{"/s/", "/s/", 200},
+		{"/s/LIVE-F/", "/s/LIVE-F/", 200},
+		{"/s/LIVE-F/deep/er/", "/s/LIVE-F/deep/er/", 200},
+		{"/s//LIVE-F//", "/s/LIVE-F/", 200},
+		{"/s/./LIVE-F/../LIVE-G/", "/s/LIVE-G/", 200},
+		{"/srv/data/", "/srv/data/", 200},
+		{"/extra/", "/extra/", 200},
+		{"/extra/a/", "/extra/a/", 200},
+		{"~/", "~/", 200},
+		{"~/x/", "~/x/", 200},
+		{"~/../~/x/", "~/x/", 200},
+		{`/s/a\b/`, `/s/a\b/`, 200}, // a backslash is an ordinary character here
+		{"/", "", 403},
+		{"//", "", 403},
+		{"/s/../", "", 403},
+		{"/s/LIVE-F/../../etc/", "", 403},
+		{"/s/LIVE-F/../../../", "", 403},
+		{"/srv/", "", 403},
+		{"/S/", "", 403},
+		{"/top/", "", 403}, // a folder directly under /: its parent is never listed
+		{"/extra2/", "", 403},
+		{`/s\..\..\`, "", 403}, // ends with a separator only on Windows
+		{"rel/", "", 403},
+		{"./", "", 403},
+		{"../s/", "", 403},
+		{"~", "", 400},
+		{"/s", "", 400},
+		{"/s/LIVE", "", 400},
+		{"", "", 400},
+	})
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/browse", token); code != 400 {
+		t.Errorf("no current: %d", code)
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/&filesystem=fake", token); code != 400 {
+		t.Errorf("filesystem parameter: %d", code)
+	}
+
+	// A Windows Syncthing: both separators, no case, drives and UNC paths.
+	st, g, gs = setup(t)
+	st.set(`\`, []string{`D:\Shares\LIVE-F`, `\\nas\share\x`, `C:\`, `E:\Sync\`})
+	g.o.BrowseRoots = []string{`F:/extra`}
+	run([]tc{
+		{`D:\Shares\`, `D:\Shares\`, 200},
+		{`d:/shares/live-f/`, `d:\shares\live-f\`, 200},
+		{`D:\Shares\LIVE-F\sub/`, `D:\Shares\LIVE-F\sub\`, 200},
+		{`D:\Shares\..\Shares\.\LIVE-G\`, `D:\Shares\LIVE-G\`, 200},
+		{`\\nas\share\`, `\\nas\share\`, 200},
+		{`//nas/share/x/y/`, `\\nas\share\x\y\`, 200},
+		{`C:\anything\at\all\`, `C:\anything\at\all\`, 200}, // the folder is the drive root
+		{`E:\`, `E:\`, 200},
+		{`F:\extra\sub\`, `F:\extra\sub\`, 200},
+		{`D:\`, "", 403},
+		{`D:\Shares\..\`, "", 403},
+		{`D:\Shares\LIVE-F\..\..\Private\`, "", 403},
+		{`D:\Shares2\`, "", 403},
+		{`\\nas\`, "", 403},
+		{`\\nas\other\`, "", 403},
+		{`\\?\D:\Shares\`, "", 403},
+		{`D:Shares\`, "", 403},
+		{`\Shares\`, "", 403},
+		{`/Shares/`, "", 403},
+		{`~\`, "", 403},
+		{`D:\Shares`, "", 400},
+	})
+}
+
+// The folder list is read on the first browse request and again after ten
+// minutes, or after one minute when a directory isn't under it.
+func TestGateBrowseRootsRefresh(t *testing.T) {
+	st, g, gs := setup(t)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	browse := func(dir string) int {
+		t.Helper()
+		code, _ := get(t, gs, http.MethodGet, "/rest/system/browse?current="+url.QueryEscape(dir), token)
+		return code
+	}
+	reads := func() int { return st.countPath("/rest/config/folders") }
+	if code := browse("/s/"); code != 200 || reads() != 1 {
+		t.Fatalf("first browse: %d, folder list read %d times", code, reads())
+	}
+	st.set("/", []string{"/s/LIVE-F", "/t/X"})
+	if code := browse("/t/"); code != 403 || reads() != 1 {
+		t.Fatalf("new folder within a minute: %d, reads %d", code, reads())
+	}
+	now = now.Add(61 * time.Second)
+	if code := browse("/t/"); code != 200 || reads() != 2 {
+		t.Fatalf("new folder after a minute: %d, reads %d", code, reads())
+	}
+	now = now.Add(5 * time.Minute)
+	if code := browse("/s/"); code != 200 || reads() != 2 {
+		t.Fatalf("within ten minutes: %d, reads %d", code, reads())
+	}
+	now = now.Add(5 * time.Minute)
+	if code := browse("/s/"); code != 200 || reads() != 3 {
+		t.Fatalf("after ten minutes: %d, reads %d", code, reads())
+	}
+	// Misses don't make it read the list more than once a minute.
+	for i := 0; i < 3; i++ {
+		if code := browse("/nowhere/"); code != 403 {
+			t.Fatalf("miss: %d", code)
+		}
+	}
+	if reads() != 3 {
+		t.Fatalf("misses read the list %d times", reads()-3)
+	}
+}
+
+// While Syncthing's folder list can't be read, browse answers 502 (not
+// 403, not a listing); the read is retried after a while.
+func TestGateBrowseWithoutFolderList(t *testing.T) {
+	st, g, gs := setup(t)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	st.down = true
+	for i := 0; i < 2; i++ {
+		code, body := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/", token)
+		if code != http.StatusBadGateway || !strings.Contains(body, "folder list") {
+			t.Fatalf("down: %d %s", code, body)
+		}
+	}
+	if n := st.countPath("/rest/system/status"); n != 1 {
+		t.Fatalf("read attempts within the retry wait: %d", n)
+	}
+	st.mu.Lock()
+	st.down = false
+	st.mu.Unlock()
+	now = now.Add(31 * time.Second)
+	if code, _ := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/", token); code != 200 {
+		t.Fatalf("after Syncthing came back: %d", code)
+	}
+	if st.countPath("/rest/system/browse") != 1 {
+		t.Fatal("a browse reached Syncthing while its folder list was unknown")
+	}
+}
+
+// syncBuffer is a log sink the gate's goroutines write to while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Refused requests are logged once a minute per client and reason, with
+// the number of refusals since the last line, so a scanner can't fill the log.
+func TestGateLogsRefusalsOnceAMinute(t *testing.T) {
+	up := httptest.NewTLSServer(&fakeSyncthing{})
+	defer up.Close()
+	var logs syncBuffer
+	g, err := New(Options{Syncthing: up.URL, APIKey: realKey, Token: token, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	refused := func(path, tok string, want int) {
+		t.Helper()
+		if code, _ := get(t, gs, http.MethodGet, path, tok); code != want {
+			t.Fatalf("%s: %d, want %d", path, code, want)
+		}
+	}
+	for i := 0; i < 50; i++ {
+		refused("/rest/system/status", "", http.StatusForbidden)
+	}
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 1 || !strings.Contains(logs.String(), "count=1") {
+		t.Fatalf("50 refusals in a minute gave %d log lines:\n%s", n, logs.String())
+	}
+	// Another reason from the same client has its own line.
+	for i := 0; i < 5; i++ {
+		refused("/rest/config", token, http.StatusNotFound)
+		refused("/rest/system/status?x=1", token, http.StatusBadRequest)
+	}
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 3 {
+		t.Fatalf("two more reasons gave %d lines in all:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), `detail="parameter \"x\" not allowed"`) {
+		t.Fatalf("the first refusal's detail isn't logged:\n%s", logs.String())
+	}
+	// A minute later the next refusal is logged, with everything since counted.
+	now = now.Add(61 * time.Second)
+	refused("/rest/system/status", "", http.StatusForbidden)
+	if n := strings.Count(logs.String(), "gate refused a request"); n != 4 || !strings.Contains(logs.String(), "count=50") {
+		t.Fatalf("after a minute: %d lines, want 4 with count=50:\n%s", n, logs.String())
+	}
+}
+
+// Syncthing gets a dial and a response header timeout, except for event
+// long-polls, which may take their own timeout plus a margin.
+func TestGateUpstreamTimeouts(t *testing.T) {
+	st, g, gs := setup(t)
+	tr, trLong := g.hc.Transport.(*http.Transport), g.hcLong.Transport.(*http.Transport)
+	if tr.ResponseHeaderTimeout != 60*time.Second || trLong.ResponseHeaderTimeout != 0 || tr.DialContext == nil || trLong.DialContext == nil {
+		t.Fatalf("transports: header timeouts %v and %v, dialers %v %v", tr.ResponseHeaderTimeout, trLong.ResponseHeaderTimeout, tr.DialContext != nil, trLong.DialContext != nil)
+	}
+	for in, want := range map[string]time.Duration{"": 90 * time.Second, "0": 30 * time.Second, "600": 630 * time.Second, "100000": 11 * time.Minute} {
+		if got := eventsWait(in); got != want {
+			t.Errorf("eventsWait(%q) = %v, want %v", in, got, want)
+		}
+	}
+	// Shortened so the test is quick: a slow answer is a 502, a long-poll
+	// within its timeout plus the margin isn't.
+	tr.ResponseHeaderTimeout = 200 * time.Millisecond
+	defer func(d time.Duration) { eventsExtra = d }(eventsExtra)
+	eventsExtra = 200 * time.Millisecond
+	st.delay = 600 * time.Millisecond
+	start := time.Now()
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/version", token); code != http.StatusBadGateway || time.Since(start) > 500*time.Millisecond {
+		t.Fatalf("slow Syncthing: %d %s after %v", code, strings.TrimSpace(body), time.Since(start))
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=0", token); code != http.StatusBadGateway {
+		t.Fatalf("long-poll over its timeout plus the margin: %d", code)
+	}
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=1", token); code != 200 {
+		t.Fatalf("long-poll within its timeout: %d", code)
 	}
 }
 
@@ -186,6 +598,11 @@ func TestClientThroughGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
+	// The gate wants its token on /rest/noauth/health too (fixer b); the
+	// client sends the key there like everywhere else (fixer a).
+	if err := cl.Health(ctx); err != nil {
+		t.Fatalf("health through the gate: %v", err)
+	}
 	if st, err := cl.SystemStatus(ctx); err != nil || st.MyID != "AAAA" {
 		t.Fatalf("status: %+v %v", st, err)
 	}
@@ -196,9 +613,6 @@ func TestClientThroughGate(t *testing.T) {
 	evs, err := cl.Events(ctx, 0, time.Second, stclient.EventMask)
 	if err != nil || len(evs) != 2 {
 		t.Fatalf("events: %v %v", evs, err)
-	}
-	if err := cl.Health(ctx); err != nil {
-		t.Fatal(err)
 	}
 	if cl.LastCert().Fingerprint == "" {
 		t.Fatal("the client didn't see the gate's certificate")
@@ -225,6 +639,37 @@ func TestGatePinsSyncthing(t *testing.T) {
 	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
 	if code != http.StatusBadGateway || !strings.Contains(body, "certificate changed") {
 		t.Fatalf("changed certificate: %d %s", code, body)
+	}
+}
+
+// A 502 body stays under 150 bytes (syncwatch's client keeps 200) and, when
+// Syncthing's certificate changed, says what to do.
+func TestGate502IsShort(t *testing.T) {
+	_, g, gs := setup(t)
+	g.loopback = false
+	g.pin = strings.Repeat("ab", 32) // not the upstream's certificate
+	const hint = "syncwatch gate: Syncthing's certificate changed; delete syncthing.pin in the gate's data dir and restart the gate\n"
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", token); code != http.StatusBadGateway || body != hint {
+		t.Fatalf("changed certificate: %d %q", code, body)
+	}
+	// Also when it is the gate's own read of the folder list that fails.
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/", token); code != http.StatusBadGateway || body != hint {
+		t.Fatalf("changed certificate on browse: %d %q", code, body)
+	}
+	// Syncthing down: short, and still says what happened.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.base.Host = ln.Addr().String()
+	ln.Close()
+	g.hc.CloseIdleConnections()
+	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
+	if code != http.StatusBadGateway || len(body) > 150 || !strings.HasPrefix(body, "syncwatch gate: Syncthing can't be reached: ") {
+		t.Fatalf("down: %d %q (%d bytes)", code, body, len(body))
+	}
+	if s := cleanErr(errors.New(strings.Repeat("x", 300))); len(s) != maxErrText {
+		t.Fatalf("a long error is cut to %d bytes", len(s))
 	}
 }
 

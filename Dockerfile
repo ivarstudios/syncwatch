@@ -29,8 +29,10 @@ COPY --from=build /out/syncwatch /usr/local/bin/syncwatch
 COPY --from=build --chown=65532:65532 --chmod=0700 /out/data /data
 # HTTPS with a self-signed certificate kept in /data by default; set
 # SYNCWATCH_TLS_HOSTS to the host's LAN address so the certificate covers it.
+# The gate (command: gate) has its own listen address, 8385.
 ENV SYNCWATCH_DATA=/data \
     SYNCWATCH_LISTEN=:8080 \
+    SYNCWATCH_GATE_LISTEN=:8385 \
     SYNCWATCH_TLS_SELF_SIGNED=true
 VOLUME ["/data"]
 EXPOSE 8080

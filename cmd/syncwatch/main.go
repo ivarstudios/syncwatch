@@ -181,26 +181,35 @@ func serve(args []string) error {
 // runGate serves the read-only gate: it holds Syncthing's API key and
 // gives syncwatch a token for the allowlisted GET endpoints only.
 func runGate(args []string) error {
+	o, level := gateOptions(args)
+	o.Log = newLogger(level, env("SYNCWATCH_LOG_FORMAT", "text"))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return app.RunGate(ctx, o)
+}
+
+// gateOptions parses the gate's flags. The gate has its own listen
+// variable: the image sets SYNCWATCH_LISTEN for serve, and a gate
+// container must not inherit it.
+func gateOptions(args []string) (o app.GateOptions, level string) {
 	fs := flag.NewFlagSet("gate", flag.ExitOnError)
 	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory for the gate's token, certificate and Syncthing pin (env SYNCWATCH_DATA)")
-	listen := fs.String("listen", env("SYNCWATCH_LISTEN", "127.0.0.1:8385"), "listen address; syncwatch must reach it, e.g. 192.168.1.10:8385 (env SYNCWATCH_LISTEN)")
+	listen := fs.String("listen", env("SYNCWATCH_GATE_LISTEN", "127.0.0.1:8385"), "listen address; syncwatch must reach it, e.g. 192.168.1.10:8385 (env SYNCWATCH_GATE_LISTEN)")
 	syncthing := fs.String("syncthing", env("SYNCWATCH_GATE_SYNCTHING", "https://127.0.0.1:8384"), "Syncthing's GUI/API URL as the gate reaches it (env SYNCWATCH_GATE_SYNCTHING)")
 	keyFile := fs.String("syncthing-key-file", env("SYNCWATCH_GATE_SYNCTHING_KEY_FILE", ""), "file holding Syncthing's API key (env SYNCWATCH_GATE_SYNCTHING_KEY_FILE; or set SYNCWATCH_GATE_SYNCTHING_KEY)")
 	cfgXML := fs.String("syncthing-config", env("SYNCWATCH_GATE_SYNCTHING_CONFIG", ""), "Syncthing's config.xml, to read the API key from (env SYNCWATCH_GATE_SYNCTHING_CONFIG)")
+	roots := fs.String("browse-roots", env("SYNCWATCH_GATE_BROWSE_ROOTS", ""), "extra directories the token may list, comma-separated; by default only the parents of Syncthing's folders (env SYNCWATCH_GATE_BROWSE_ROOTS)")
 	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve with this certificate instead of a self-signed one (env SYNCWATCH_TLS_CERT)")
 	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
 	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "extra names or addresses for the self-signed certificate (env SYNCWATCH_TLS_HOSTS)")
-	level := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
+	lvl := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
 	_ = fs.Parse(args)
-	log := newLogger(*level, env("SYNCWATCH_LOG_FORMAT", "text"))
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	return app.RunGate(ctx, app.GateOptions{
+	return app.GateOptions{
 		DataDir: *data, Listen: *listen, Syncthing: *syncthing,
 		KeyFile: *keyFile, Key: os.Getenv("SYNCWATCH_GATE_SYNCTHING_KEY"), ConfigXML: *cfgXML,
-		Token:   os.Getenv("SYNCWATCH_GATE_TOKEN"),
-		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSHosts: splitList(*tlsHosts), Log: log,
-	})
+		Token: os.Getenv("SYNCWATCH_GATE_TOKEN"), BrowseRoots: splitList(*roots),
+		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSHosts: splitList(*tlsHosts),
+	}, *lvl
 }
 
 func runProbe(args []string) error {

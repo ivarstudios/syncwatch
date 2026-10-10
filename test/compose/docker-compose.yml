@@ -164,6 +164,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
+      SYNCWATCH_GATE_LISTEN: ":8080"   # this stack addresses the gate on 8080 (the image's default is 8385)
       SYNCWATCH_GATE_SYNCTHING: https://sol.e2e.invalid:8384
       SYNCWATCH_GATE_SYNCTHING_KEY: key-sol-compose-0123456789
       SYNCWATCH_GATE_TOKEN: gate-token-sol-compose-0123456789
