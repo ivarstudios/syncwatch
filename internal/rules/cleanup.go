@@ -19,6 +19,7 @@ func (e *evaluator) inactiveProjects() {
 	type agg struct {
 		label   string
 		last    string
+		basis   string
 		servers []string
 		ids     []string
 	}
@@ -36,12 +37,15 @@ func (e *evaluator) inactiveProjects() {
 			}
 			a.servers = append(a.servers, sv.Name)
 			a.ids = append(a.ids, sv.ID)
-			if f.LastFileAt.IsZero() {
-				continue
-			}
+			// Syncthing's lastFile only counts files pulled from other
+			// devices; local edits (over SMB, say) show up as events.
 			if f.LastFileAt.After(lastAt[f.ID]) {
 				lastAt[f.ID] = f.LastFileAt
-				a.last = f.LastFileName
+				a.last, a.basis = f.LastFileName, "the last file pulled from another device"
+			}
+			if f.LastLocalChange.After(lastAt[f.ID]) {
+				lastAt[f.ID] = f.LastLocalChange
+				a.last, a.basis = "", "the last local change seen by syncwatch"
 			}
 		}
 	}
@@ -56,15 +60,17 @@ func (e *evaluator) inactiveProjects() {
 			continue
 		}
 		a := latest[id]
+		details := []model.Detail{detail("Folder ID", id), timeDetail("Last change", last), detail("Based on", a.basis)}
+		if a.last != "" {
+			details = append(details, detail("Last file", a.last))
+		}
+		details = append(details, detail("On servers", strings.Join(a.servers, ", ")))
 		e.add("C1", "", "folder:"+id, model.Finding{
 			Subject: a.label,
-			Message: fmt.Sprintf("No file in %s has changed for %s (last change %s); consider archiving it", a.label, Ago(idle), last.Format("2006-01-02")),
+			Message: fmt.Sprintf("No file in %s has changed for %s (%s was on %s); consider archiving it", a.label, Ago(idle), a.basis, last.Format("2006-01-02")),
 			Since:   last,
 			Related: a.ids,
-			Details: []model.Detail{
-				detail("Folder ID", id), timeDetail("Last change", last), detail("Last file", a.last),
-				detail("On servers", strings.Join(a.servers, ", ")),
-			},
+			Details: details,
 		})
 	}
 }

@@ -490,6 +490,39 @@ func TestCleanup(t *testing.T) {
 	}
 }
 
+// C1 uses the newest of lastFile.at (pulled files only) and the local changes
+// the collector saw, and says which one the age is based on.
+func TestInactiveProjectBasis(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	edited := folder("edited", "LIVE-EDITED", "/s/AKKA-LIVE-1SOURCE/LIVE-EDITED")
+	edited.LastFileAt, edited.LastFileName = now.Add(-200*24*time.Hour), "old.blend"
+	edited.LastLocalChange = now.Add(-10 * 24 * time.Hour)
+	akka.Folders["edited"] = edited
+	local := folder("local", "LIVE-LOCAL", "/s/AKKA-LIVE-1SOURCE/LIVE-LOCAL")
+	local.LastLocalChange = now.Add(-200 * 24 * time.Hour)
+	akka.Folders["local"] = local
+	pulled := folder("pulled", "LIVE-PULLED", "/s/AKKA-LIVE-1SOURCE/LIVE-PULLED")
+	pulled.LastFileAt, pulled.LastFileName = now.Add(-300*24*time.Hour), "old.blend"
+	pulled.LastLocalChange = now.Add(-200 * 24 * time.Hour)
+	akka.Folders["pulled"] = pulled
+	fs := run(t, c, akka)
+	mustNot(t, fs, "C1", "LIVE-EDITED")
+	l := mustFind(t, fs, "C1", "LIVE-LOCAL")
+	if !strings.Contains(l.Message, "200 days") || !strings.Contains(l.Message, "local change") || !l.Since.Equal(local.LastLocalChange) {
+		t.Fatalf("local: %s", l.Message)
+	}
+	p := mustFind(t, fs, "C1", "LIVE-PULLED")
+	if !strings.Contains(p.Message, "200 days") || !strings.Contains(p.Message, "local change") || !p.Since.Equal(pulled.LastLocalChange) {
+		t.Fatalf("pulled, then edited: %s", p.Message)
+	}
+	pulled.LastLocalChange = time.Time{}
+	p = mustFind(t, run(t, c, akka), "C1", "LIVE-PULLED")
+	if !strings.Contains(p.Message, "300 days") || !strings.Contains(p.Message, "pulled") || p.DetailValue("Last file") != "old.blend" {
+		t.Fatalf("pulled only: %s %v", p.Message, p.Details)
+	}
+}
+
 func TestDisabledCheckAndUrgentOverride(t *testing.T) {
 	c := ivarConfig(t)
 	f, tr := false, true
