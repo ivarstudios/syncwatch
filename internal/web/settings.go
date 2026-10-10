@@ -34,7 +34,7 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 	var checks []checkRow
 	for _, c := range config.Catalog {
 		checks = append(checks, checkRow{CheckInfo: c, Enabled: cfg.CheckEnabled(c.ID), Urgent: cfg.Urgent(c.ID),
-			Debounce: config.Duration(cfg.Debounce(c.ID)).String(), SeverityLabel: c.Severity.String()})
+			Debounce: config.Duration(cfg.Debounce(c.ID)).String(), SeverityLabel: c.Severity.Label()})
 	}
 	sdoc, _ := yaml.Marshal(structureDoc{Structure: cfg.Structure, Shares: cfg.Shares})
 	log, _ := s.st.Notifications(20)

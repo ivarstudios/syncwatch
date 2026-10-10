@@ -631,3 +631,41 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 		t.Errorf("HA status with a watcher error = %v, want \"watch error\"", ha.Servers["akka"]["status"])
 	}
 }
+
+// Severity words are the same everywhere in the dashboard: badges, the
+// filter and the summary line say error, warning and suggestion. Counts
+// get their noun in the right number.
+func TestSeverityWordsAndPlurals(t *testing.T) {
+	e := adminEnv(t, twoServers) // two unreachable servers: two H1 errors
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID = model.StatusUp, true, "AAAAAAA-BBBBBBB"
+		s.Folders = map[string]*model.Folder{"f1": {ID: "f1", Label: "only-folder", State: "idle"}}
+	})
+	e.eng.Evaluate()
+	_, body := e.get("/problems")
+	for _, want := range []string{"🔴 error</span>", `<option value="warn" >warning</option>`, `<option value="info" >suggestion</option>`,
+		"🔴 1 error</span>", "🟠 0 warnings</span>", "🔵 0 suggestions</span>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("problems page lacks %q", want)
+		}
+	}
+	for _, old := range []string{"ERROR", "WARN", "INFO", ">warn<", ">info<", "1 errors"} {
+		if strings.Contains(body, old) {
+			t.Errorf("problems page still says %q", old)
+		}
+	}
+	if _, grid := e.get("/grid"); !strings.Contains(grid, "1 folder</span>") || strings.Contains(grid, "1 folders") {
+		t.Error("grid: a group with one folder says folders")
+	}
+	for n, want := range map[int]string{0: "0 errors", 1: "1 error", 2: "2 errors"} {
+		if got := plural(n, "error", "errors"); got != want {
+			t.Errorf("plural(%d) = %q, want %q", n, got, want)
+		}
+	}
+	if model.Error.Label() != "error" || model.Warn.Label() != "warning" || model.Info.Label() != "suggestion" {
+		t.Error("severity labels")
+	}
+	if model.ParseSeverity("suggestion") != model.Info || model.ParseSeverity("warning") != model.Warn {
+		t.Error("ParseSeverity does not accept the dashboard words")
+	}
+}

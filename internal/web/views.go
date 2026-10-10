@@ -41,7 +41,7 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 	for _, r := range recs {
 		row := problemRow{
 			ID: r.ID, Check: r.Check, Checks: strings.Join(r.Checks, "+"), Severity: r.Severity.Lower(),
-			SeverityLabel: r.Severity.String(), Icon: notify.Icon(r.Severity), Category: r.Category,
+			SeverityLabel: r.Severity.Label(), Icon: notify.Icon(r.Severity), Category: r.Category,
 			Server: r.Server, Subject: r.Subject, Message: r.Message, Urgent: r.Urgent, Stale: r.Stale,
 			Details: r.Details, Paths: r.Paths, Link: r.Link,
 			Title: config.CatalogByID[r.Check].Title,
@@ -165,7 +165,7 @@ func (s *Server) overview(v *engine.View) overviewVM {
 			t.Shares = len(sv.Structure.Shares)
 			t.LastScan = s.fmtTime(sv.Structure.ScannedAt)
 			if n := sv.Structure.ScanListings; n > 0 {
-				t.ScanCost = fmt.Sprintf("%d directory listings in %s", n, sv.Structure.ScanTook.Round(100*time.Millisecond))
+				t.ScanCost = fmt.Sprintf("%s in %s", plural(n, "directory listing", "directory listings"), sv.Structure.ScanTook.Round(100*time.Millisecond))
 			}
 			for _, sh := range sv.Structure.Shares {
 				if sh.Error != "" {
@@ -478,15 +478,26 @@ type problemsVM struct {
 	Query            string
 	Checks           []config.CheckInfo
 	Servers          []*model.Server
+	Severities       []severityOption
 	Errors, Warns    int
 	Infos            int
 	NewThisWeek      int
 	ResolvedThisWeek []historyRow
 }
 
+// severityOption is one choice of the severity filter: the value in the
+// URL and the word shown.
+type severityOption struct {
+	Value, Label string
+}
+
+var severityOptions = []severityOption{
+	{model.Error.Lower(), model.Error.Label()}, {model.Warn.Lower(), model.Warn.Label()}, {model.Info.Lower(), model.Info.Label()},
+}
+
 func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 	now := s.now()
-	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers}
+	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions}
 	var recs []*store.Record
 	for _, r := range v.Open {
 		_, snoozed := v.Snoozed(r.ID, now)

@@ -4,7 +4,7 @@
   <label>Severity
     <select name="severity">
       <option value="">All</option>
-      {{range $s := (list "error" "warn" "info")}}<option value="{{$s}}" {{if eq $vm.Filter.Severity $s}}selected{{end}}>{{$s}}</option>{{end}}
+      {{range $vm.Severities}}<option value="{{.Value}}" {{if eq $vm.Filter.Severity .Value}}selected{{end}}>{{.Label}}</option>{{end}}
     </select>
   </label>
   <label>Category
@@ -34,9 +34,9 @@
 {{define "problems-body"}}{{$vm := .Data.VM}}{{$admin := .Data.Admin}}{{$csrf := .CSRF}}
 <div id="problems-body" hx-get="/frag/problems?{{$vm.Query}}" hx-trigger="sse:update" hx-swap="outerHTML">
   <p class="summary">
-    <span class="sev sev-error">🔴 {{$vm.Errors}} errors</span>
-    <span class="sev sev-warn">🟠 {{$vm.Warns}} warnings</span>
-    <span class="sev sev-info">🔵 {{$vm.Infos}} suggestions</span>
+    <span class="sev sev-error">🔴 {{plural $vm.Errors "error" "errors"}}</span>
+    <span class="sev sev-warn">🟠 {{plural $vm.Warns "warning" "warnings"}}</span>
+    <span class="sev sev-info">🔵 {{plural $vm.Infos "suggestion" "suggestions"}}</span>
     {{if $vm.Hidden}}<span class="muted">· {{$vm.Hidden}} snoozed or ignored hidden</span>{{end}}
     <span class="muted">· {{$vm.NewThisWeek}} new and {{len $vm.ResolvedThisWeek}} resolved this week</span>
   </p>
