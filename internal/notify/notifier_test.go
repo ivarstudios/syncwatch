@@ -748,3 +748,34 @@ func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
 		t.Fatalf("weekly report after the grace period: %+v", msgs)
 	}
 }
+
+// A reminder time inside quiet hours that could never be sent is rejected:
+// the evening part of a window that crosses midnight (the reminder is only
+// looked for until 12 hours after its time). A time the notifier can send
+// at quiet end is still accepted.
+func TestReminderInsideQuietHoursRejected(t *testing.T) {
+	for _, tc := range []struct {
+		quiet, reminder string
+		ok              bool
+	}{
+		{"22:00-07:00", "08:00", true},
+		{"22:00-07:00", "23:00", false}, // quiet until the next day
+		{"22:00-07:00", "22:00", false},
+		{"22:00-07:00", "00:30", true}, // sent at 07:00
+		{"22:00-07:00", "07:00", true},
+		{"09:00-17:00", "12:00", true},  // sent at 17:00
+		{"20:00-14:00", "01:00", false}, // 14:00 is more than 12 hours later
+		{"off", "23:00", true},
+		{"07:00-07:00", "23:00", true}, // equal ends mean off
+	} {
+		c := config.Default()
+		c.Notify.QuietHours, c.Notify.ReminderTime = tc.quiet, tc.reminder
+		err := c.Validate()
+		if tc.ok && err != nil {
+			t.Errorf("quiet %s, reminder %s: unexpected error %v", tc.quiet, tc.reminder, err)
+		}
+		if !tc.ok && (err == nil || !strings.Contains(err.Error(), "reminder_time must be outside quiet_hours")) {
+			t.Errorf("quiet %s, reminder %s: want a reminder_time error, got %v", tc.quiet, tc.reminder, err)
+		}
+	}
+}
