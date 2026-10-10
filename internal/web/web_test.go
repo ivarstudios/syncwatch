@@ -754,3 +754,93 @@ func TestSnoozedAndIgnoredStayVisible(t *testing.T) {
 		t.Error("snoozed=1: want the ignored finding inline, no separate block")
 	}
 }
+
+// A live update must not wipe an ignore reason or snooze date someone is
+// typing: the shipped script cancels the swap while a form inside the
+// updated section is in use. The behaviour itself was checked in a headless
+// browser (see docs/changes/r0-k.md); this pins the asset.
+func TestLiveUpdateGuardShipped(t *testing.T) {
+	e := newEnv(t, twoServers)
+	_, js := e.get("/assets/app.js")
+	for _, want := range []string{`"htmx:beforeSwap"`, "shouldSwap = false", `htmx.trigger(t, "sse:update")`, `"focusout"`} {
+		if !strings.Contains(js, want) {
+			t.Errorf("app.js lacks %s", want)
+		}
+	}
+	if _, css := e.get("/assets/app.css"); !strings.Contains(css, ".updates-paused") {
+		t.Error("app.css has no style for a paused section")
+	}
+}
+
+// The JSON status API and the Home Assistant endpoint count what the
+// dashboard counts: the overview's open, urgent and snoozed numbers, and
+// each tile's folder states.
+func TestAPICountsMatchOverview(t *testing.T) {
+	e := adminEnv(t, twoServers) // two unreachable servers: two H1 errors
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Folders = map[string]*model.Folder{
+			"f1": {ID: "f1", State: "idle"}, "f2": {ID: "f2", State: "syncing", NeedItems: 4},
+			"f3": {ID: "f3", State: "idle", WatchError: "inotify limit"}, "f4": {ID: "f4", Paused: true},
+		}
+	})
+	e.eng.Evaluate()
+	csrf := e.csrf("/problems")
+	e.post("/problems/"+e.eng.View().Open[0].ID+"/ignore", url.Values{"csrf": {csrf}, "reason": {"known"}})
+	vm := e.web.overview(e.eng.View())
+	if vm.OpenCount != 1 || vm.SnoozedCount != 1 {
+		t.Fatalf("overview open=%d snoozed=%d, want 1 and 1", vm.OpenCount, vm.SnoozedCount)
+	}
+	tiles := map[string]serverTile{}
+	for _, tile := range vm.Servers {
+		tiles[tile.ID] = tile
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st struct {
+		Counts  map[string]int `json:"counts"`
+		Servers []struct {
+			ID      string         `json:"id"`
+			Folders map[string]int `json:"folders"`
+		} `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st)
+	resp.Body.Close()
+	if open := st.Counts["error"] + st.Counts["warn"] + st.Counts["info"]; open != vm.OpenCount || st.Counts["urgent"] != vm.UrgentOpen || st.Counts["snoozed"] != vm.SnoozedCount {
+		t.Errorf("status API counts %v; overview says open=%d urgent=%d snoozed=%d", st.Counts, vm.OpenCount, vm.UrgentOpen, vm.SnoozedCount)
+	}
+	for _, sv := range st.Servers {
+		tile := tiles[sv.ID]
+		for k, n := range map[string]int{"total": tile.Folders, "idle": tile.Idle, "syncing": tile.Syncing, "scanning": tile.Scanning, "error": tile.Errors, "watch_error": tile.WatchErrors, "paused": tile.Paused} {
+			if sv.Folders[k] != n {
+				t.Errorf("status API %s folders.%s = %d, the tile says %d", sv.ID, k, sv.Folders[k], n)
+			}
+		}
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/ha", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ha struct {
+		Servers map[string]map[string]any `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	for id, tile := range tiles {
+		for k, n := range map[string]int{"folders": tile.Folders, "folders_syncing": tile.Syncing, "folders_scanning": tile.Scanning, "folders_error": tile.Errors, "folders_watch_error": tile.WatchErrors, "folders_paused": tile.Paused} {
+			if ha.Servers[id][k] != float64(n) {
+				t.Errorf("HA %s %s = %v, the tile says %d", id, k, ha.Servers[id][k], n)
+			}
+		}
+	}
+	if tile := tiles["akka"]; tile.Folders != 4 || tile.Idle != 1 || tile.Syncing != 1 || tile.WatchErrors != 1 || tile.Paused != 1 {
+		t.Errorf("akka tile: %+v", tile)
+	}
+}

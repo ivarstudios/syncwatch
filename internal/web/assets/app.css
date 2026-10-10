@@ -75,6 +75,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 1rem; }
 form.inline { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .3rem 0; }
 .plist.compact form.inline { display: inline-flex; margin: 0 0 0 .4rem; }
 .summary { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: baseline; }
+.updates-paused .summary::after { content: "· live updates paused while you edit"; color: var(--muted); }
 .toolbar { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: end; margin-bottom: 1rem; }
 label { display: block; font-size: .9rem; color: var(--muted); }
 label.check { display: flex; gap: .4rem; align-items: center; color: var(--text); }

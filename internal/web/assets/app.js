@@ -59,7 +59,50 @@
     }
   }, true);
 
+  // busyInput reports whether someone is working in a form inside root: a
+  // form control has focus, or an input holds a change that was not
+  // submitted yet.
+  function busyInput(root) {
+    var a = document.activeElement;
+    if (a && root.contains(a) && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName)) return true;
+    var dirty = false;
+    root.querySelectorAll("input, textarea, select").forEach(function (el) {
+      if (el.tagName === "SELECT") {
+        for (var i = 0; i < el.options.length; i++) {
+          if (el.options[i].selected !== el.options[i].defaultSelected) dirty = true;
+        }
+      } else if (el.type === "checkbox" || el.type === "radio") {
+        if (el.checked !== el.defaultChecked) dirty = true;
+      } else if (el.type !== "hidden" && el.type !== "submit" && el.type !== "button") {
+        if (el.value !== el.defaultValue) dirty = true;
+      }
+    });
+    return dirty;
+  }
+
+  // Live updates replace whole page sections. A section with a half-typed
+  // ignore reason or snooze date keeps its old content until the input is
+  // left alone; the skipped update is fetched then.
+  var postponed = [];
+
+  function catchUp() {
+    postponed = postponed.filter(function (t) {
+      if (!document.body.contains(t)) return false;
+      if (busyInput(t)) return true;
+      t.classList.remove("updates-paused");
+      htmx.trigger(t, "sse:update");
+      return false;
+    });
+  }
+
   document.addEventListener("htmx:beforeSwap", function (e) {
+    var t = e.detail && e.detail.target;
+    if (t && t.hasAttribute("hx-trigger") && busyInput(t)) {
+      e.detail.shouldSwap = false;
+      t.classList.add("updates-paused");
+      if (postponed.indexOf(t) < 0) postponed.push(t);
+      return;
+    }
     rememberOpen(document);
   });
 
@@ -67,6 +110,10 @@
     restoreOpen(document);
     applyGridFilter();
   });
+
+  // Focus moves before focusout settles, so look again a moment later.
+  document.addEventListener("focusout", function () { setTimeout(catchUp, 0); });
+  document.addEventListener("change", function () { setTimeout(catchUp, 0); });
 
   document.addEventListener("submit", function (e) {
     var f = e.target;
