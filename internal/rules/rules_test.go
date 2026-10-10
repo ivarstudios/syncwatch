@@ -893,3 +893,20 @@ func TestPendingDeviceKnownOnAnotherServer(t *testing.T) {
 	mustFind(t, fs, "H9", "Unknown device stranger requests a connection to AKKA")
 	mustFind(t, fs, "H9", `Server SOL requests a connection to AKKA as "sol"`)
 }
+
+// H7 gives the last contact as a date and a time in the configured time
+// zone; the detail value stays UTC (RFC 3339) for the API.
+func TestPCOfflineLastSeenInConfiguredZone(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	akka := server("akka", "AKKA", akkaID)
+	last := time.Date(2026, 9, 26, 15, 30, 38, 0, time.UTC)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: last}
+	h7 := mustFind(t, run(t, c, akka), "H7", "MORTIS")
+	if want := "PC MORTIS is offline for 8 days (last seen 2026-09-26 17:30)"; h7.Message != want {
+		t.Fatalf("message %q, want %q", h7.Message, want)
+	}
+	if v := h7.DetailValue("Last seen"); v != "2026-09-26T15:30:38Z" {
+		t.Fatalf("detail value %q", v)
+	}
+}

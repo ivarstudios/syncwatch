@@ -520,6 +520,7 @@ func (e *evaluator) versions() {
 // device that never connected at all isn't "offline": only C2 reports it.
 func (e *evaluator) offlinePCs() {
 	th := e.Config.Thresholds
+	loc := e.Config.Location()
 	for _, dv := range e.Snapshot.Devices() {
 		if dv.IsServer || dv.Connected || dv.LastSeen.IsZero() || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) {
 			continue
@@ -533,7 +534,7 @@ func (e *evaluator) offlinePCs() {
 		}
 		e.add("H7", "", "device:"+dv.ID, model.Finding{
 			Subject: dv.Name,
-			Message: fmt.Sprintf("PC %s is offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.Format("2006-01-02")),
+			Message: fmt.Sprintf("PC %s is offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.In(loc).Format("2006-01-02 15:04")),
 			Since:   dv.LastSeen,
 			Related: dv.SeenBy,
 			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
