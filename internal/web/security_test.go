@@ -633,3 +633,32 @@ func TestLoginBodyIsLimited(t *testing.T) {
 		t.Fatalf("login: %d", r.StatusCode)
 	}
 }
+
+// A link clicked in Discord is a cross-site visit. With SameSite=Strict the
+// browser kept the session cookie at home and showed the login page, and a
+// fresh CSRF cookie then broke the forms in other tabs. Lax sends both on
+// such top-level visits and still keeps them off cross-site POSTs.
+func TestCookiesAreSameSiteLax(t *testing.T) {
+	e := newEnv(t, twoServers)
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	got := map[string]http.SameSite{}
+	resp, _ := e.get("/login")
+	for _, c := range resp.Cookies() {
+		got[c.Name] = c.SameSite
+	}
+	csrf := e.csrf("/login")
+	for _, c := range e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}}).Cookies() {
+		got[c.Name] = c.SameSite
+	}
+	for _, name := range []string{csrfCookie, sessionCookie} {
+		if got[name] != http.SameSiteLaxMode {
+			t.Errorf("%s: SameSite %v, want Lax", name, got[name])
+		}
+	}
+	for _, c := range e.post("/logout", url.Values{"csrf": {csrf}}).Cookies() {
+		if c.Name == sessionCookie && c.SameSite != http.SameSiteLaxMode {
+			t.Errorf("logout cookie: SameSite %v, want Lax", c.SameSite)
+		}
+	}
+}

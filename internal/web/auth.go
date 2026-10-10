@@ -164,7 +164,7 @@ func (s *Server) ensureCSRF(w http.ResponseWriter, r *http.Request, info *reques
 	info.CSRF = randomToken(24)
 	http.SetCookie(w, &http.Cookie{
 		Name: csrfCookie, Value: info.CSRF, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, Secure: s.secureCookies(r),
+		SameSite: http.SameSiteLaxMode, Secure: s.secureCookies(r),
 	})
 	return info.CSRF
 }
@@ -196,7 +196,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, role strin
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		Secure: s.secureCookies(r), Expires: now.Add(ttl), MaxAge: int(ttl.Seconds()),
 	})
 	return nil
@@ -206,7 +206,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.st.DeleteSession(hashToken(c.Value))
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
 // limiter rate-limits failed password attempts. Failures from one client IP
