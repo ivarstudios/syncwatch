@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	_ "modernc.org/sqlite" // database/sql driver "sqlite"
@@ -116,6 +118,14 @@ func Open(path string, key []byte) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store: %w", err)
+	}
+	if runtime.GOOS != "windows" {
+		// SQLite creates the database 0644; it holds password hashes, session
+		// tokens and the encrypted secrets. The WAL and SHM files take the
+		// database file's mode from then on. The directory itself is left alone.
+		for _, f := range []string{abs, abs + "-wal", abs + "-shm"} {
+			_ = os.Chmod(f, 0o600)
+		}
 	}
 	return s, nil
 }

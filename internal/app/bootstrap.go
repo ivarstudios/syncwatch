@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -18,7 +19,11 @@ var secretKeys = map[string][]string{
 
 const scrubbedNote = "imported into syncwatch's encrypted store and removed from this file"
 
+// renameFile is os.Rename, replaced in tests.
+var renameFile = os.Rename
+
 // walkSecrets calls fn for every non-empty secret value in a YAML document.
+// null (or ~) is an empty value, not a secret.
 func walkSecrets(doc *yaml.Node, fn func(v *yaml.Node)) {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return
@@ -40,7 +45,7 @@ func walkSecrets(doc *yaml.Node, fn func(v *yaml.Node)) {
 			}
 			for j := 0; j+1 < len(m.Content); j += 2 {
 				for _, k := range keys {
-					if v := m.Content[j+1]; m.Content[j].Value == k && (v.Kind != yaml.ScalarNode || v.Value != "") {
+					if v := m.Content[j+1]; m.Content[j].Value == k && (v.Kind != yaml.ScalarNode || (v.Value != "" && v.Tag != "!!null")) {
 						fn(v)
 					}
 				}
@@ -80,6 +85,11 @@ func bootstrapHasSecrets(path string) bool {
 // the encrypted store, so API keys don't stay on disk in plaintext. The rest
 // of the file, comments included, is kept.
 func scrubBootstrap(path string) error {
+	// A symlink is followed: the plaintext lives in its target, and replacing
+	// the link with a file would leave it there.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	doc, fi, err := parseNode(path)
 	if err != nil {
 		return err
@@ -113,5 +123,14 @@ func scrubBootstrap(path string) error {
 	if err := os.Chmod(tmp.Name(), fi.Mode().Perm()); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := renameFile(tmp.Name(), path); err != nil {
+		// A single-file bind mount can't be replaced; rewrite it in place.
+		if werr := os.WriteFile(path, buf.Bytes(), fi.Mode().Perm()); werr != nil {
+			return errors.Join(err, werr)
+		}
+	}
+	if bootstrapHasSecrets(path) {
+		return errors.New("the file still contains secrets after rewriting it")
+	}
+	return nil
 }

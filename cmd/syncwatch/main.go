@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -42,9 +41,18 @@ func env(key, def string) string {
 	return def
 }
 
-func envBool(key string) bool {
-	b, _ := strconv.ParseBool(os.Getenv(key))
-	return b
+// envBool reads a yes/no variable: true/false, 1/0, yes/no or on/off in any
+// case; unset means false. Anything else is an error naming the variable, so
+// a misspelt SYNCWATCH_TLS_SELF_SIGNED can't silently mean plain HTTP.
+func envBool(key string) (bool, error) {
+	v := os.Getenv(key)
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "t", "true", "yes", "on":
+		return true, nil
+	case "", "0", "f", "false", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s must be true or false, not %q", key, v)
 }
 
 // splitList splits a comma-separated list, dropping empty items.
@@ -101,15 +109,33 @@ Run "syncwatch <command> -h" for the flags of a command.
 `, version)
 }
 
-func main() {
-	args := os.Args[1:]
-	cmd := "serve"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+// command picks the subcommand: the first argument, or serve when it is a
+// flag. --version and -h/--help work without a command.
+func command(args []string) (string, []string) {
+	if len(args) == 0 {
+		return "serve", nil
 	}
+	switch args[0] {
+	case "-version", "--version":
+		return "version", args[1:]
+	case "-h", "-help", "--help":
+		return "help", args[1:]
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "serve", args
+	}
+	return args[0], args[1:]
+}
+
+func main() {
+	cmd, args := command(os.Args[1:])
 	// Test setups with a fake Discord; never needed in production.
-	config.AllowAnyWebhook = envBool("SYNCWATCH_ALLOW_ANY_WEBHOOK")
-	var err error
+	anyWebhook, err := envBool("SYNCWATCH_ALLOW_ANY_WEBHOOK")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "syncwatch:", err)
+		os.Exit(1)
+	}
+	config.AllowAnyWebhook = anyWebhook
 	switch cmd {
 	case "serve":
 		err = serve(args)
@@ -125,9 +151,9 @@ func main() {
 		err = exportConfig(args)
 	case "healthcheck":
 		err = healthcheck(args)
-	case "version", "--version":
+	case "version":
 		fmt.Println("syncwatch", version)
-	case "help", "-h", "--help":
+	case "help":
 		usage()
 	default:
 		usage()
@@ -153,6 +179,10 @@ func secretKey(flagVal string) string {
 }
 
 func serve(args []string) error {
+	selfSigned, err := envBool("SYNCWATCH_TLS_SELF_SIGNED")
+	if err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, e.g. 192.168.1.10:8080 (env SYNCWATCH_LISTEN; the default is loopback only)")
@@ -161,7 +191,7 @@ func serve(args []string) error {
 	format := fs.String("log-format", env("SYNCWATCH_LOG_FORMAT", "text"), "text or json (env SYNCWATCH_LOG_FORMAT)")
 	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve HTTPS with this certificate file (env SYNCWATCH_TLS_CERT)")
 	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
-	tlsSelf := fs.Bool("tls-self-signed", envBool("SYNCWATCH_TLS_SELF_SIGNED"), "serve HTTPS with a self-signed certificate kept in the data directory (env SYNCWATCH_TLS_SELF_SIGNED)")
+	tlsSelf := fs.Bool("tls-self-signed", selfSigned, "serve HTTPS with a self-signed certificate kept in the data directory (env SYNCWATCH_TLS_SELF_SIGNED)")
 	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "extra names or IP addresses for the self-signed certificate, comma-separated, e.g. the host's LAN address (env SYNCWATCH_TLS_HOSTS)")
 	_ = fs.Parse(args)
 	if *cfgFile == "" {
@@ -251,6 +281,12 @@ func resetPassword(args []string) error {
 	fs := flag.NewFlagSet("reset-admin-password", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	_ = fs.Parse(args)
+	// Before asking for a password: a wrong --data is reported at once.
+	st, err := app.OpenExistingStore(*data, secretKey(*key))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
 	fmt.Fprint(os.Stderr, "New admin password: ")
 	pw, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && pw == "" {
@@ -260,11 +296,6 @@ func resetPassword(args []string) error {
 	if len([]rune(pw)) < web.MinPasswordLength {
 		return fmt.Errorf("the password must be at least %d characters", web.MinPasswordLength)
 	}
-	st, err := app.OpenStore(*data, secretKey(*key))
-	if err != nil {
-		return err
-	}
-	defer st.Close()
 	h, err := web.HashPassword(pw)
 	if err != nil {
 		return err
@@ -286,7 +317,7 @@ func importConfig(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: syncwatch import-config [--data DIR] FILE")
 	}
-	st, err := app.OpenStore(*data, secretKey(*key))
+	st, err := app.OpenExistingStore(*data, secretKey(*key))
 	if err != nil {
 		return err
 	}
@@ -295,7 +326,7 @@ func importConfig(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Imported %d server(s) and %d secret(s). Restart syncwatch to apply.\n", len(c.Servers), n)
+	fmt.Fprintf(os.Stderr, "Imported %d server(s) and %d secret(s). A running syncwatch applies it within 10 seconds; otherwise it is used on the next start.\n", len(c.Servers), n)
 	if n > 0 {
 		fmt.Fprintf(os.Stderr, "The secrets are stored encrypted now, but %s still contains them in plaintext: delete it.\n", fs.Arg(0))
 	}
@@ -309,7 +340,7 @@ func exportConfig(args []string) error {
 	fs := flag.NewFlagSet("export-config", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	_ = fs.Parse(args)
-	st, err := app.OpenStore(*data, secretKey(*key))
+	st, err := app.OpenExistingStore(*data, secretKey(*key))
 	if err != nil {
 		return err
 	}
@@ -333,7 +364,8 @@ func exportConfig(args []string) error {
 // (loopback if it listens on all interfaces) and http or https as configured.
 func healthURL() string {
 	scheme := "http"
-	if os.Getenv("SYNCWATCH_TLS_CERT") != "" || envBool("SYNCWATCH_TLS_SELF_SIGNED") {
+	// A bad value stops serve itself, so the check can't pass either way.
+	if selfSigned, _ := envBool("SYNCWATCH_TLS_SELF_SIGNED"); os.Getenv("SYNCWATCH_TLS_CERT") != "" || selfSigned {
 		scheme = "https"
 	}
 	host, port, err := net.SplitHostPort(env("SYNCWATCH_LISTEN", defaultListen))
