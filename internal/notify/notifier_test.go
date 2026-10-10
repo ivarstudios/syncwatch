@@ -228,23 +228,42 @@ func TestRetryOnlyResendsToFailedChannels(t *testing.T) {
 }
 
 // A dead webhook is retried at growing intervals, logged once, and reported
-// as failing until a send succeeds.
+// as failing until a send succeeds. A webhook that Discord refuses waits up
+// to 30 minutes (only a new webhook helps, and saving one tries at once); a
+// failure that ends without a change (Discord or the network down) waits
+// at most 5 minutes.
 func TestFailingChannelBacksOff(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
+	// The urgent message is due at 10:05. Tick every minute for an hour.
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		// 10:05, :06, :08, :12, :20 and :36 (back-off 1, 2, 4, 8, 16, 30 min).
+		{&httpError{code: 404, text: "Unknown Webhook"}, 6},
+		// 10:05, :06, :08, :12, then every 5 minutes until 11:02.
+		{&httpError{code: 502}, 14},
+	} {
+		r := newRig(t, start, "AKKA")
+		r.sender.fail(tc.err)
+		r.setDown("AKKA", true)
+		r.at(start)
+		for m := 1; m <= 65; m++ {
+			r.at(start.Add(time.Duration(m) * time.Minute))
+		}
+		r.sender.mu.Lock()
+		attempts := r.sender.attempts
+		r.sender.mu.Unlock()
+		if attempts != tc.want {
+			t.Fatalf("%v: %d attempts in an hour; want %d", tc.err, attempts, tc.want)
+		}
+	}
 	r := newRig(t, start, "AKKA")
-	r.sender.fail(errors.New("discord: HTTP 404: Unknown Webhook"))
+	r.sender.fail(&httpError{code: 404, text: "Unknown Webhook"})
 	r.setDown("AKKA", true)
 	r.at(start)
-	// The urgent message is due at 10:05. Tick every minute for an hour:
-	// attempts at 10:05, :06, :08, :12, :20 and :36 (back-off 1, 2, 4, 8, 16, 30 min).
 	for m := 1; m <= 65; m++ {
 		r.at(start.Add(time.Duration(m) * time.Minute))
-	}
-	r.sender.mu.Lock()
-	attempts := r.sender.attempts
-	r.sender.mu.Unlock()
-	if attempts != 6 {
-		t.Fatalf("%d attempts in an hour; want 6", attempts)
 	}
 	d := r.n.Delivery()
 	if !d.Failing || !d.Since.Equal(local(2026, 10, 6, 10, 5)) || !strings.Contains(d.Error, "404") {

@@ -159,10 +159,14 @@ func (n *Notifier) defaultSenders() []Sender {
 		n.log.Error("cannot read the Discord webhook", "err", err)
 		// Fails like a dead webhook, so the banner, the notification log
 		// and the test button all say why.
-		out = append(out, &brokenChannel{err: errors.New("syncwatch cannot decrypt the Discord webhook: check the secret key")})
+		out = append(out, &brokenChannel{err: errUndecryptable})
 	}
 	return out
 }
+
+// errUndecryptable is the failure of every send while the stored webhook
+// cannot be decrypted.
+var errUndecryptable error = unusableError("syncwatch cannot decrypt the Discord webhook: check the secret key")
 
 // brokenChannel stands in for the Discord channel while its webhook can't
 // be read. Every send fails with the reason.
@@ -256,14 +260,21 @@ func (n *Notifier) fail(now time.Time, gen int, err error) {
 		// Nothing is marked as sent; it all goes out once a channel exists.
 		return
 	}
-	// Back off while a channel keeps failing: 1, 2, 4 … 30 minutes.
+	// Back off while a channel keeps failing: 1, 2, 4, 5, 5 … minutes while
+	// Discord or the network is down, 1, 2, 4 … 30 minutes while Discord
+	// refuses the webhook or syncwatch cannot use it (only a new webhook
+	// helps, and saving one tries again at once).
 	n.dmu.Lock()
 	if gen != n.gen {
 		n.dmu.Unlock()
 		return
 	}
 	n.failures++
-	d := min(time.Minute<<min(n.failures-1, 5), 30*time.Minute)
+	limit := 30 * time.Minute
+	if transient(err) {
+		limit = 5 * time.Minute
+	}
+	d := min(time.Minute<<min(n.failures-1, 5), limit)
 	n.retryAt = now.Add(d)
 	n.dmu.Unlock()
 	n.log.Warn("cannot send the notification", "err", err, "retry_in", d)

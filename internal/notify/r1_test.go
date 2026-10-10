@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -233,5 +234,31 @@ func TestCatchUpAndOvernightListEachOccurrenceOnce(t *testing.T) {
 	}
 	if title := msgs[1].Sections[0].Title; title != "Opened and resolved while the notifications failed (2026-10-06 21:05–07:00)" {
 		t.Fatalf("catch-up section title: %s", title)
+	}
+}
+
+// Which failures can end without a change of the webhook (short back-off).
+func TestTransientFailures(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{&httpError{code: 500}, true},
+		{&httpError{code: 502}, true},
+		{&httpError{code: 429}, true},
+		{errors.New("Discord: too many requests (HTTP 429) after 3 tries"), true},
+		{errors.New(`Discord: Post "<webhook>": dial tcp: connection refused`), true},
+		{context.DeadlineExceeded, true},
+		{&httpError{code: 400, text: "Invalid Form Body"}, false},
+		{&httpError{code: 401}, false},
+		{&httpError{code: 403}, false},
+		{&httpError{code: 404, text: "Unknown Webhook"}, false},
+		{&httpError{code: 307, text: "the webhook answers with a redirect, which syncwatch does not follow"}, false},
+		{(&brokenChannel{err: errUndecryptable}).Send(context.Background(), Message{}), false},
+		{(&Discord{URL: "https://example.invalid/api/webhooks/1/x"}).usable(), false},
+	} {
+		if got := transient(tc.err); got != tc.want {
+			t.Errorf("transient(%v) = %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }
