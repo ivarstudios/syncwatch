@@ -979,3 +979,51 @@ func TestScanStopsWhenSessionEnds(t *testing.T) {
 	defer mu.Unlock()
 	t.Fatalf("%d of %d hung listings still running 3 s after the session ended", hung-finished, hung)
 }
+
+// Error texts reach the dashboard, the API and H1 messages: HTTP errors as
+// they are, the usual network failures as a phrase, nothing like ": EOF".
+func TestShortErr(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&stclient.StatusError{Endpoint: "/rest/system/status", Code: 500, Body: "boom"}, "/rest/system/status: HTTP 500 boom"},
+		{fmt.Errorf("db/status x: %w", &stclient.StatusError{Endpoint: "/rest/db/status", Code: 401}), "/rest/db/status: HTTP 401 (check the API key)"},
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "timed out"},
+		{errors.New(": EOF"), "connection closed early"},
+		{errors.New("/rest/events: reading response: unexpected EOF"), "connection closed early"},
+		{errors.New(": dial tcp 127.0.0.1:1: connect: connection refused"), "connection refused"},
+		{errors.New(": dial tcp 127.0.0.1:1: connectex: No connection could be made because the target machine actively refused it."), "connection refused"},
+		{errors.New(": dial tcp 10.0.0.9:8384: connect: no route to host"), "no route to host"},
+		{errors.New(": dial tcp 10.0.0.9:8384: i/o timeout"), "timed out"},
+		{errors.New(": net/http: TLS handshake timeout"), "timed out"},
+		{errors.New(": read tcp 10.0.0.1:5->10.0.0.9:8384: read: connection reset by peer"), "connection reset"},
+		{errors.New(": read tcp 10.0.0.1:5->10.0.0.9:8384: wsarecv: An existing connection was forcibly closed by the remote host."), "connection reset"},
+		{errors.New(": dial tcp: lookup nas.invalid on 127.0.0.11:53: no such host"), "host name not found"},
+		{errors.New(": something else entirely"), "something else entirely"},
+		{errors.New(strings.Repeat("x", 300)), strings.Repeat("x", 200)},
+	} {
+		if got := shortErr(tc.err); got != tc.want {
+			t.Errorf("shortErr(%q) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+// A server that closes the connection without an answer used to show the
+// error ": EOF" on the tile and in the H1 message.
+func TestLastErrorIsReadable(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+			}
+		}
+	}))
+	defer srv.Close()
+	hub, _, _, stop := startManager(t, srv, "collector: {down_after_failures: 1}", nil, nil)
+	defer stop()
+	sv := waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	if sv.LastError != "connection closed early" {
+		t.Fatalf("LastError %q", sv.LastError)
+	}
+}

@@ -276,8 +276,10 @@ func (c *Collector) failed(err error) {
 	})
 }
 
+// shortErr turns an error into a short text for the dashboard, the API and
+// notifications: HTTP errors as they are, the common network failures as a
+// phrase, anything else trimmed.
 func shortErr(err error) string {
-	s := err.Error()
 	var se *stclient.StatusError
 	if errors.As(err, &se) {
 		return se.Error()
@@ -285,15 +287,40 @@ func shortErr(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timed out"
 	}
-	for _, p := range []string{"connection refused", "no route to host", "i/o timeout", "connection reset", "host is unreachable", "network is unreachable", "No connection could be made", "actively refused"} {
-		if strings.Contains(s, p) {
-			return p
+	s := err.Error()
+	for _, p := range netErrs {
+		if strings.Contains(s, p.match) {
+			return p.text
 		}
 	}
+	// The client strips the "Get <url>" prefix of transport errors, which
+	// can leave a bare ": EOF".
+	s = strings.TrimLeft(s, ": ")
 	if len(s) > 200 {
 		s = s[:200]
 	}
 	return s
+}
+
+// netErrs maps the wording of Go's network errors (Linux and Windows) to
+// short phrases. The first match wins.
+var netErrs = []struct{ match, text string }{
+	{"connection refused", "connection refused"},
+	{"actively refused", "connection refused"},
+	{"No connection could be made", "connection refused"},
+	{"no route to host", "no route to host"},
+	{"host is unreachable", "no route to host"},
+	{"network is unreachable", "network unreachable"},
+	{"TLS handshake timeout", "timed out"},
+	{"i/o timeout", "timed out"},
+	{"timed out", "timed out"},
+	{"did not properly respond", "timed out"},
+	{"connection reset", "connection reset"},
+	{"forcibly closed", "connection reset"},
+	{"broken pipe", "connection closed early"},
+	{"EOF", "connection closed early"},
+	{"no such host", "host name not found"},
+	{"server misbehaving", "host name lookup failed"},
 }
 
 func (c *Collector) eventLoop(ctx context.Context) error {
