@@ -91,24 +91,28 @@ type Rate struct {
 	At      time.Time
 }
 
-// Overall sync states of a server, from all its folders, worst first.
+// Sync states of a folder, and of a server from all its folders, worst first.
 const (
-	SyncUnknown  = "unknown" // not reachable, or not read yet
-	SyncError    = "error"
-	SyncSyncing  = "syncing"
-	SyncScanning = "scanning"
-	SyncPaused   = "paused" // every folder is paused
-	SyncUpToDate = "up to date"
+	SyncUnknown    = "unknown" // not reachable, or not read yet
+	SyncError      = "error"
+	SyncWatchError = "watch error" // the file watcher failed: a warning, the folder still syncs on rescans
+	SyncSyncing    = "syncing"
+	SyncScanning   = "scanning"
+	SyncPaused     = "paused" // every folder is paused
+	SyncUpToDate   = "up to date"
 )
 
-// FolderSync is one folder's state for the overall status: SyncError,
-// SyncSyncing, SyncScanning, SyncPaused or SyncUpToDate.
+// FolderSync is one folder's state: SyncPaused, SyncError, SyncWatchError,
+// SyncSyncing, SyncScanning or SyncUpToDate. The grid, the overview tile
+// and both APIs count folders by it, so they always agree.
 func (f *Folder) FolderSync() string {
 	switch {
 	case f.Paused:
 		return SyncPaused
 	case f.State == "error" || f.Error != "" || f.Errors > 0 || f.PullErrors > 0:
 		return SyncError
+	case f.WatchError != "":
+		return SyncWatchError
 	case f.State == "scanning" || f.State == "scan-waiting" || f.State == "starting":
 		return SyncScanning
 	case f.State == "idle" && f.NeedItems == 0:
@@ -118,13 +122,13 @@ func (f *Folder) FolderSync() string {
 }
 
 // SyncStatus is the overall sync state of a server: the worst of its
-// folders (error, syncing, scanning, up to date), "paused" when every
-// folder is paused, "unknown" while it can't be reached.
+// folders (error, watch error, syncing, scanning, up to date), "paused"
+// when every folder is paused, "unknown" while it can't be reached.
 func (s *Server) SyncStatus() string {
 	if s.Status != StatusUp || !s.Loaded {
 		return SyncUnknown
 	}
-	rank := map[string]int{SyncUpToDate: 0, SyncScanning: 1, SyncSyncing: 2, SyncError: 3}
+	rank := map[string]int{SyncUpToDate: 0, SyncScanning: 1, SyncSyncing: 2, SyncWatchError: 3, SyncError: 4}
 	worst, active := SyncUpToDate, 0
 	for _, f := range s.Folders {
 		st := f.FolderSync()

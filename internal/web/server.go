@@ -357,6 +357,7 @@ func (s *Server) funcs() template.FuncMap {
 		"severityName": func(sev any) string { return fmt.Sprint(sev) },
 		"plus1":        func(i int) int { return i + 1 },
 		"list":         func(s ...string) []string { return s },
+		"plural":       plural,
 	}
 }
 

@@ -549,3 +549,85 @@ func TestLoginRedirectStaysOnSite(t *testing.T) {
 		t.Fatalf("login redirect: %d %q", r.StatusCode, r.Header.Get("Location"))
 	}
 }
+
+// The grid, the overview tile, /api/v1/status and /api/v1/ha count folders
+// by the same state function: a watcher error is a warning everywhere and a
+// scanning folder is never "syncing".
+func TestFolderStateAgreesEverywhere(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID = model.StatusUp, true, "AAAAAAA-BBBBBBB"
+		s.Folders = map[string]*model.Folder{
+			"f1": {ID: "f1", Label: "idle-folder", State: "idle"},
+			"f2": {ID: "f2", Label: "sync-folder", State: "syncing", NeedItems: 4},
+			"f3": {ID: "f3", Label: "scan-folder", State: "scanning"},
+			"f4": {ID: "f4", Label: "err-folder", State: "error", Error: "folder marker missing"},
+			"f5": {ID: "f5", Label: "watch-folder", State: "idle", WatchError: "inotify limit"},
+			"f6": {ID: "f6", Label: "paused-folder", Paused: true},
+		}
+	})
+	e.eng.Evaluate()
+	_, ov := e.get("/frag/overview")
+	for _, want := range []string{"✔ 1 idle", "⟳ 1 syncing", "⟳ 1 scanning", "✖ 1 error", "⚠ 1 watch error", "⏸ 1 paused"} {
+		if !strings.Contains(ov, want) {
+			t.Errorf("overview tile lacks %q", want)
+		}
+	}
+	_, grid := e.get("/frag/grid")
+	if !strings.Contains(grid, `c-warn" title="watcher: inotify limit"`) || !strings.Contains(grid, "watch error</span>") {
+		t.Error("grid: the watcher error is not shown as a warning cell")
+	}
+	if n := strings.Count(grid, `cell c-err" title=`); n != 2 { // one per view (wide table and narrow list)
+		t.Errorf("grid: %d error cells, want 2 (the folder error only)", n)
+	}
+	if !strings.Contains(grid, `c-sync" title="Scanning"`) {
+		t.Error("grid: the scanning folder is not shown as scanning")
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, _ := http.DefaultClient.Do(req)
+	var st struct {
+		Servers []struct {
+			ID      string         `json:"id"`
+			Folders map[string]int `json:"folders"`
+		} `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&st)
+	resp.Body.Close()
+	wantCounts := map[string]int{"total": 6, "idle": 1, "syncing": 1, "scanning": 1, "error": 1, "watch_error": 1, "paused": 1}
+	for _, sv := range st.Servers {
+		if sv.ID != "akka" {
+			continue
+		}
+		for k, v := range wantCounts {
+			if sv.Folders[k] != v {
+				t.Errorf("status API folders.%s = %d, want %d", k, sv.Folders[k], v)
+			}
+		}
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/ha", nil)
+	req.Header.Set("Authorization", "Bearer swt_test_token")
+	resp, _ = http.DefaultClient.Do(req)
+	var ha struct {
+		Servers map[string]map[string]any `json:"servers"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	akka := ha.Servers["akka"]
+	for k, v := range map[string]any{"status": "error", "folders": 6.0, "folders_syncing": 1.0, "folders_scanning": 1.0, "folders_error": 1.0, "folders_watch_error": 1.0, "folders_paused": 1.0} {
+		if akka[k] != v {
+			t.Errorf("HA %s = %v, want %v", k, akka[k], v)
+		}
+	}
+	// With the folder error gone, the watcher error is the server's status.
+	e.hub.Update("akka", func(s *model.Server) { delete(s.Folders, "f4") })
+	e.eng.Evaluate()
+	resp, _ = http.DefaultClient.Do(req)
+	_ = json.NewDecoder(resp.Body).Decode(&ha)
+	resp.Body.Close()
+	if ha.Servers["akka"]["status"] != "watch error" {
+		t.Errorf("HA status with a watcher error = %v, want \"watch error\"", ha.Servers["akka"]["status"])
+	}
+}

@@ -15,10 +15,12 @@ import (
 type haServer struct {
 	Name           string  `json:"name"`
 	Running        bool    `json:"running"`
-	Status         string  `json:"status"` // up to date, syncing, scanning, error, paused, unknown, disabled
+	Status         string  `json:"status"` // up to date, syncing, scanning, watch error, error, paused, unknown, disabled
 	Folders        int     `json:"folders"`
 	FoldersSyncing int     `json:"folders_syncing"`
+	FoldersScan    int     `json:"folders_scanning"`
 	FoldersError   int     `json:"folders_error"`
+	FoldersWatch   int     `json:"folders_watch_error"`
 	FoldersPaused  int     `json:"folders_paused"`
 	Received24hGB  float64 `json:"received_24h_gb"`
 	Sent24hGB      float64 `json:"sent_24h_gb"`
@@ -72,11 +74,15 @@ func (s *Server) handleAPIHA(w http.ResponseWriter, r *http.Request) {
 			Received24hGB: gb(day[sv.ID].In), Sent24hGB: gb(day[sv.ID].Out), Moved24hGB: gb(day[sv.ID].In + day[sv.ID].Out),
 			Received7dGB: gb(week[sv.ID].In), Sent7dGB: gb(week[sv.ID].Out), Moved7dGB: gb(week[sv.ID].In + week[sv.ID].Out)}
 		for _, f := range sv.Folders {
-			switch f.FolderSync() {
+			switch f.FolderSync() { // the same states as the dashboard
 			case model.SyncSyncing:
 				h.FoldersSyncing++
+			case model.SyncScanning:
+				h.FoldersScan++
 			case model.SyncError:
 				h.FoldersError++
+			case model.SyncWatchError:
+				h.FoldersWatch++
 			case model.SyncPaused:
 				h.FoldersPaused++
 			}

@@ -16,7 +16,7 @@
       <dl class="facts">
         <dt>Version</dt><dd>{{if .Version}}{{.Version}}{{else}}—{{end}}</dd>
         <dt>Uptime</dt><dd>{{if .Uptime}}{{.Uptime}}{{else}}—{{end}}</dd>
-        <dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{.Errors}} error</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>
+        <dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Scanning}} · <span class="c-sync">⟳ {{.Scanning}} scanning</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{plural .Errors "error" "errors"}}</span>{{end}}{{if .WatchErrors}} · <span class="c-warn">⚠ {{plural .WatchErrors "watch error" "watch errors"}}</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>
         <dt>Problems</dt><dd>{{if .Problems}}<a href="/problems?server={{.ID}}">{{.Problems}} open</a>{{else}}none{{end}}</dd>
         <dt>Certificate</dt><dd>{{if .CertExpires}}<span {{if .CertWarn}}class="c-warn"{{end}}>expires {{.CertExpires}}</span>{{else}}—{{end}}</dd>
         <dt>Shares</dt><dd>{{.Shares}}{{if .LastScan}} · scanned {{.LastScan}}{{with .ScanCost}} <span class="muted small">({{.}})</span>{{end}}{{end}}</dd>

@@ -78,14 +78,14 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 // Overview
 
 type serverTile struct {
-	ID, Name, Status, StatusLabel, StatusIcon, Version, Uptime, Link string
-	Folders, Idle, Syncing, Errors, Paused, Problems                 int
-	CertExpires                                                      string
-	CertWarn                                                         bool
-	LastContact, Mode, LastError                                     string
-	ShareErrors                                                      []string
-	Shares                                                           int
-	LastScan, ScanCost                                               string
+	ID, Name, Status, StatusLabel, StatusIcon, Version, Uptime, Link        string
+	Folders, Idle, Syncing, Scanning, Errors, WatchErrors, Paused, Problems int
+	CertExpires                                                             string
+	CertWarn                                                                bool
+	LastContact, Mode, LastError                                            string
+	ShareErrors                                                             []string
+	Shares                                                                  int
+	LastScan, ScanCost                                                      string
 }
 
 type overviewVM struct {
@@ -142,12 +142,16 @@ func (s *Server) overview(v *engine.View) overviewVM {
 		}
 		for _, f := range sv.Folders {
 			t.Folders++
-			switch {
-			case f.Paused:
+			switch f.FolderSync() {
+			case model.SyncPaused:
 				t.Paused++
-			case f.State == "error" || f.Error != "" || f.Errors > 0 || f.PullErrors > 0:
+			case model.SyncError:
 				t.Errors++
-			case f.State == "idle" && f.NeedItems == 0:
+			case model.SyncWatchError:
+				t.WatchErrors++
+			case model.SyncScanning:
+				t.Scanning++
+			case model.SyncUpToDate:
 				t.Idle++
 			default:
 				t.Syncing++
@@ -252,23 +256,33 @@ func pct(p float64) string {
 }
 
 func serverCell(f *model.Folder) gridCell {
-	switch {
-	case f.Paused:
+	switch f.FolderSync() {
+	case model.SyncPaused:
 		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the server", Problem: true}
-	case f.State == "error" || f.Error != "" || f.Errors > 0 || f.PullErrors > 0 || f.WatchError != "":
+	case model.SyncError:
 		msg := f.Error
 		if msg == "" {
-			msg = fmt.Sprintf("%d failing items", max(f.Errors, f.PullErrors))
-		}
-		if f.WatchError != "" && f.Error == "" {
-			msg = "watcher: " + f.WatchError
+			msg = plural(max(f.Errors, f.PullErrors), "failing item", "failing items")
 		}
 		return gridCell{Class: "err", Icon: "✖", Text: "error", Title: msg, Problem: true}
-	case f.State == "idle" && f.NeedItems == 0:
+	case model.SyncWatchError:
+		return gridCell{Class: "warn", Icon: "⚠", Text: "watch error", Title: "watcher: " + f.WatchError, Problem: true}
+	case model.SyncScanning:
+		return gridCell{Class: "sync", Icon: "⟳", Text: "scanning", Title: "Scanning"}
+	case model.SyncUpToDate:
 		return gridCell{Class: "ok", Icon: "✔", Text: "100%", Title: "Up to date"}
 	default:
-		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %d items left", f.State, f.NeedItems)}
+		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %s left", f.State, plural(int(f.NeedItems), "item", "items"))}
 	}
+}
+
+// plural formats a count with its noun: plural(1, "folder", "folders") is
+// "1 folder", plural(3, ...) is "3 folders".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 func (s *Server) grid(v *engine.View) gridVM {
