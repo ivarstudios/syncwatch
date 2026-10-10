@@ -333,3 +333,46 @@ func TestRemovedServerClosesItsFindingsQuietly(t *testing.T) {
 		t.Fatalf("observations of removed servers should be dropped: %v", obs)
 	}
 }
+
+// The notifier reads the pending "resolved" rows, sends, then marks them.
+// A finding that re-opens in between inherits the old PingedAt (so a
+// flap isn't announced twice). The mark must not then land on that new
+// open record: the "resolved" went out, so the new occurrence has to be
+// announced again and reported resolved when it really ends.
+func TestResolvedMarkDoesNotTouchReopenedFinding(t *testing.T) {
+	r := newRig(t)
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince, s.LastError = model.StatusDown, r.now, "refused" })
+	h1 := find(r.at(0), "H1", "B")
+	r.eng.MarkPinged([]string{h1.ID}, r.now)
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	r.at(time.Minute) // resolved
+	pend, _ := r.st.PendingResolved()
+	if len(pend) != 1 {
+		t.Fatalf("pending resolved: %d", len(pend))
+	}
+	// While the "resolved" message is being sent, B goes down again.
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
+	again := find(r.at(time.Second), "H1", "B")
+	if again == nil || again.PingedAt.IsZero() {
+		t.Fatalf("H1 should be open again, carrying the ping: %+v", again)
+	}
+	r.eng.MarkResolvedNotified([]string{pend[0].ID}, r.now)
+	rec, _ := r.st.Record(h1.ID)
+	if !rec.Open() || !rec.PingedAt.IsZero() || !rec.ResolvedNotifiedAt.IsZero() {
+		t.Fatalf("the re-opened record must be open and unannounced: open=%v pinged=%v notified=%v", rec.Open(), !rec.PingedAt.IsZero(), !rec.ResolvedNotifiedAt.IsZero())
+	}
+	if got := find(r.eng.View(), "H1", "B"); got == nil || !got.PingedAt.IsZero() {
+		t.Fatalf("the engine's copy must agree: %+v", got)
+	}
+	// Announced again, then really resolved: a "resolved" is due once more.
+	r.eng.MarkPinged([]string{h1.ID}, r.now)
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	r.at(time.Minute)
+	if pend, _ = r.st.PendingResolved(); len(pend) != 1 {
+		t.Fatalf("pending resolved after the second round: %d", len(pend))
+	}
+	r.eng.MarkResolvedNotified([]string{pend[0].ID}, r.now)
+	if pend, _ = r.st.PendingResolved(); len(pend) != 0 {
+		t.Fatal("the mark on a resolved row must stick")
+	}
+}

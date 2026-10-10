@@ -559,6 +559,14 @@ func (e *Engine) mark(ids []string, at time.Time, resolved bool) {
 	defer e.mu.Unlock()
 	for _, id := range ids {
 		r := e.open[id]
+		if r != nil && resolved {
+			// The "resolved" message was about an earlier occurrence that
+			// has re-opened since, inheriting its PingedAt (see Evaluate).
+			// That occurrence is done with; the new one is unannounced.
+			r.PingedAt = time.Time{}
+			e.save(r)
+			continue
+		}
 		if r == nil {
 			var err error
 			if r, err = e.st.Record(id); err != nil || r == nil {
