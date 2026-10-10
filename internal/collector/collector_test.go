@@ -42,6 +42,7 @@ type fakeST struct {
 	startTime  string // overrides the fixture's startTime (a "restart")
 	inBytes    int64  // traffic totals since "start"
 	outBytes   int64
+	conflicts  map[string]int // overrides the fixture's conflict counters
 }
 
 func newFakeST(t *testing.T) *fakeST {
@@ -156,6 +157,11 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/metrics":
 		var c map[string]int
 		_ = json.Unmarshal(f.fixture("conflicts"), &c)
+		f.mu.Lock()
+		for k, v := range f.conflicts {
+			c[k] = v
+		}
+		f.mu.Unlock()
 		for k, v := range c {
 			fmt.Fprintf(w, "syncthing_model_folder_conflicts_total{folder=%q} %d\n", k, v)
 		}
@@ -1153,4 +1159,65 @@ func TestEventBatchRefreshesOnce(t *testing.T) {
 	if n := logs.count("level=WARN msg=\"" + line); n != 1 {
 		t.Fatalf("%d WARN lines for two failed pending re-reads in one session; want 1", n)
 	}
+}
+
+// Conflict counters (H10) are read at every session start, not only at
+// full checks, and a counter that restarted with Syncthing counts in
+// full. A restart that breaks no request is noticed by the next full check,
+// which also follows the restarted event IDs from 0.
+func TestConflictsAcrossReconnectsAndRestarts(t *testing.T) {
+	fake, hub, _, m, stop := setup(t)
+	defer stop()
+	st := m.st
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Structure != nil })
+	full := fake.count("/rest/db/status")
+	since := func() int64 {
+		t.Helper()
+		c, err := st.ConflictsSince(time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c["akka"]["p-alpha"]
+	}
+	if n := since(); n != 0 {
+		t.Fatalf("baseline reading counted %d conflicts", n)
+	}
+	// Some events first, so the collector's event ID is well above the
+	// ones Syncthing hands out after a restart.
+	for i := 0; i < 3; i++ {
+		fake.push("StateChanged", map[string]string{"folder": "p-alpha", "to": "scanning"})
+	}
+	waitFor(t, hub, "events applied", func(s *model.Server) bool { return s.Folders["p-alpha"].State == "scanning" })
+
+	// Two conflicts since the full check: read when the collector reconnects
+	// (a resume, no full check).
+	fake.mu.Lock()
+	fake.conflicts = map[string]int{"p-alpha": 2}
+	fake.mu.Unlock()
+	dropAndReconnect(t, fake, m, nil)
+	waitUntil(t, "the conflicts to be counted at session start", func() bool { return since() == 2 })
+	if got := fake.count("/rest/db/status"); got != full {
+		t.Fatalf("the reconnect ran a full re-check (db/status %d -> %d)", full, got)
+	}
+
+	// Syncthing restarts: the counter starts over, and its new value is new.
+	dropAndReconnect(t, fake, m, func() {
+		fake.mu.Lock()
+		fake.startTime = "2026-10-02T09:00:00+02:00"
+		fake.conflicts = map[string]int{"p-alpha": 1}
+		fake.mu.Unlock()
+	})
+	waitUntil(t, "the conflicts after the restart to be counted", func() bool { return since() == 3 })
+
+	// A restart that breaks no request: the next full check notices the new
+	// startTime and follows the event IDs, which start over, from 0.
+	fake.mu.Lock()
+	fake.startTime = "2026-10-03T09:00:00+02:00"
+	fake.conflicts = map[string]int{"p-alpha": 1}
+	fake.events, fake.nextID = nil, 0
+	fake.mu.Unlock()
+	m.RescanNow()
+	waitUntil(t, "the restart to be counted", func() bool { return since() == 4 })
+	fake.push("FolderPaused", map[string]string{"id": "p-beta", "label": "LIVE-BETA-1SOURCE"}) // event ID 1
+	waitFor(t, hub, "the event after the restart", func(s *model.Server) bool { return s.Folders["p-beta"] != nil && s.Folders["p-beta"].Paused })
 }

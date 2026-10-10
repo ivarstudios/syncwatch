@@ -181,6 +181,7 @@ func (c *Collector) session(ctx context.Context) error {
 		if recent && time.Since(c.lastFull) < cfg.FullCheckInterval.D() && continues(evs, c.lastEventID) {
 			c.log.Debug("reconnected; resuming events without a full re-check", "since", c.lastEventID)
 			c.applyBatch(ctx, evs)
+			c.readConflicts(ctx, status.StartTime)
 			c.succeeded()
 			c.maybeScan(ctx)
 			return c.eventLoop(ctx)
@@ -192,6 +193,7 @@ func (c *Collector) session(ctx context.Context) error {
 		}
 	} else if recent && time.Since(c.lastFull) < cfg.PollInterval.D() {
 		// Polled mode: the next full check is due at lastFull + poll_interval anyway.
+		c.readConflicts(ctx, status.StartTime)
 		c.succeeded()
 		return c.pollLoop(ctx)
 	}
@@ -446,6 +448,15 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if !status.StartTime.Equal(c.startTime) {
+		// Syncthing restarted between two requests without breaking one:
+		// its event IDs start over, so the stream is followed from 0 again.
+		if !c.startTime.IsZero() {
+			c.log.Info("Syncthing restarted; re-reading everything", "startTime", status.StartTime)
+		}
+		c.startTime = status.StartTime
+		c.lastEventID = 0
+	}
 	version, err := cl.SystemVersion(ctx)
 	if err != nil {
 		return err
@@ -610,12 +621,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		}
 	}
 
-	conflicts, err := cl.ConflictCounters(ctx)
-	if err != nil {
-		c.log.Warn("reading conflict counters from /metrics", "err", shortErr(err))
-	} else if err := c.st.RecordConflicts(c.id, status.StartTime.UTC().Format(time.RFC3339), conflicts, time.Now()); err != nil {
-		c.log.Warn("recording conflict counters", "err", err)
-	}
+	c.readConflicts(ctx, status.StartTime)
 
 	newDevices := map[string]*model.Device{}
 	for _, d := range devices {
@@ -656,9 +662,6 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		s.Connections = newConns
 		s.PendingDevices = pendingDevices
 		s.PendingFolders = pendingFolders
-		if conflicts != nil {
-			s.Conflicts = conflicts
-		}
 		s.Loaded = true
 		s.LastFullCheck = now
 		s.LastContact = now
@@ -667,6 +670,23 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	c.needFull = false
 	c.log.Debug("full re-check done", "folders", len(newFolders), "devices", len(newDevices), "took", time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// readConflicts reads the conflict counters from /metrics and records their
+// increase since the last reading (H10). Besides every full check it runs
+// at each session start, so a counter reset by a Syncthing restart is seen
+// sooner; the whole new value counts as new conflicts then. A failure only
+// costs this reading.
+func (c *Collector) readConflicts(ctx context.Context, startTime time.Time) {
+	conflicts, err := c.client.ConflictCounters(ctx)
+	if err != nil {
+		c.log.Warn("reading conflict counters from /metrics", "err", shortErr(err))
+		return
+	}
+	if err := c.st.RecordConflicts(c.id, startTime.UTC().Format(time.RFC3339), conflicts, time.Now()); err != nil {
+		c.log.Warn("recording conflict counters", "err", err)
+	}
+	c.update(func(s *model.Server) { s.Conflicts = conflicts })
 }
 
 // perFolder reports whether an error concerns only one folder or device
