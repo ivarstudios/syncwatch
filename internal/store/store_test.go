@@ -148,6 +148,22 @@ func TestDatabaseFilesOwnerOnly(t *testing.T) {
 	}
 }
 
+func TestSettingsWithPrefix(t *testing.T) {
+	s := testStore(t)
+	for k, v := range map[string]string{"cli.notice.1": "a", "cli.notice.2": "b", "cli.noticeX": "c", "cli_notice.3": "d", "other": "e"} {
+		if err := s.SetSetting(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.SettingsWithPrefix("cli.notice.")
+	if err != nil || len(got) != 2 || got["cli.notice.1"] != "a" || got["cli.notice.2"] != "b" {
+		t.Fatalf("got %v %v", got, err)
+	}
+	if got, err := s.SettingsWithPrefix("none."); err != nil || len(got) != 0 {
+		t.Fatalf("no match: %v %v", got, err)
+	}
+}
+
 func TestConfigRevision(t *testing.T) {
 	s := testStore(t)
 	if rev, err := s.ConfigRevision(); err != nil || rev != 0 {

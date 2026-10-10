@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/settings"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -252,6 +253,174 @@ func TestConfigReloadedAfterExternalImport(t *testing.T) {
 	}
 	if key, _, _ := st.ServerKey("b"); key != "key-b" {
 		t.Fatalf("B's key: %q", key)
+	}
+}
+
+// recSender is a notification channel that records what reaches it, with
+// the webhook it was made for (read from the store, as the notifier does).
+type recSender struct {
+	hook string
+	got  chan<- sentNotice
+}
+
+type sentNotice struct {
+	hook string
+	m    notify.Message
+}
+
+func (s *recSender) Name() string { return "discord" }
+
+func (s *recSender) Send(_ context.Context, m notify.Message) error {
+	s.got <- sentNotice{s.hook, m}
+	return nil
+}
+
+func nextNotice(t *testing.T, got <-chan sentNotice) sentNotice {
+	t.Helper()
+	select {
+	case n := <-got:
+		return n
+	case <-time.After(5 * time.Second):
+		t.Fatal("no settings notice")
+	}
+	return sentNotice{}
+}
+
+func noMoreNotices(t *testing.T, got <-chan sentNotice) {
+	t.Helper()
+	select {
+	case n := <-got:
+		t.Fatalf("one more settings notice: %q %q", n.m.Title, n.m.Summary)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// syncwatch import-config and reset-admin-password while serving: the
+// server that runs sends one settings notice for each and logs a warning.
+// An import that replaces the webhook is announced to the old webhook, as a
+// change in Settings is. A command run while no server runs is announced
+// at the next start, one time.
+func TestCLIChangesAnnounced(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg, err := LoadConfig(st, "", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := config.NewHolder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const oldHook, newHook = "https://discord.com/api/webhooks/1/old", "https://discord.com/api/webhooks/2/new"
+	if err := st.SetSecret(store.SecretDiscordWebhook, oldHook); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan sentNotice, 10)
+	ntf := notify.New(nil, st, holder, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ntf.SetSenders(func() []notify.Sender {
+		hook, _ := st.Secret(store.SecretDiscordWebhook)
+		return []notify.Sender{&recSender{hook: hook, got: got}}
+	})
+	start := func() *configWatcher {
+		w := &configWatcher{st: st, holder: holder, log: log, onReload: ntf.ChannelsChanged, noticeLater: ntf.NoticeLater}
+		if w.applied, err = st.ConfigRevision(); err != nil {
+			t.Fatal(err)
+		}
+		w.capture()
+		return w
+	}
+	w := start()
+	w.check()
+	noMoreNotices(t, got)
+
+	// The import brings a server and a new webhook.
+	yaml := filepath.Join(dir, "new.yaml")
+	if err := os.WriteFile(yaml, []byte("servers:\n  - name: A\n    url: https://a.invalid:8384\nnotifications:\n  discord_webhook: "+newHook+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other, err := OpenExistingStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ImportFile(other, yaml); err != nil {
+		t.Fatal(err)
+	}
+	other.Close()
+	w.check()
+	n := nextNotice(t, got)
+	if n.hook != oldHook {
+		t.Fatalf("the import was announced to %s, not to the webhook it replaced", n.hook)
+	}
+	if !strings.Contains(n.m.Title, titleCLIImport) || n.m.Summary != "syncwatch import-config replaced the configuration.\nThe import changed these sections of Settings: Servers.\nThe Discord webhook is replaced." {
+		t.Fatalf("import notice: %q %q", n.m.Title, n.m.Summary)
+	}
+	noMoreNotices(t, got)
+	if len(holder.Get().Servers) != 1 {
+		t.Fatal("the import was not applied")
+	}
+	for _, want := range []string{`level=WARN msg="settings changed" change="` + titleCLIImport + `"`, `source="command line"`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("no %q in the log:\n%s", want, logs.String())
+		}
+	}
+	w.check()
+	noMoreNotices(t, got)
+
+	// The password reset of the command line, after the import: to the new
+	// webhook, the channel of the configuration that runs now.
+	logs.Reset()
+	other, err = OpenExistingStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordPasswordReset(other); err != nil {
+		t.Fatal(err)
+	}
+	other.Close()
+	w.check()
+	n = nextNotice(t, got)
+	if n.hook != newHook || !strings.Contains(n.m.Title, titleCLIReset) || n.m.Summary != "The new administrator password is set. syncwatch logged out all sessions." {
+		t.Fatalf("reset notice to %s: %q %q", n.hook, n.m.Title, n.m.Summary)
+	}
+	if !strings.Contains(logs.String(), `level=WARN msg="settings changed" change="`+titleCLIReset+`"`) {
+		t.Fatalf("reset not logged:\n%s", logs.String())
+	}
+	w.check()
+	noMoreNotices(t, got)
+
+	// An import that changes nothing has no notice.
+	other, _ = OpenExistingStore(dir, "")
+	if err := os.WriteFile(yaml, []byte("servers:\n  - name: A\n    url: https://a.invalid:8384\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ImportFile(other, yaml); err != nil {
+		t.Fatal(err)
+	}
+	other.Close()
+	w.check()
+	noMoreNotices(t, got)
+
+	// A reset while no server ran: the next start sends it one time, with
+	// the time of the change.
+	if err := st.SetJSONSetting(keyCLINotice+"1", cliNotice{At: time.Now().Add(-2 * time.Hour), Title: titleCLIReset, Summary: "The new administrator password is set."}); err != nil {
+		t.Fatal(err)
+	}
+	w = start()
+	w.check()
+	n = nextNotice(t, got)
+	if !strings.Contains(n.m.Title, titleCLIReset) || !strings.Contains(n.m.Summary, "\nChanged at ") {
+		t.Fatalf("notice at the next start: %q %q", n.m.Title, n.m.Summary)
+	}
+	w.check()
+	noMoreNotices(t, got)
+	if left, _ := st.SettingsWithPrefix(keyCLINotice); len(left) != 0 {
+		t.Fatalf("notices left in the store: %v", left)
 	}
 }
 

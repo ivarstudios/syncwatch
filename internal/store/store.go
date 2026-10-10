@@ -198,6 +198,24 @@ func (s *Store) DeleteSetting(key string) error {
 	return err
 }
 
+// SettingsWithPrefix returns the settings whose key starts with prefix, by key.
+func (s *Store) SettingsWithPrefix(prefix string) (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE substr(key, 1, ?) = ?`, len(prefix), prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
 // JSONSetting decodes a JSON setting into out. found is false if unset.
 func (s *Store) JSONSetting(key string, out any) (found bool, err error) {
 	v, err := s.Setting(key)

@@ -3,14 +3,18 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -140,7 +144,7 @@ func saveConfig(st *store.Store, c *config.Config) (int64, error) {
 }
 
 // ImportFile replaces the stored configuration with a YAML file. A running
-// server applies it within configCheckInterval.
+// server applies it within configCheckInterval and sends a settings notice.
 func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -154,14 +158,89 @@ func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	changes := importChanges(st, old, c)
 	n, err := settings.ImportSecrets(st, c)
 	if err != nil {
 		return nil, 0, err
+	}
+	// Recorded before the revision changes: the server that runs sends the
+	// notice to the channels of the configuration that it has, thus a
+	// webhook that the file replaces also gets it.
+	if len(changes) > 0 {
+		if err := recordCLINotice(st, titleCLIImport, append([]string{"syncwatch import-config replaced the configuration."}, changes...)); err != nil {
+			return nil, 0, err
+		}
 	}
 	if _, err := saveConfig(st, c); err != nil {
 		return nil, 0, err
 	}
 	return c, n, settings.DropRemovedServers(st, old, c)
+}
+
+// importChanges words what an import changes, for its settings notice: the
+// sections of the Settings page and the secrets in the file. It runs before
+// the secrets are stored, to tell a replaced secret from a new one.
+func importChanges(st *store.Store, old, c *config.Config) []string {
+	if old == nil {
+		old = config.Default()
+	}
+	var out []string
+	if s := config.ChangedSections(old, c); len(s) > 0 {
+		out = append(out, "The import changed these sections of Settings: "+strings.Join(s, ", ")+".")
+	}
+	secret := func(had bool, what string) {
+		if had {
+			out = append(out, "The "+what+" is replaced.")
+		} else {
+			out = append(out, "The "+what+" is added.")
+		}
+	}
+	for _, sv := range c.Servers {
+		if sv.APIKey != "" {
+			secret(st.HasSecret(store.ServerAPIKeySecret(sv.ID)), "API key of the server "+sv.Name)
+		}
+	}
+	if c.Notify.DiscordWebhook != "" {
+		secret(st.HasSecret(store.SecretDiscordWebhook), "Discord webhook")
+	}
+	if c.API.Token != "" {
+		secret(st.HasSecret(store.SecretAPIToken), "API token")
+	}
+	return out
+}
+
+// keyCLINotice is the prefix of the settings that keep a settings notice for
+// a change made with the command line (import-config, reset-admin-password).
+// The server that runs sends them in less than configCheckInterval and
+// deletes them. A server that does not run sends them when it starts.
+const keyCLINotice = "cli.notice."
+
+// Titles of the settings notices for changes made with the command line.
+const (
+	titleCLIImport = "Configuration changed with the command line"
+	titleCLIReset  = "Administrator password changed with the command line"
+)
+
+// cliNotice is a settings notice that a command recorded for the server.
+type cliNotice struct {
+	At      time.Time `json:"at"`
+	Title   string    `json:"title"`
+	Summary string    `json:"summary"`
+}
+
+// recordCLINotice stores a settings notice for the server. Each notice has a
+// setting of its own, thus the notices of 2 commands at the same time stay.
+func recordCLINotice(st *store.Store, title string, lines []string) error {
+	now := time.Now()
+	id := make([]byte, 4)
+	_, _ = rand.Read(id)
+	return st.SetJSONSetting(fmt.Sprintf("%s%019d-%x", keyCLINotice, now.UnixNano(), id), cliNotice{At: now, Title: title, Summary: strings.Join(lines, "\n")})
+}
+
+// RecordPasswordReset records a reset of the administrator password with the
+// command line, for the settings notice that the server sends.
+func RecordPasswordReset(st *store.Store) error {
+	return recordCLINotice(st, titleCLIReset, []string{"The new administrator password is set. syncwatch logged out all sessions."})
 }
 
 // configCheckInterval is how often a running server looks for a
@@ -178,9 +257,31 @@ type configWatcher struct {
 	holder   *config.Holder
 	log      *slog.Logger
 	onReload func() // after a change from outside was applied
+	// noticeLater captures the notification channels configured now and
+	// returns a function that sends a settings notice to them
+	// (notify.Notifier.NoticeLater).
+	noticeLater func() func(title, summary string)
 
 	mu      sync.Mutex
-	applied int64 // the revision the holder has
+	applied int64                       // the revision the holder has
+	notice  func(title, summary string) // the channels of that configuration
+}
+
+// capture keeps the notification channels of the configuration that runs.
+// A command writes a new webhook before the watcher sees the change, thus
+// the channels are captured before the change, not when it is found.
+func (w *configWatcher) capture() {
+	if w.noticeLater != nil {
+		w.notice = w.noticeLater()
+	}
+}
+
+// channelsChanged captures the channels again after a change in this
+// process (a new webhook in Settings).
+func (w *configWatcher) channelsChanged() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.capture()
 }
 
 // save stores a configuration changed in this process and installs it.
@@ -192,14 +293,50 @@ func (w *configWatcher) save(c *config.Config) error {
 		return err
 	}
 	w.applied = rev
-	return w.holder.Set(c)
+	if err := w.holder.Set(c); err != nil {
+		return err
+	}
+	w.capture()
+	return nil
 }
 
-// check reloads the configuration if another process changed it.
+// sendCLINotices sends the settings notices that commands recorded, and
+// deletes them.
+func (w *configWatcher) sendCLINotices() {
+	pending, err := w.st.SettingsWithPrefix(keyCLINotice)
+	if err != nil {
+		w.log.Error("cannot read the settings notices of the command line", "err", err)
+		return
+	}
+	for _, key := range slices.Sorted(maps.Keys(pending)) {
+		var n cliNotice
+		if err := json.Unmarshal([]byte(pending[key]), &n); err == nil && n.Title != "" {
+			summary := n.Summary
+			if time.Since(n.At) > time.Minute {
+				// Sent at the next start, or a long time after the change.
+				summary += "\nChanged at " + n.At.In(w.holder.Get().Location()).Format("2006-01-02 15:04") + "."
+			}
+			w.log.Warn("settings changed", "change", n.Title, "detail", summary, "source", "command line")
+			if w.notice != nil {
+				w.notice(n.Title, summary)
+			}
+		}
+		if err := w.st.DeleteSetting(key); err != nil {
+			w.log.Error("cannot delete a settings notice of the command line", "err", err)
+		}
+	}
+}
+
+// check reloads the configuration if another process changed it, and sends
+// the settings notices of the command line.
 func (w *configWatcher) check() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	rev, err := w.st.ConfigRevision()
+	// After the revision: a command records its notice before it saves, thus
+	// the notice of a change found now goes to the channels that were
+	// configured before the change.
+	w.sendCLINotices()
 	if err != nil || rev == w.applied {
 		return
 	}
@@ -216,6 +353,7 @@ func (w *configWatcher) check() {
 		return
 	}
 	w.log.Info("configuration reloaded after a change by another process (syncwatch import-config)", "revision", rev, "servers", len(c.Servers))
+	w.capture()
 	if w.onReload != nil {
 		w.onReload()
 	}
@@ -291,9 +429,16 @@ func Run(ctx context.Context, o Options) error {
 	})
 	// An import may bring a new webhook; retry delivery at once (as the UI's
 	// import does).
-	watcher := &configWatcher{st: st, holder: holder, log: log, onReload: ntf.ChannelsChanged}
+	watcher := &configWatcher{st: st, holder: holder, log: log, onReload: ntf.ChannelsChanged, noticeLater: ntf.NoticeLater}
 	if watcher.applied, err = st.ConfigRevision(); err != nil {
 		return err
+	}
+	watcher.capture()
+	// A new webhook in Settings: the watcher keeps the new channels for the
+	// notices of the command line.
+	channelsChanged := func() {
+		ntf.ChannelsChanged()
+		watcher.channelsChanged()
 	}
 
 	srvWeb, err := web.New(holder, st, eng, web.Hooks{
@@ -309,7 +454,7 @@ func Run(ctx context.Context, o Options) error {
 		SendTest:        ntf.SendTest,
 		Notice:          ntf.Notice,
 		NoticeLater:     ntf.NoticeLater,
-		ChannelsChanged: ntf.ChannelsChanged,
+		ChannelsChanged: channelsChanged,
 		Delivery:        ntf.Delivery,
 	}, o.Version, log)
 	if err != nil {
