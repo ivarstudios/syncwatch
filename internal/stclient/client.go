@@ -184,8 +184,12 @@ func New(o Options) (*Client, error) {
 		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConnsPerHost: 4,
-		IdleConnTimeout:     30 * time.Second,
-		ForceAttemptHTTP2:   false,
+		// Longer than the 60 s traffic sampling interval, so a sample reuses
+		// the connection instead of opening a new one (a TLS handshake over
+		// the VPN) every time. Syncthing itself closes idle connections after
+		// 15 s, so this only takes effect behind a gate or a proxy.
+		IdleConnTimeout:   90 * time.Second,
+		ForceAttemptHTTP2: false,
 	}
 	c.hc = &http.Client{
 		Transport: tr,
