@@ -221,21 +221,26 @@ func (s *Server) announcer(r *http.Request) func(title, summary string) {
 // confirmed checks the "confirm" field of a form against the admin password
 // or the server's stored API key. Accepting a new certificate or forgetting a
 // pin can send the stored key to a different machine, so an admin session
-// alone isn't enough. Failures count in the rate limit of confirmations. It
-// reports whether the confirmation is correct, or the message to show when
-// the rate limit refuses it.
-func (s *Server) confirmed(r *http.Request, info requestInfo, serverID string) (ok bool, limited string) {
+// alone isn't enough. Failures count in the rate limit of confirmations and
+// are logged as refused (the limit bounds the lines). It reports whether the
+// confirmation is correct, or the message to show when the rate limit
+// refuses it.
+func (s *Server) confirmed(r *http.Request, info requestInfo, serverID, refused string) (ok bool, limited string) {
 	v := r.FormValue("confirm")
 	if v == "" {
 		return false, ""
 	}
-	return s.limitedCheck(r, info, func() bool {
+	ok, limited = s.limitedCheck(r, info, func() bool {
 		if h, _ := s.st.Setting(KeyAdminHash); h != "" && CheckPassword(v, h) {
 			return true
 		}
 		key, _, err := s.st.ServerKey(serverID)
 		return err == nil && key != "" && subtle.ConstantTimeCompare([]byte(v), []byte(key)) == 1
 	})
+	if !ok && limited == "" {
+		s.log.Warn(refused, "ip", clientIP(r), "server", serverID)
+	}
+	return ok, limited
 }
 
 // limitedCheck runs a password check under the rate limit of confirmations,
@@ -338,7 +343,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		s.redirect(w, r, "/settings#servers", "The API URL changed. Type the API key again for "+sv.URL+". "+keyOnlyToURL, true)
 		return
 	case resetPin && key == "":
-		if ok, limited := s.confirmed(r, info, sv.ID); !ok {
+		if ok, limited := s.confirmed(r, info, sv.ID, "pinned certificate removal refused"); !ok {
 			s.redirect(w, r, "/settings#servers", orText(limited, "To remove the pinned certificate, type the administrator password or this server's API key."), true)
 			return
 		}
@@ -412,7 +417,7 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info
 
 func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	id := r.PathValue("id")
-	if ok, limited := s.confirmed(r, info, id); !ok {
+	if ok, limited := s.confirmed(r, info, id, "certificate accept refused"); !ok {
 		s.redirect(w, r, "/settings#servers", orText(limited, "To accept the new certificate, type the administrator password or this server's API key."), true)
 		return
 	}
@@ -959,7 +964,7 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 	// A new viewer password lets someone else in, too.
 	newViewerPW := viewerPW != "" && c.Access.Mode == config.AccessBuiltin && c.Access.Viewer == config.ViewerPassword
 	if weakensAccess(old, c) || newViewerPW {
-		if msg := s.confirmAdmin(r, info); msg != "" {
+		if msg := s.confirmAdmin(r, info, "access change refused"); msg != "" {
 			s.redirect(w, r, "/settings#access", msg, true)
 			return
 		}
@@ -1003,9 +1008,10 @@ func weakensAccess(old, c *config.Config) bool {
 
 // confirmAdmin checks the admin password in the "confirm" field, which a
 // change that weakens access needs: an admin session alone isn't enough.
-// It returns "" when confirmed, otherwise the message to show. With no admin
-// password set (proxy mode) there's nothing to confirm with.
-func (s *Server) confirmAdmin(r *http.Request, info requestInfo) string {
+// It returns "" when confirmed, otherwise the message to show; a password
+// that is not correct is logged as refused. With no admin password set
+// (proxy mode) there's nothing to confirm with.
+func (s *Server) confirmAdmin(r *http.Request, info requestInfo, refused string) string {
 	h, _ := s.setting(KeyAdminHash)
 	if h == "" {
 		return ""
@@ -1020,6 +1026,7 @@ func (s *Server) confirmAdmin(r *http.Request, info requestInfo) string {
 	case limited != "":
 		return limited
 	case !ok:
+		s.log.Warn(refused, "ip", clientIP(r))
 		return "The administrator password is not correct. " + need
 	}
 	return ""
@@ -1033,6 +1040,7 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 			s.redirect(w, r, "/settings#access", limited, true)
 			return
 		case !ok:
+			s.log.Warn("password change refused", "ip", clientIP(r))
 			s.redirect(w, r, "/settings#access", "The current password is not correct.", true)
 			return
 		}
@@ -1124,7 +1132,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 		return
 	}
 	if weakensAccess(old, c) {
-		if msg := s.confirmAdmin(r, info); msg != "" {
+		if msg := s.confirmAdmin(r, info, "import refused"); msg != "" {
 			s.redirect(w, r, "/settings#import", "Not imported. The file sets login to off or gives viewer access to more people. "+msg, true)
 			return
 		}

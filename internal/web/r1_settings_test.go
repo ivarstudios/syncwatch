@@ -1,13 +1,16 @@
 package web
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -505,5 +508,49 @@ func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
 	_, page = adminEnv(t, twoServers).get("/settings")
 	if strings.Contains(page, "cannot decrypt") || !strings.Contains(page, "(Set. Keep the field empty to keep the current value.)") || !strings.Contains(page, "API token: <strong>set</strong>.") {
 		t.Error("a readable secret is not shown as set")
+	}
+}
+
+// lockedBuffer collects log lines that the server goroutines write.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// W-031: a refused confirmation (accept certificate with a wrong password
+// or API key) left no log line. Each refused confirmation now logs a WARN
+// line with the client address (and the server); an empty field is no try.
+func TestRefusedConfirmationsAreLogged(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	logs := &lockedBuffer{}
+	e.web.log = slog.New(slog.NewTextHandler(logs, nil))
+	csrf := e.csrf("/settings")
+	e.post("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf}, "fingerprint": {"ff"}, "confirm": {"wrong password"}})
+	e.post("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf}, "fingerprint": {"ff"}, "confirm": {""}})
+	e.post("/settings/servers", url.Values{"csrf": {csrf}, "orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "reset_pin": {"on"}, "confirm": {"wrong key"}})
+	e.post("/settings/access", url.Values{"csrf": {csrf}, "mode": {"builtin"}, "viewer": {"open"}, "confirm": {"wrong password"}})
+	e.post("/settings/import", url.Values{"csrf": {csrf}, "confirm": {"wrong password"}, "yaml": {"servers: [{name: AKKA, url: 'https://a:1'}]\naccess: {mode: proxy}\n"}})
+	e.post("/settings/password", url.Values{"csrf": {csrf}, "current": {"wrong password"}, "password": {"a new long password"}, "password2": {"a new long password"}})
+	got := logs.String()
+	for _, want := range []string{`level=WARN msg="certificate accept refused" ip=127.0.0.1 server=akka`, `level=WARN msg="pinned certificate removal refused" ip=127.0.0.1 server=akka`,
+		`level=WARN msg="access change refused" ip=127.0.0.1`, `level=WARN msg="import refused" ip=127.0.0.1`, `level=WARN msg="password change refused" ip=127.0.0.1`} {
+		if strings.Count(got, want) != 1 {
+			t.Errorf("log has %d lines %s:\n%s", strings.Count(got, want), want, got)
+		}
+	}
+	if strings.Contains(got, "wrong") {
+		t.Fatal("the log shows a typed password")
 	}
 }
