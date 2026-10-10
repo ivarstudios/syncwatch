@@ -1,86 +1,118 @@
 # Plan: syncwatch to v1.0
 
-The [README](README.md) documents what syncwatch does and how (install, configuration, checks, notifications, security). This plan covers what is left before v1.0, the known gaps, and the decisions behind the design. Update it as work lands.
+The [README](README.md) describes what syncwatch does and how: install, configuration, checks, notifications, security. This plan has what remains before v1.0, the known gaps and the decisions behind the design. Update it when work lands.
 
-## 1. Where things stand (2026-10-08)
+## 1. Current state (2026-10-10)
 
-| | State |
+| Part | State |
 |---|---|
-| Built | The read-only client (one typed method per allowlisted `GET`); the collector (event stream, periodic full re-checks, polled mode, structure scan, traffic counters); the checks H1–H11, X1–X2, S1–S7, C1–C3; the finding engine; the Discord notifier (urgent pings, resolved messages, daily reminder, quiet hours, weekly report, settings notices, back-off with a banner); the SQLite store; the dashboard (overview, folder grid, problems) and settings; the JSON status API and the Home Assistant endpoint; the CLI (`serve`, `probe`, `gate`, `reset-admin-password`, `import-config`, `export-config`, `healthcheck`); the read-only gate; the Docker image; CI and release workflows. |
-| Reviews | Two security reviews, all findings fixed or documented (reverse-proxy limits, monitoring the monitor's own host). |
-| Tests | Unit tests (with the race detector in CI); integration against real Syncthing 2.1.5 processes (three servers, two PCs, fake Discord); a Docker Compose suite (the image, Syncthing containers, a gate, fake Discord); a structure-scan load simulation (Docker, run by hand). |
-| CI | Unit, integration and Compose suites on every push to `main` and on pull requests. |
-| Release | None yet: no tag, so no published image or binaries. The README's status note says so. |
-| Real servers | Not yet run against real NAS hardware (§2, step 2). |
+| Built | The read-only client (one typed method for each `GET` of the allowlist). The collector (event stream, periodic full checks, polled mode, structure scan, traffic counters). The checks H1 to H11, X1 to X2, S1 to S7, C1 to C3. The finding engine. The Discord notifier (urgent messages, resolved messages, daily reminder, quiet hours, weekly report, settings notices, a banner while a send fails). The SQLite store. The dashboard (Overview, Folders, Findings) and Settings. The JSON status API and the Home Assistant endpoint. The CLI (`serve`, `probe`, `gate`, `reset-admin-password`, `import-config`, `export-config`, `healthcheck`, `--version`). The read-only gate. The Docker image. The CI and release workflows. |
+| Reviews | 2 security reviews and the review of October 2026 (13 branches of corrections, [docs/CHANGES-review.md](docs/CHANGES-review.md)). The team corrected or documented all findings. |
+| Tests | Unit tests (with the race detector in CI). An integration suite against real Syncthing 2.1.5 processes (3 servers, 2 PCs, a fake Discord). A Docker Compose suite (the image, Syncthing containers, a gate, a fake Discord). A structure scan load simulation (Docker, started by hand). The Compose and load stacks run their Syncthing with discovery, relays, NAT traversal and reports off. |
+| CI | `gofmt`, `go vet`, `go mod tidy -diff`, govulncheck and the unit suite on each push to `main` and on each pull request, then the integration and Compose suites. CI checks the Syncthing download against the checksum list of the release. |
+| Release | No release until now: no tag, thus no image and no binaries on GitHub. The status note in the README reports it. The release workflow runs the unit suite before it makes the image and the binaries. A pre-release tag (with a `-`) does not move `latest`. |
+| Real servers | Not run against real NAS hardware until now (section 2, step 2). |
 
 ## 2. Road to v1.0
 
 | # | Step |
 |---|---|
-| 1 | A review of the security-sensitive parts: key handling (`internal/settings`, `internal/collector/manager.go`, `internal/web/settings.go`), auth (`internal/web/auth.go`), the bootstrap scrubber (`internal/app/bootstrap.go`), the notifier and the gate. |
-| 2 | Run `syncwatch probe` on real servers, with `--project-pattern`: browse timing on the largest share, long-polls across a VPN, the cost of a full re-check (watch NAS CPU and RAM; if it's noticeable, polled mode), the structure scan's listings, and counts. Add what applies generally to `docs/api-findings.md`; review a probe report before committing it, and keep addresses and share paths out. |
-| 3 | A test release (such as `v0.9.0-rc1`) with provenance on, to see how NAS container UIs (QNAP Container Station) show the image; keep provenance if it looks fine. |
-| 4 | Tag `v1.0.0`: the release workflow publishes the image and binaries. Check that the GHCR package is public, and replace the README's status note. |
-| 5 | A week on a real deployment: no false urgent pings, the Monday report arrives, and a stopped server gives one H1 ping and its "resolved" message. |
+| 1 | A review of the security-relevant parts. These are: the API key code (`internal/settings`, `internal/collector/manager.go`, `internal/web/settings.go`), authentication (`internal/web/auth.go`), the secret removal from the bootstrap file (`internal/app/bootstrap.go`), the notifier and the gate. |
+| 2 | Run `syncwatch probe` on real servers, with `--project-pattern`. Measure the browse time on the largest share and a long-poll through the VPN. Measure the load of a full check (monitor the CPU and the RAM of the NAS). Measure the listings of the structure scan, and the counts. If the load is large, use the polled mode. Add what applies in general to `docs/api-findings.md`. Review a probe report before you commit it. Keep addresses and share paths out of it. |
+| 3 | A test release (for example `v0.9.0-rc1`) with provenance on. Look at how the container user interfaces of NAS products (QNAP Container Station) show the image. Keep provenance if the result is satisfactory. An rc tag is a pre-release on GitHub and does not move `latest`. |
+| 4 | Tag `v1.0.0`: the release workflow waits for the test job, then makes the image and the binaries. Make sure that the GHCR package is public. Replace the status note in the README. |
+| 5 | One week on a real installation. Success is: no false urgent messages, the Monday report arrives, and a stopped server gives one H1 urgent message and its resolved message. |
 
-**v1.0 is done** when step 5 passes. After that: image signing, and anything from §5.
+**v1.0 is complete** when step 5 is successful. Then: a signature for the image, and items from section 5.
+
+### Open items from the review of October 2026
+
+Items that the review found and did not do. The source is in parentheses.
+
+- The healthcheck of the image derives its URL from `SYNCWATCH_LISTEN`. A gate container needs `SYNCWATCH_HEALTHCHECK_URL` until `healthcheck` knows the gate port ([docs/changes/r0-b.md](docs/changes/r0-b.md)).
+- Behind a gate, the check that a share exists gets 403 for the parent of the share. A missing share then shows as empty, not as "not found on the server". The administrator can add the parent to `SYNCWATCH_GATE_BROWSE_ROOTS` ([docs/changes/r0-b.md](docs/changes/r0-b.md)).
+- The Findings page refreshes on each snapshot change, also for changes that it does not show. Separate SSE events for findings and snapshots will stop that ([docs/changes/r0-k.md](docs/changes/r0-k.md)).
+- Count words with `(s)` remain in `notify`, `rules/health.go`, `settings.go` and `main.go` ([docs/changes/r0-k.md](docs/changes/r0-k.md)). The STE rewrite of the product text replaces them.
+- With open view and no administrator password, `/settings` answers 403 instead of a redirect to `/setup` ([docs/changes/r0-e.md](docs/changes/r0-e.md)).
+- The revision check of the settings forms accepts 2 saves in the same millisecond ([docs/changes/r0-e.md](docs/changes/r0-e.md)).
+- A pinned certificate that matches is accepted after its expiry date and for a different host name ([docs/changes/r0-a.md](docs/changes/r0-a.md)).
+- The collector package needs 90 seconds in `go test ./...`. `SYNCWATCH_TEST_SLOW` exists for slow hosts ([docs/changes/r0-d.md](docs/changes/r0-d.md), [docs/changes/r0-s.md](docs/changes/r0-s.md)).
+- The Compose test stack addresses the gate on port 8080 through one environment line. A move to 8385 needs 3 changes in `test/compose/docker-compose.yml` ([docs/changes/r0-j.md](docs/changes/r0-j.md)).
+- The notification form limits `weekly_top` to 25 and `down_after_failures` to 10. The validation permits 50 and 20 ([docs/changes/r0-g.md](docs/changes/r0-g.md)).
+- The notification form refuses `OFF`. `off` works ([docs/changes/r0-g.md](docs/changes/r0-g.md)).
+- `settings.DropRemovedServers` does not delete the stored device ID of a removed server ([docs/changes/r0-i.md](docs/changes/r0-i.md)).
+- The lower limit of the thresholds is 10 seconds, not 1 minute, because the test suites use 20 and 40 seconds ([docs/changes/r0-g.md](docs/changes/r0-g.md)).
+- The product text does not follow the STE style guide until the product groups of the rewrite go into the code ([docs/changes/ste-docs.md](docs/changes/ste-docs.md)).
 
 ## 3. Decisions
 
 ### Design
 
-- Read-only by construction: the Syncthing client can only send allowlisted `GET`s, a unit test fails otherwise, and `ConfigSaved` payloads are dropped. Writing to Syncthing never happens inside syncwatch.
-- Go single binary with htmx and server-sent events; SQLite; English only; MIT.
-- Events plus periodic full re-checks, with a polled fallback for servers where re-checks are expensive. After a dropped connection the event stream resumes; a Syncthing restart or missed events trigger a full re-check.
-- Trust on first use for self-signed Syncthing certificates, pinned by SHA-256; a changed certificate raises H3 until an admin accepts it.
-- A settings page plus YAML import and export; a bootstrap YAML is imported once and its secrets are removed from the file.
-- Discord is the only notification channel (shoutrrr was dropped: a large dependency tree, and it could point anywhere).
-- Docker image on GHCR (`linux/amd64`, `linux/arm64`), HTTPS with a self-signed certificate by default in the image; the plain binary serves HTTP on loopback unless told otherwise.
-- The read-only gate (`syncwatch gate`): one container per server holds the Syncthing API key; syncwatch only gets a token that reaches the allowlisted `GET`s, and secrets are stripped from answers.
+- Read-only by construction: the Syncthing client can only send the `GET` requests of the allowlist, and a unit test fails if not. The client discards `ConfigSaved` payloads. syncwatch never writes to Syncthing.
+- One Go binary with htmx and server-sent events. SQLite. English only. MIT.
+- Events plus periodic full checks, with a polled mode for servers where a full check is slow. After a lost connection, the event stream resumes. A Syncthing restart or missed events start a full check, at most one full check every 10 minutes for missed events.
+- syncwatch pins each server certificate on first use (trust on first use), self-signed or CA-signed, by SHA-256. A changed certificate opens H3 until an administrator accepts it. A new CA-signed certificate for the host name is accepted without H3.
+- A Settings page plus YAML import and export. syncwatch imports a bootstrap file one time and removes its secrets from the file. A syncwatch that runs applies `import-config` in less than 10 seconds.
+- Discord is the only notification target (shoutrrr was removed: a large dependency tree, and it can send to any address).
+- A Docker image on GHCR (`linux/amd64`, `linux/arm64`). The image serves HTTPS with a self-signed certificate by default. The binary serves HTTP on loopback if you give no other setting.
+- The read-only gate (`syncwatch gate`): one container for each server keeps the Syncthing API key. syncwatch only gets a gate token that reaches the `GET` requests of the allowlist, and the gate removes secrets from the answers. The gate has its own listen address (`SYNCWATCH_GATE_LISTEN`, 8385). It checks the query of each request and permits a browse only under the parents of the Syncthing folders.
 - Syncthing 2.x only.
 
 ### Security
 
-- An API key is only ever sent to the URL it was entered for: changing a server's URL needs the key again, also by import, and a removed server's key is deleted. Plain `http://` server URLs need `allow_http`. Server URLs can't carry credentials, queries or fragments.
-- Accepting a changed certificate or forgetting a pin needs the admin password or the server's API key.
-- Changes that weaken access (proxy mode, more open viewing, a new viewer password) need the admin password, also by import.
-- Security-relevant settings changes are announced at once, also during quiet hours, with the client address, to the channels configured before the change; notices that can't be sent are retried for a day.
-- The Discord webhook must be a Discord webhook (`SYNCWATCH_ALLOW_ANY_WEBHOOK=true` for test setups). Names from Syncthing are escaped in Discord messages.
-- `SYNCWATCH_SECRET_KEY` takes only a random base64-encoded 32-byte key.
-- Failed logins from many addresses slow logins down instead of locking everyone out; password checks run at most two at a time.
-- No trusted-proxy support (`X-Forwarded-For`): the README documents the limits behind a reverse proxy instead.
-- Monitoring the monitor's own host: documented ("Where to run it"), no heartbeat feature.
-- The release workflow pins actions to commit SHAs with permissions per job; the docs pin the image by digest and advise against auto-updaters.
+- syncwatch sends an API key only to the URL that you typed it for. A changed server URL needs the API key again, also by import. syncwatch deletes the API key of a removed server. A plain `http://` server URL needs `allow_http`. A server URL cannot have user names, passwords, queries or fragments.
+- To accept a changed certificate or to remove a pinned certificate, you need the administrator password or the API key of the server.
+- Changes that reduce the access control (proxy mode, a more open view, a new viewer password) need the administrator password, also by import. An import cannot set built-in login to on without an administrator password.
+- syncwatch announces each settings change with a settings notice, immediately, also during quiet hours, with the client address and the old and new values. It sends the settings notice to the webhook that was configured before the change. syncwatch tries a failed settings notice again for 1 day. syncwatch discards a settings notice that Discord refuses, after one warning. A kept settings notice never delays an urgent message.
+- The Discord webhook must be a Discord webhook (`SYNCWATCH_ALLOW_ANY_WEBHOOK=true` for test installations). syncwatch checks it again at each send and does not follow redirects. syncwatch escapes names from Syncthing in titles, summaries and lines of Discord messages.
+- `SYNCWATCH_SECRET_KEY` takes only a random base64-encoded key of 32 bytes. The database files have mode 0600, and the image makes `/data` with mode 0700.
+- Failed logins from many addresses make logins slower instead of a block for all persons. Password checks run at most 2 at the same time. The limit of 5 failed logins in 10 minutes applies to each address and each role, also for parallel tries.
+- The session cookies are `SameSite=Lax`, thus links from Discord open the dashboard with the current session. The CSRF token, the Origin check and the Host check protect the forms.
+- syncwatch answers only to known host names (IP addresses, `localhost`, the host of `public_url`, the listen host, `SYNCWATCH_TLS_HOSTS`). Other names get 421.
+- No support for a proxy with `X-Forwarded-For`. The README documents the limits behind a reverse proxy instead.
+- syncwatch does not monitor its own host. The README documents it ("Where to run syncwatch"). There is no heartbeat feature.
+- The release workflow pins the actions to commit SHAs with permissions for each job. It runs the unit suite before it makes the release, and it uses no build cache. The `Dockerfile` pins its base images by digest. The documentation recommends the image digest and no auto-updaters.
 
-### Behaviour
+### Behavior
 
-- H4 waits `thresholds.failing_files` (default 1 h) when failing files are its only reason; folder errors, watcher errors and a full disk open it at once.
-- Failing notifications back off (1, 2, 4 … then every 30 minutes) and show a banner on every page; nothing counts as sent before a channel exists, and a channel that already got a message isn't sent it again.
-- The self-signed certificate follows `public_url`, a specific listen address and `SYNCWATCH_TLS_HOSTS`.
+- H4 waits `thresholds.failing_files` (default 1 hour) when failed items are its only reason. A folder error and a full disk open it immediately. A file watcher error is a separate WARNING finding after 1 hour and never urgent.
+- A device that never connected gets only C2 after `old_device`. H6 and C3 keep the last known device state through a disconnect.
+- Findings of an unreachable server are stale, not resolved. This also applies after a start until syncwatch contacted the server, and to structure findings until the first scan. Cross-server findings are stale only when none of their servers is reachable. syncwatch closes the findings of a removed or disabled server without a message.
+- A higher threshold does not close open findings. The debounce of an urgent message counts from the time the finding became urgent.
+- syncwatch sends the resolved message after the finding stayed resolved for 5 minutes (or the debounce, if shorter). A finding that opens again in that time is the same incident.
+- Failed notifications wait longer between tries (1, 2, 4 … then every 30 minutes) and show a banner on each page. Without a webhook, syncwatch marks no notification as sent. A webhook that got a message does not get it again.
+- The self-signed certificate follows `public_url`, a specific listen address and `SYNCWATCH_TLS_HOSTS`. syncwatch makes a new one 30 days before the expiry date, also while it runs, and reads own certificate files again when they change. The dashboard serves HTTP/2.
+- In polled mode, each structure scan also scans the project folders in Syncthing folders. The depth limit `nested_scan_depth` applies to scans and to events.
 
 ### Process
 
-- Work is merged directly to `main`; CI runs on every push and on pull requests.
-- Examples, tests and docs use placeholder addresses (192.168.1.10, 192.168.2.10, 192.168.3.10, `*.invalid`, 127.0.0.1); nothing in the repo describes a real deployment's network.
+- Work goes directly to `main`. CI runs on each push and on each pull request.
+- Examples, tests and documentation use placeholder addresses (192.168.1.10, 192.168.2.10, 192.168.3.10, `*.invalid`, 127.0.0.1). No file in the repository describes the network of a real installation.
+- The repository keeps LF line endings (`.gitattributes`), also on Windows.
+- The text that users read follows the STE style guide of the review (ASD-STE100, approximately 80 percent). Each item has one name: finding, administrator, urgent message, settings notice, full check, structure scan, server, host, pinned certificate.
 
 ## 4. Known gaps in v1
 
-- PCs are visible only through the servers: no PC folder errors, disk space or pending offers on a PC.
-- `browse` lists directories only; file-level information comes from events and the conflict counter.
-- Nested project folders deeper than `nested_scan_depth` in folders not in Syncthing aren't found.
-- No disk-space or hardware monitoring, no graphs.
+- syncwatch sees the PCs only through the servers: no PC folder errors, no disk space, no pending offers on a PC.
+- `browse` lists directories only. File-level information comes out of the events and the conflict counter.
+- syncwatch does not find nested project folders deeper than `nested_scan_depth` below the top-level project folder.
+- After missed events, the state of a server can be up to 10 minutes old.
+- No disk-space or hardware monitor, no graphs.
 - No watchdog for syncwatch itself.
-- Without the gate, syncwatch holds full-access Syncthing API keys.
-- `syncwatch import-config` on the command line needs no admin password, because it already needs shell access.
-- The "notifications failing" banner refreshes every 60 seconds, not live.
+- Without the gate, syncwatch keeps Syncthing API keys with full access.
+- `syncwatch import-config` on the command line needs no administrator password, because it already needs shell access and the secret key.
+- The banner for failed notifications refreshes every 60 seconds, not in real time.
+- Different spellings of the same directory (QNAP `/share/X` and `/share/CACHEDEV1_DATA/X`) are 2 paths for S1.
 
-### Revisit if needed
+### Items to examine if necessary
 
-- An outside healthcheck or a small watchdog instance, if an unnoticed outage of the monitor's host turns out to matter.
-- Trusted-proxy support, if people run syncwatch behind reverse proxies.
-- Login limiter details: IPv6 addresses aren't grouped by prefix, and the address table is cleared at 10,000 entries.
+- An outside healthcheck or a small watchdog, if an unnoticed outage of the host of syncwatch becomes important.
+- Support for a proxy with `X-Forwarded-For`, if people run syncwatch behind reverse proxies.
+- Details of the login limiter: the limiter does not group IPv6 addresses by prefix.
+- A TLS session cache in the client, if the handshake each minute for the traffic sample is a load on a VPN.
 
 ## 5. Later ideas (not in v1)
 
-- **Registering new project folders** as paused, unshared Syncthing folders with `.stignore` in place, so a migration from another sync tool becomes Resume, compare, share per folder. It needs Syncthing's full key, so it would be a separate tool next to the gate, never part of syncwatch. The API behaviour it relies on was tested on 2.1.5 (`docs/api-findings.md`, "Folders added paused through the API").
-- Folder-structure tree view · trend graphs / Prometheus `/metrics` · optional PC agent · disk space via SNMP · HTML email report · heartbeat watchdog · fix hints per problem type · settings-drift checks · a Windows service · translations · Syncthing 1.x.
+- **Registration of new project folders** as paused, unshared Syncthing folders with `.stignore` present. A migration from a different sync tool then becomes: resume, compare, share for each folder. It needs the full Syncthing API key, thus it is a separate tool next to the gate, never a part of syncwatch. The author tested the API behavior that it depends on with 2.1.5 (`docs/api-findings.md`, "Folders added paused through the API").
+- A tree view of the folder structure · trend graphs or a Prometheus `/metrics` endpoint · an optional PC agent · disk space through SNMP · an HTML email report.
+- A heartbeat watchdog · repair hints for each finding type · settings drift checks · a Windows service · translations · Syncthing 1.x.
