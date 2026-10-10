@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,23 +73,56 @@ func LoadKey(dataDir, envValue string) ([]byte, error) {
 		return b, nil
 	}
 	path := filepath.Join(dataDir, "secret.key")
-	if b, err := os.ReadFile(path); err == nil {
-		key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-		if err != nil || len(key) != 32 {
-			return nil, fmt.Errorf("%s is not a valid key", path)
-		}
-		return key, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	key, err := readKeyFile(path)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return key, err
 	}
-	key := make([]byte, 32)
+	key = make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0o600); err != nil {
+	err = createKeyFile(path, key)
+	if errors.Is(err, fs.ErrExist) {
+		// Another process created it at the same moment: use its key,
+		// giving it a moment to finish writing.
+		for i := 0; i < 20; i++ {
+			if key, err = readKeyFile(path); err == nil {
+				return key, nil
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return nil, err
+	}
+	if err != nil {
 		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
 	return key, nil
+}
+
+func readKeyFile(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("%s is not a valid key", path)
+	}
+	return key, nil
+}
+
+// createKeyFile writes a new key file for the owner only. It fails with
+// fs.ErrExist rather than overwrite a file another process just created.
+func createKeyFile(path string, key []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte(base64.StdEncoding.EncodeToString(key) + "\n"))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func (s *Store) aead() (cipher.AEAD, error) {

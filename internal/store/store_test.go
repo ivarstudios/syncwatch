@@ -3,9 +3,13 @@ package store
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +75,76 @@ func TestSecrets(t *testing.T) {
 		if _, err := LoadKey("", bad); err == nil || !strings.Contains(err.Error(), "openssl rand -base64 32") {
 			t.Fatalf("%q: %v", bad, err)
 		}
+	}
+}
+
+// Two first starts at once (serve plus a maintenance command, say) must end
+// up with the same key: the second writer may not overwrite the first's.
+func TestKeyFileCreatedOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.key")
+	first := bytes.Repeat([]byte{1}, 32)
+	if err := createKeyFile(path, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := createKeyFile(path, bytes.Repeat([]byte{2}, 32)); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("existing key file overwritten: %v", err)
+	}
+	if key, err := LoadKey(dir, ""); err != nil || !bytes.Equal(key, first) {
+		t.Fatalf("got %x %v", key, err)
+	}
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("key file mode %v", fi.Mode().Perm())
+	}
+
+	dir = t.TempDir()
+	var wg sync.WaitGroup
+	keys := make([][]byte, 8)
+	for i := range keys {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			k, err := LoadKey(dir, "")
+			if err != nil {
+				t.Error(err)
+			}
+			keys[i] = k
+		}()
+	}
+	wg.Wait()
+	stored, _ := LoadKey(dir, "")
+	for i, k := range keys {
+		if !bytes.Equal(k, stored) {
+			t.Fatalf("start %d got a key that isn't the stored one", i)
+		}
+	}
+}
+
+// The database holds password hashes, session tokens and the encrypted
+// secrets; it and its WAL and SHM files are for the owner only.
+func TestDatabaseFilesOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes mean nothing on Windows")
+	}
+	dir := t.TempDir()
+	dirMode, _ := os.Stat(dir)
+	path := filepath.Join(dir, "syncwatch.db")
+	s, err := Open(path, make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		fi, err := os.Stat(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s has mode %v", filepath.Base(f), fi.Mode().Perm())
+		}
+	}
+	if fi, _ := os.Stat(dir); fi.Mode().Perm() != dirMode.Mode().Perm() {
+		t.Errorf("the data directory's mode was changed to %v", fi.Mode().Perm())
 	}
 }
 
