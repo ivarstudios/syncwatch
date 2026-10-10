@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -110,10 +112,9 @@ func TestOnlyAllowlistedGETs(t *testing.T) {
 		if r.path == "/rest/config" || strings.HasPrefix(r.path, "/rest/config/gui") || strings.HasPrefix(r.path, "/rest/config/options") {
 			t.Errorf("forbidden config endpoint requested: %s", r.path)
 		}
-		if r.path == "/rest/noauth/health" && r.apiKey != "" {
-			t.Errorf("API key sent to noauth endpoint")
-		}
-		if r.path != "/rest/noauth/health" && r.apiKey != "k" {
+		// Also on /rest/noauth/health: a gate may require its token on every
+		// /rest path, and Syncthing ignores the key there.
+		if r.apiKey != "k" {
 			t.Errorf("%s: missing API key", r.path)
 		}
 		seen[r.path] = true
@@ -178,7 +179,8 @@ func TestFolderDevicesDropEncryptionPassword(t *testing.T) {
 func TestTOFUAndCertChange(t *testing.T) {
 	srv, reqs, mu := fakeSyncthing(t)
 	var pinned string
-	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", OnPin: func(fp string) { pinned = fp }})
+	var logs pinLog
+	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", Log: slog.New(slog.NewTextHandler(&logs, nil)), OnPin: func(fp string) { pinned = fp }})
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +189,9 @@ func TestTOFUAndCertChange(t *testing.T) {
 	}
 	if c.LastCert().CASigned {
 		t.Fatal("test cert should not be CA-signed")
+	}
+	if !strings.Contains(logs.String(), "trusting self-signed certificate on first use") || !strings.Contains(logs.String(), "server=t") {
+		t.Fatalf("first use not logged: %s", logs.String())
 	}
 
 	// A client with a different pin must fail during the handshake, before any
@@ -220,16 +225,20 @@ func TestTOFUAndCertChange(t *testing.T) {
 func TestCASignedCertificateAccepted(t *testing.T) {
 	srv, _, _ := fakeSyncthing(t)
 	pool := srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-	// The httptest certificate is valid for 127.0.0.1 and "example.com".
-	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", RootCAs: pool, Pin: "deadbeef"})
+	// The httptest certificate is valid for 127.0.0.1 and "example.com". A
+	// CA-signed certificate is accepted even when another one is pinned, and
+	// then takes over the pin.
+	var pinned string
+	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", RootCAs: pool, Pin: strings.Repeat("de", 32),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), OnPin: func(fp string) { pinned = fp }})
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatalf("CA-signed certificate rejected: %v", err)
 	}
 	if !c.LastCert().CASigned {
 		t.Fatal("expected CASigned")
 	}
-	if c.Pin() != "deadbeef" {
-		t.Fatal("CA-signed certificate must not change the pin")
+	if want := Fingerprint(srv.Certificate()); c.Pin() != want || pinned != want {
+		t.Fatalf("CA-signed certificate must be pinned: pin %q, OnPin %q, want %q", c.Pin(), pinned, want)
 	}
 }
 

@@ -4,8 +4,10 @@
 // there is no generic request method, no way to choose the HTTP method, and
 // /rest/config (which contains the GUI password hash and API key) is not on the
 // list. TLS certificates are checked during the handshake, before the API key
-// is sent: certificates that chain to a trusted CA are accepted, self-signed
-// ones are trusted on first use and pinned by SHA-256.
+// is sent: the server's certificate is pinned by SHA-256 on first use, whether
+// it chains to a trusted CA or is self-signed. A pinned certificate may only
+// change to one that chains to a trusted CA for the host name (a renewal);
+// any other change aborts the handshake.
 package stclient
 
 import (
@@ -20,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -84,11 +87,12 @@ type Options struct {
 	Name    string // server name, used in errors
 	URL     string // base URL of the Syncthing GUI, e.g. https://192.168.1.10:8384
 	APIKey  string
-	Pin     string          // pinned SHA-256 certificate fingerprint (hex), or "" for none yet
-	OnPin   func(fp string) // called when a self-signed certificate is trusted on first use
+	Pin     string          // pinned SHA-256 certificate fingerprint (any form NormalizePin takes), or "" for none yet
+	OnPin   func(fp string) // called with the fingerprint to store whenever the pin is set or replaced
 	Timeout time.Duration   // per-request timeout (default 30 s); events use their own
 	Retries int             // extra attempts for failed requests (default 2)
 	RootCAs *x509.CertPool  // nil means the system pool
+	Log     *slog.Logger    // gets a line when a certificate is pinned or renewed; nil means slog.Default()
 }
 
 // CertInfo describes the last certificate the server presented.
@@ -99,8 +103,9 @@ type CertInfo struct {
 	CASigned    bool
 }
 
-// CertChangedError is returned when a pinned self-signed certificate changes.
-// The connection is closed during the handshake, so no API key is sent.
+// CertChangedError is returned when a pinned certificate changes to one that
+// doesn't chain to a trusted CA for the host name. The connection is closed
+// during the handshake, so no API key is sent.
 type CertChangedError struct {
 	Server   string
 	Old, New string
@@ -157,7 +162,14 @@ func New(o Options) (*Client, error) {
 	} else if o.Retries == 0 {
 		o.Retries = 2
 	}
-	c := &Client{opts: o, base: u, host: u.Hostname(), pin: o.Pin}
+	if o.Log == nil {
+		o.Log = slog.Default()
+	}
+	pin, err := NormalizePin(o.Pin)
+	if err != nil {
+		return nil, fmt.Errorf("pinned fingerprint: %w", err)
+	}
+	c := &Client{opts: o, base: u, host: u.Hostname(), pin: pin}
 	tr := &http.Transport{
 		Proxy: nil,
 		DialContext: (&net.Dialer{
@@ -172,8 +184,12 @@ func New(o Options) (*Client, error) {
 		},
 		TLSHandshakeTimeout: 10 * time.Second,
 		MaxIdleConnsPerHost: 4,
-		IdleConnTimeout:     30 * time.Second,
-		ForceAttemptHTTP2:   false,
+		// Longer than the 60 s traffic sampling interval, so a sample reuses
+		// the connection instead of opening a new one (a TLS handshake over
+		// the VPN) every time. Syncthing itself closes idle connections after
+		// 15 s, so this only takes effect behind a gate or a proxy.
+		IdleConnTimeout:   90 * time.Second,
+		ForceAttemptHTTP2: false,
 	}
 	c.hc = &http.Client{
 		Transport: tr,
@@ -196,6 +212,9 @@ func (c *Client) Pin() string {
 
 // SetPin replaces the pinned fingerprint, e.g. after an admin accepts a new certificate.
 func (c *Client) SetPin(fp string) {
+	if p, err := NormalizePin(fp); err == nil {
+		fp = p
+	}
 	c.mu.Lock()
 	c.pin = fp
 	c.mu.Unlock()
@@ -218,6 +237,25 @@ func Fingerprint(cert *x509.Certificate) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// NormalizePin brings a fingerprint typed or pasted by a person into the form
+// pins are compared in: 64 lowercase hex characters. Upper case, colons or
+// spaces between the pairs (as openssl and browsers show them) and a
+// "sha256:" or "SHA256 Fingerprint=" prefix are fine. "" means no pin.
+func NormalizePin(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	for _, p := range []string{"sha256 fingerprint=", "sha-256 fingerprint=", "sha256:", "sha-256:", "sha256=", "sha-256="} {
+		s = strings.TrimPrefix(s, p)
+	}
+	s = strings.NewReplacer(":", "", " ", "", "\t", "").Replace(s)
+	if s == "" {
+		return "", nil
+	}
+	if b, err := hex.DecodeString(s); err != nil || len(b) != sha256.Size {
+		return "", errors.New("not a SHA-256 fingerprint (64 hex characters)")
+	}
+	return s, nil
+}
+
 // ShortFP formats a fingerprint for display: the first 16 hex characters in pairs.
 func ShortFP(fp string) string {
 	if len(fp) > 16 {
@@ -237,6 +275,11 @@ func ShortFP(fp string) string {
 	return b.String()
 }
 
+// verify runs during the handshake, before any request is sent. The leaf is
+// pinned on first use, CA-signed or not, so the server can't later be swapped
+// for one with a different certificate: a pinned server may change its
+// certificate only to one that chains to a trusted CA for the host name (a
+// renewal). Anything else aborts the handshake with a CertChangedError.
 func (c *Client) verify(cs tls.ConnectionState) error {
 	if len(cs.PeerCertificates) == 0 {
 		return errors.New("server presented no certificate")
@@ -252,25 +295,31 @@ func (c *Client) verify(cs tls.ConnectionState) error {
 		Roots:         c.opts.RootCAs,
 		Intermediates: inter,
 	})
+	caSigned := caErr == nil
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.cert = CertInfo{Fingerprint: fp, Subject: leaf.Subject.String(), NotAfter: leaf.NotAfter, CASigned: caErr == nil}
-	if caErr == nil {
+	c.cert = CertInfo{Fingerprint: fp, Subject: leaf.Subject.String(), NotAfter: leaf.NotAfter, CASigned: caSigned}
+	log := c.opts.Log.With("server", c.opts.Name, "fingerprint", ShortFP(fp), "expires", leaf.NotAfter.Format("2006-01-02"))
+	switch {
+	case c.pin == fp:
 		return nil
-	}
-	switch c.pin {
-	case "":
-		c.pin = fp
-		if c.opts.OnPin != nil {
-			c.opts.OnPin(fp)
+	case c.pin == "":
+		if caSigned {
+			log.Info("pinned CA-signed certificate")
+		} else {
+			log.Info("trusting self-signed certificate on first use")
 		}
-		return nil
-	case fp:
-		return nil
+	case caSigned:
+		log.Info("certificate renewed", "old", ShortFP(c.pin))
 	default:
 		return &CertChangedError{Server: c.opts.Name, Old: c.pin, New: fp, NotAfter: leaf.NotAfter}
 	}
+	c.pin = fp
+	if c.opts.OnPin != nil {
+		c.opts.OnPin(fp)
+	}
+	return nil
 }
 
 // IsCertChanged reports whether err is (or wraps) a CertChangedError.
@@ -335,9 +384,7 @@ func (c *Client) fetchOnce(ctx context.Context, ep endpoint, q url.Values, timeo
 	if err != nil {
 		return nil, err
 	}
-	if ep != epHealth {
-		req.Header.Set("X-API-Key", c.opts.APIKey)
-	}
+	req.Header.Set("X-API-Key", c.opts.APIKey)
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
@@ -358,15 +405,15 @@ func (c *Client) fetchOnce(ctx context.Context, ep endpoint, q url.Values, timeo
 	return body, nil
 }
 
-// cleanErr unwraps url.Error so messages don't repeat the URL (which may be long),
-// but keeps the CertChangedError reachable through errors.As.
+// cleanErr unwraps url.Error so messages don't repeat the URL (which may be
+// long) or the method, but keeps the CertChangedError reachable through errors.As.
 func cleanErr(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		if ce, ok := IsCertChanged(ue.Err); ok {
 			return ce
 		}
-		return fmt.Errorf("%s: %w", strings.TrimPrefix(ue.Op, "Get"), ue.Err)
+		return ue.Err
 	}
 	return err
 }
@@ -382,7 +429,9 @@ func (c *Client) getJSON(ctx context.Context, ep endpoint, q url.Values, out any
 	return nil
 }
 
-// Health calls /rest/noauth/health. It needs no API key.
+// Health calls /rest/noauth/health. Syncthing needs no API key there and
+// ignores it, but it is sent like everywhere else so that a gate that wants
+// its token on every /rest path lets the call through.
 func (c *Client) Health(ctx context.Context) error {
 	var out struct {
 		Status string `json:"status"`

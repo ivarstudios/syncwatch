@@ -559,8 +559,8 @@ func (s *Server) serverSettings(v *engine.View) []serverSettings {
 				ss.CertChange = &cc
 				ss.NewShort, ss.OldShort = stclient.ShortFP(cc.New), stclient.ShortFP(cc.Old)
 			}
-			if sv.Cert.CASigned {
-				ss.PinShort = "CA-signed (not pinned)"
+			if sv.Cert.CASigned && ss.PinShort != "" {
+				ss.PinShort += " (CA-signed)"
 			}
 		} else {
 			ss.StatusLabel, ss.Status = "Disabled", "wait"
