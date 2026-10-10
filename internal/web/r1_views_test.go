@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/notify"
 )
 
 // syncBuffer is a log destination that the server's goroutines can share.
@@ -459,6 +460,26 @@ func TestConnectionLossShipped(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("overview page lacks %s", want)
 		}
+	}
+}
+
+// The notification banner is true when Discord itself fails: syncwatch tries
+// again, and only a refused webhook needs a new URL.
+func TestNotificationBannerText(t *testing.T) {
+	e := adminEnv(t, twoServers+"access: {viewer: open}\n")
+	e.setDelivery(notify.Delivery{Failing: true, Since: time.Now(), Error: "discord: HTTP 500"})
+	_, body := e.get("/")
+	if !strings.Contains(body, "syncwatch tries again automatically. If Discord refuses the webhook (HTTP 401, 403 or 404), type a new webhook URL in <a href=\"/settings#notifications\">") {
+		t.Error("admin banner text")
+	}
+	if strings.Contains(body, "until you correct this") {
+		t.Error("the banner still asks for a correction in all cases")
+	}
+	anon, _ := http.Get(e.srv.URL + "/")
+	b, _ := io.ReadAll(anon.Body)
+	anon.Body.Close()
+	if !strings.Contains(string(b), "an administrator must type a new webhook URL in Settings → Notifications.") {
+		t.Error("viewer banner text")
 	}
 }
 

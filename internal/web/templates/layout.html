@@ -48,7 +48,7 @@
 {{end}}
 
 {{define "alert"}}{{if .Role}}<div id="sw-alert" hx-get="/frag/alert" hx-trigger="every 60s" hx-swap="outerHTML">
-{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch sends no notifications about new findings until you correct this{{if eq $.Role "admin"}} in <a href="/settings#notifications">Settings → Notifications</a>{{end}}.</div>{{end -}}
+{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch tries again automatically. If Discord refuses the webhook (HTTP 401, 403 or 404), {{if eq $.Role "admin"}}type a new webhook URL in <a href="/settings#notifications">Settings → Notifications</a>{{else}}an administrator must type a new webhook URL in Settings → Notifications{{end}}.</div>{{end -}}
 </div>{{end}}{{end}}
 
 {{define "sev"}}<span class="sev sev-{{.Severity}}" title="{{.SeverityLabel}}">{{.Icon}} {{.SeverityLabel}}</span>{{end}}
