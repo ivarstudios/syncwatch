@@ -307,3 +307,54 @@ func TestWeeklyCountsWhatItLists(t *testing.T) {
 		}
 	}
 }
+
+// The S3 findings of one nested directory on AKKA and SOL share one line,
+// and a grouped title names the servers and the checks, which is all a
+// phone shows (editor-shared-pc ESP-06, admin-anna AA-29).
+func TestUrgentMessageNamesServersAndMergesLines(t *testing.T) {
+	cfg := &config.Config{PublicURL: "http://sw.local:8080", Servers: []config.Server{{ID: "akka", Name: "AKKA"}, {ID: "sol", Name: "SOL"}}}
+	cfg.ApplyDefaults()
+	s3 := func(id, server, name, dir string) *store.Record {
+		return &store.Record{Finding: model.Finding{ID: id, Check: "S3", Checks: []string{"S3"}, Severity: model.Error, Server: server, Urgent: true,
+			Subject: name + "-LIVE-4FINALS/LIVE-FJORD-4FINALS/" + dir + " on " + name,
+			Message: "Project folder " + dir + " is nested inside project folder LIVE-FJORD-4FINALS (" + name + "-LIVE-4FINALS on " + name + ")"}}
+	}
+	m := UrgentMessage(cfg, []*store.Record{s3("a", "akka", "AKKA", "LIVE-OLDCUT-4FINALS"), s3("b", "sol", "SOL", "LIVE-OLDCUT-4FINALS")})
+	if m.Title != "🚨 2 new urgent findings on AKKA, SOL: S3" || !m.Mention {
+		t.Errorf("title: %s", m.Title)
+	}
+	lines := m.Sections[0].Lines
+	if len(lines) != 1 || !strings.Contains(lines[0], `\(AKKA-LIVE-4FINALS on AKKA\) _(also on SOL)_`) || !strings.Contains(lines[0], "/problems#f-a)") {
+		t.Errorf("merged line: %q", lines)
+	}
+	// Different directories and other checks keep their own lines.
+	h1 := &store.Record{Finding: model.Finding{ID: "h1", Check: "H1", Checks: []string{"H1"}, Severity: model.Error, Server: "sol", Subject: "SOL",
+		Message: "Server SOL is unreachable: timeout", Urgent: true}}
+	h2 := &store.Record{Finding: model.Finding{ID: "h2", Check: "H2", Checks: []string{"H2"}, Severity: model.Error, Related: []string{"akka", "sol"}, Subject: "AKKA ↔ SOL",
+		Message: "Servers AKKA and SOL are not connected", Urgent: true}}
+	m = UrgentMessage(cfg, []*store.Record{s3("a", "akka", "AKKA", "LIVE-OLDCUT-4FINALS"), h1, s3("c", "akka", "AKKA", "LIVE-B-4FINALS"), h2})
+	if m.Title != "🚨 4 new urgent findings on AKKA, SOL: H1, H2, S3" {
+		t.Errorf("title: %s", m.Title)
+	}
+	if lines := m.Sections[0].Lines; len(lines) != 4 || strings.Contains(strings.Join(lines, "\n"), "also on") {
+		t.Errorf("lines: %q", lines)
+	}
+	// One finding keeps the check title and the subject.
+	if m := UrgentMessage(cfg, []*store.Record{h1}); m.Title != "🚨 Server unreachable: SOL" {
+		t.Errorf("single title: %s", m.Title)
+	}
+}
+
+// Two servers that are down are two problems: their H1 lines stay apart.
+func TestUrgentMessageKeepsServerFindingsApart(t *testing.T) {
+	cfg := &config.Config{Servers: []config.Server{{ID: "akka", Name: "AKKA"}, {ID: "sol", Name: "SOL"}}}
+	cfg.ApplyDefaults()
+	h1 := func(id, server, name string) *store.Record {
+		return &store.Record{Finding: model.Finding{ID: id, Check: "H1", Checks: []string{"H1"}, Severity: model.Error, Server: server, Subject: name,
+			Message: "Server " + name + " is unreachable: connection refused", Urgent: true}}
+	}
+	m := UrgentMessage(cfg, []*store.Record{h1("a", "akka", "AKKA"), h1("b", "sol", "SOL")})
+	if lines := m.Sections[0].Lines; len(lines) != 2 || m.Title != "🚨 2 new urgent findings on AKKA, SOL: H1" {
+		t.Errorf("%s: %q", m.Title, lines)
+	}
+}

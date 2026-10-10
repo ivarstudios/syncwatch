@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -979,13 +981,122 @@ func UrgentMessage(cfg *config.Config, rs []*store.Record) Message {
 	title := fmt.Sprintf("🚨 %d new urgent findings", len(rs))
 	if len(rs) == 1 {
 		title = "🚨 " + config.CatalogByID[rs[0].Check].Title + ": " + rs[0].Subject
-	}
-	var lines []string
-	for _, r := range rs {
-		lines = append(lines, findingLine(r, dashboard(cfg)))
+	} else {
+		// A phone notification shows only the title.
+		title += where(cfg, rs)
 	}
 	return Message{Kind: KindUrgent, Mention: true, Title: title, Color: colorFor(rs), URL: dashboard(cfg),
-		Sections: []Section{{Title: "New findings", Lines: limitLines(lines, 25)}}}
+		Sections: []Section{{Title: "New findings", Lines: limitLines(urgentLines(cfg, rs), 25)}}}
+}
+
+// where names the servers (in configuration order) and the checks of
+// findings: " on AKKA, SOL: H1, S3".
+func where(cfg *config.Config, rs []*store.Record) string {
+	servers, checks := map[string]bool{}, map[string]bool{}
+	for _, r := range rs {
+		for _, id := range append([]string{r.Server}, r.Related...) {
+			servers[id] = id != ""
+		}
+		for _, c := range r.Checks {
+			checks[c] = true
+		}
+	}
+	var names, gone, ids []string
+	for _, s := range cfg.Servers {
+		if servers[s.ID] {
+			names = append(names, s.Name)
+			delete(servers, s.ID)
+		}
+	}
+	for id, ok := range servers {
+		if ok {
+			gone = append(gone, id) // removed from the configuration since
+		}
+	}
+	sort.Strings(gone)
+	names = append(names, gone...)
+	for _, c := range config.Catalog {
+		if checks[c.ID] {
+			ids = append(ids, c.ID)
+		}
+	}
+	out := ""
+	if len(names) > 0 {
+		out += " on " + strings.Join(names, ", ")
+	}
+	if len(ids) > 0 {
+		out += ": " + strings.Join(ids, ", ")
+	}
+	return out
+}
+
+// urgentLines writes one line per finding. Findings of one check on other
+// servers whose subject and message differ only in the server name (an S3
+// for a directory that both NAS sync) share the first one's line:
+// "… _(also on SOL)_".
+func urgentLines(cfg *config.Config, rs []*store.Record) []string {
+	type line struct {
+		r    *store.Record
+		also []string
+		on   map[string]bool
+	}
+	var lines []*line
+	same := map[string]*line{}
+	for _, r := range rs {
+		k := sameKey(cfg, r)
+		if l := same[k]; k != "" && l != nil && !l.on[r.Server] {
+			l.also = append(l.also, serverName(cfg, r.Server))
+			l.on[r.Server] = true
+			continue
+		}
+		l := &line{r: r, on: map[string]bool{r.Server: true}}
+		lines = append(lines, l)
+		if k != "" && same[k] == nil {
+			same[k] = l
+		}
+	}
+	var out []string
+	for _, l := range lines {
+		s := findingLine(l.r, "")
+		if len(l.also) > 0 {
+			s += " _(also on " + escapeMD(andList(l.also)) + ")_"
+		}
+		out = append(out, s+detailsLink(dashboard(cfg), l.r.ID))
+	}
+	return out
+}
+
+// sameKey is what a finding has in common with the same finding on another
+// server: its checks, severity, subject and message with its server's name
+// taken out. "" for a finding that is not on one server, or that is about
+// the server itself (H1: two servers down are two problems).
+func sameKey(cfg *config.Config, r *store.Record) string {
+	if r.Server == "" {
+		return ""
+	}
+	name := regexp.MustCompile(`\b` + regexp.QuoteMeta(serverName(cfg, r.Server)) + `\b`)
+	if strings.TrimSpace(name.ReplaceAllString(r.Subject, "")) == "" {
+		return ""
+	}
+	return fmt.Sprint(r.Checks, r.Severity, r.Stale) + "\x00" + name.ReplaceAllString(r.Subject, "\x01") + "\x00" + name.ReplaceAllString(r.Message, "\x01")
+}
+
+// serverName is the configured name of a server, or its ID.
+func serverName(cfg *config.Config, id string) string {
+	for _, s := range cfg.Servers {
+		if s.ID == id {
+			return s.Name
+		}
+	}
+	return id
+}
+
+// andList joins names: "SOL", "SOL and SIRIUS", "AKKA, SOL and SIRIUS".
+func andList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // ResolvedMessage announces that pinged findings are resolved.
