@@ -420,6 +420,7 @@ func (s *Server) funcs() template.FuncMap {
 			}
 			return t.In(s.cfg.Get().Location()).Format("2006-01-02")
 		},
+		"timefmt": s.fmtTime,
 		"severityName": func(sev any) string { return fmt.Sprint(sev) },
 		"plus1":        func(i int) int { return i + 1 },
 		"list":         func(s ...string) []string { return s },

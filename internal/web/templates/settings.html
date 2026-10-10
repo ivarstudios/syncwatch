@@ -84,7 +84,7 @@
   {{if $d.Log}}
   <details data-key="notify-log"><summary>Recent notifications</summary>
     <table class="list small"><thead><tr><th>Time</th><th>Kind</th><th>Channel</th><th>Result</th><th>Title</th></tr></thead><tbody>
-    {{range $d.Log}}<tr><td class="nowrap">{{datefmt .SentAt}} {{.SentAt.Format "15:04"}}</td><td>{{.Kind}}</td><td>{{.Channel}}</td><td>{{if .OK}}<span class="c-ok">✔ sent</span>{{else}}<span class="c-err">✖ {{.Error}}</span>{{end}}</td><td>{{.Summary}}</td></tr>{{end}}
+    {{range $d.Log}}<tr><td class="nowrap">{{timefmt .SentAt}}</td><td>{{.Kind}}</td><td>{{.Channel}}</td><td>{{if .OK}}<span class="c-ok">✔ sent</span>{{else}}<span class="c-err">✖ {{.Error}}</span>{{end}}</td><td>{{.Summary}}</td></tr>{{end}}
     </tbody></table>
   </details>
   {{end}}

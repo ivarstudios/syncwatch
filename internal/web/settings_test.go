@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 )
@@ -345,5 +346,21 @@ func TestStaleSettingsPageRefused(t *testing.T) {
 	}
 	if msg, isErr := collector("", "events"); isErr || e.cfg.Get().Collector.Mode != "events" {
 		t.Fatalf("save without a revision: %q %v", msg, isErr)
+	}
+}
+
+// The notification log shows the date and the time in the configured zone,
+// not the time in the process zone.
+func TestNotificationLogTimeZone(t *testing.T) {
+	e := adminEnv(t, twoServers+"timezone: Pacific/Auckland\n")
+	at := time.Date(2026, 10, 5, 23, 30, 0, 0, time.UTC) // 2026-10-06 12:30 in Auckland
+	_ = e.st.LogNotification(at, "test", "discord", true, "", "tz probe")
+	_, body := e.get("/settings")
+	i := strings.Index(body, "tz probe")
+	if i < 0 {
+		t.Fatal("log row missing")
+	}
+	if row := body[strings.LastIndex(body[:i], "<tr>"):i]; !strings.Contains(row, "2026-10-06 12:30") {
+		t.Fatalf("row shows %q", row)
 	}
 }
