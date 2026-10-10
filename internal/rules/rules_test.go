@@ -442,6 +442,29 @@ func TestCrossServer(t *testing.T) {
 	mustNot(t, fs, "X2", "LIVE-FINE")
 }
 
+// A server that hasn't been reached since startup is still a server, not a
+// PC, when its device ID is known from the last run.
+func TestKnownServerDeviceIDIsNotAPC(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	sol.Loaded, sol.Status, sol.Version = false, model.StatusDown, ""
+	a.Devices[solID] = &model.Device{ID: solID, Name: "SOL-NAS", LastSeen: now.Add(-8 * 24 * time.Hour)}
+	a.Folders["f"] = folder("f", "LIVE-F", "/s/AKKA-LIVE-1SOURCE/LIVE-F", solID)
+	fs := run(t, c, a, sol)
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, fs, check, "SOL")
+	}
+	a.Devices[solID].LastSeen = time.Time{}
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, run(t, c, a, sol), check, "SOL")
+	}
+	// Without the ID (the state after a restart, before it was persisted) it
+	// would be a PC.
+	sol.MyID = ""
+	mustFind(t, run(t, c, a, sol), "C2", "SOL-NAS")
+}
+
 // X1's subject must not depend on map iteration order, or the record is
 // rewritten on every evaluation.
 func TestX1SubjectStable(t *testing.T) {

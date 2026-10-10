@@ -534,6 +534,9 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	})
 	c.lastFull = now
 	c.needFull = false
+	if err := c.st.SetServerDeviceID(c.id, status.MyID); err != nil {
+		c.log.Warn("remembering the server's device ID", "err", err)
+	}
 	c.log.Debug("full re-check done", "folders", len(newFolders), "devices", len(newDevices), "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }

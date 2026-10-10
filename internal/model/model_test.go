@@ -1,6 +1,35 @@
 package model
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// A server seeded with the device ID it had last time keeps it when the
+// collector manager sets the server list, and that ID is a server for
+// Devices() although the server hasn't been reached yet.
+func TestHubKeepsSeededDeviceID(t *testing.T) {
+	h := NewHub(nil)
+	h.SetServers([]*Server{{ID: "sol", Name: "SOL", MyID: "SOL-ID"}})
+	h.SetServers([]*Server{{ID: "akka", Name: "AKKA"}, {ID: "sol", Name: "SOL (renamed)"}})
+	sol := h.Snapshot().Server("sol")
+	if sol == nil || sol.MyID != "SOL-ID" || sol.Name != "SOL (renamed)" || sol.Status != StatusUnknown || sol.Loaded {
+		t.Fatalf("seeded server: %+v", sol)
+	}
+	h.Update("akka", func(s *Server) {
+		s.Loaded, s.Status, s.MyID = true, StatusUp, "AKKA-ID"
+		s.Devices["SOL-ID"] = &Device{ID: "SOL-ID", Name: "SOL-NAS", LastSeen: time.Now().Add(-8 * 24 * time.Hour)}
+	})
+	var found *DeviceView
+	for _, d := range h.Snapshot().Devices() {
+		if d.ID == "SOL-ID" {
+			found = d
+		}
+	}
+	if found == nil || !found.IsServer || found.ServerID != "sol" || found.Name != "SOL (renamed)" || found.Connected {
+		t.Fatalf("SOL-ID: %+v", found)
+	}
+}
 
 func TestSyncStatus(t *testing.T) {
 	up := func(folders ...*Folder) *Server {
