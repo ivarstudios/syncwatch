@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -630,9 +631,10 @@ func TestResetPinTakesEffectImmediately(t *testing.T) {
 }
 
 // startManager runs a manager for one server, AKKA at srv, with extra YAML
-// (e.g. a collector section) and returns its hub and store. stop ends it;
+// (e.g. a collector section) and returns its hub and store. prep, if set,
+// prepares the store before the collector starts. stop ends the manager;
 // call it before closing srv.
-func startManager(t *testing.T, srv *httptest.Server, extra string, log *slog.Logger) (hub *model.Hub, m *Manager, st *store.Store, stop func()) {
+func startManager(t *testing.T, srv *httptest.Server, extra string, log *slog.Logger, prep func(*store.Store)) (hub *model.Hub, m *Manager, st *store.Store, stop func()) {
 	t.Helper()
 	cfg, err := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL) + extra + "\n"))
 	if err != nil {
@@ -641,6 +643,9 @@ func startManager(t *testing.T, srv *httptest.Server, extra string, log *slog.Lo
 	h, _ := config.NewHolder(cfg)
 	st, _ = store.OpenMemory(make([]byte, 32))
 	_ = st.SetServerKey("akka", "k", srv.URL)
+	if prep != nil {
+		prep(st)
+	}
 	hub = model.NewHub(nil)
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -682,7 +687,7 @@ func TestPerFolderErrorStaysWithTheFolder(t *testing.T) {
 		fake.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
-	hub, m, _, stop := startManager(t, srv, "collector: {event_timeout: 5s, down_after_failures: 1}", nil)
+	hub, m, _, stop := startManager(t, srv, "collector: {event_timeout: 5s, down_after_failures: 1}", nil, nil)
 	defer stop()
 	sv := waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
 	if sv.Status != model.StatusUp || sv.LastError != "" {
@@ -803,4 +808,125 @@ func TestPollWait(t *testing.T) {
 	if n := after.Mallocs - before.Mallocs; n > 1000 {
 		t.Fatalf("%d allocations in 300 ms of pollLoop: it is spinning", n)
 	}
+}
+
+// lockedBuf collects log output from the collector goroutines.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) count(s string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Count(l.b.String(), s)
+}
+
+// shrinkBackoff makes the session backoff fast for a test: step, then up
+// to 6 steps for ordinary failures and 20 steps after a certificate change.
+func shrinkBackoff(t *testing.T, step time.Duration) {
+	t.Helper()
+	oldStep, oldMax, oldCert := backoffStep, backoffMax, certBackoffMax
+	backoffStep, backoffMax, certBackoffMax = step, 6*step, 20*step
+	t.Cleanup(func() { backoffStep, backoffMax, certBackoffMax = oldStep, oldMax, oldCert })
+}
+
+func TestBackoff(t *testing.T) {
+	c := &Collector{}
+	for i, want := range []time.Duration{10, 10, 20, 30, 40, 50, 60, 60, 60} {
+		c.failures = i
+		if got := c.backoff(errors.New("x")); got != want*time.Second {
+			t.Errorf("failures %d: backoff %v, want %v", i, got, want*time.Second)
+		}
+	}
+	certErr := &stclient.CertChangedError{Server: "AKKA", Old: "aa", New: "bb"}
+	for i, want := range map[int]time.Duration{0: 10, 1: 10, 2: 20, 6: 60, 7: 70, 29: 290, 30: 300, 31: 300, 100: 300} {
+		c.certFails = i
+		if got := c.backoff(certErr); got != want*time.Second {
+			t.Errorf("certificate failures %d: backoff %v, want %v", i, got, want*time.Second)
+		}
+	}
+}
+
+// A server whose certificate changed used to be retried every 10 s
+// forever, with a WARN line each time (about 8,600 a day). The retries now
+// back off like other failures, further, and the warning is repeated at
+// most once an hour; the attempts in between log at DEBUG.
+func TestCertChangedBacksOffAndWarnsOnce(t *testing.T) {
+	shrinkBackoff(t, 50*time.Millisecond)
+	fake := newFakeST(t)
+	srv := httptest.NewTLSServer(fake)
+	defer srv.Close()
+	var logs lockedBuf
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	hub, _, _, stop := startManager(t, srv, "", log, func(st *store.Store) {
+		_ = st.SetPin("akka", strings.Repeat("ab", 32)) // a pin that doesn't match
+	})
+	defer stop()
+	sv := waitFor(t, hub, "cert-changed", func(s *model.Server) bool { return s.Status == model.StatusCertChanged })
+	if sv.CertChange == nil {
+		t.Fatal("no CertChange recorded")
+	}
+	time.Sleep(time.Second)
+	const line = "certificate changed; not connecting until it is accepted"
+	n, warns := logs.count(line), logs.count("level=WARN msg=\""+line)
+	t.Logf("%d attempts in about 1 s, %d at WARN", n, warns)
+	// Attempts at 0, 50, 150, 300, 500, 750 ms with the growing backoff;
+	// every 50 ms (about 20) with the old fixed one.
+	if n < 3 || n > 10 {
+		t.Fatalf("%d attempts in 1 s; want about 6", n)
+	}
+	if warns != 1 {
+		t.Fatalf("%d WARN lines; want 1", warns)
+	}
+	if fake.count("/rest/system/status") != 0 {
+		t.Fatal("a request reached the server despite the changed certificate")
+	}
+}
+
+// A wake-up left over from while the session was running (FullCheckNow is
+// called from inside the event loop) must not skip the backoff after the
+// next failure: two quick failures would mark the server down at once.
+func TestStaleWakeDoesNotSkipBackoff(t *testing.T) {
+	shrinkBackoff(t, 300*time.Millisecond)
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		http.Error(w, "Not Authorized", http.StatusUnauthorized) // fails without retries
+	}))
+	defer srv.Close()
+	cfg, _ := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL)))
+	h, _ := config.NewHolder(cfg)
+	st, _ := store.OpenMemory(make([]byte, 32))
+	hub := model.NewHub(nil)
+	hub.SetServers([]*model.Server{{ID: "akka", Name: "AKKA"}})
+	c, err := newCollector(h.Get().Servers[0], "k", hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Wake() // left over from before the session
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+	time.Sleep(150 * time.Millisecond) // the first session has failed; the backoff is 300 ms
+	mu.Lock()
+	n := requests
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("%d requests within 150 ms of a failure; want 1 (the stale wake-up skipped the backoff)", n)
+	}
+	waitUntil(t, "the retry after the backoff", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return requests >= 2
+	})
 }

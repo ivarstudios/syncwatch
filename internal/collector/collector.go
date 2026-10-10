@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +33,8 @@ type Collector struct {
 	startTime   time.Time
 	failures    int
 	firstFail   time.Time
+	certFails   int       // failed sessions in a row because the certificate changed
+	certWarned  time.Time // when the certificate change was last logged at WARN
 	lastFull    time.Time
 	needFull    bool // a full check was started and hasn't completed
 	lastScan    time.Time
@@ -91,6 +92,16 @@ func (c *Collector) FullCheckNow() {
 
 func (c *Collector) update(fn func(*model.Server)) { c.hub.Update(c.id, fn) }
 
+// Backoff between failed sessions: backoffStep per failure in a row, up to
+// backoffMax. After a certificate change nothing changes until an admin
+// accepts it (which wakes the collector), so those retries slow down to
+// one every certBackoffMax.
+var (
+	backoffStep    = 10 * time.Second
+	backoffMax     = time.Minute
+	certBackoffMax = 5 * time.Minute
+)
+
 // Run loops until ctx is cancelled.
 func (c *Collector) Run(ctx context.Context) {
 	defer c.client.Close()
@@ -101,17 +112,29 @@ func (c *Collector) Run(ctx context.Context) {
 			return
 		}
 		c.failed(err)
-		backoff := time.Duration(math.Min(60, float64(10*c.failures))) * time.Second
-		if backoff < 10*time.Second {
-			backoff = 10 * time.Second
+		// A wake-up that arrived while the session was running (an
+		// in-session FullCheckNow, a pin reset while the server was up) is
+		// stale: it must not turn this backoff into an immediate retry.
+		select {
+		case <-c.wake:
+		default:
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.wake:
-		case <-time.After(backoff):
+		case <-time.After(c.backoff(err)):
 		}
 	}
+}
+
+// backoff is the wait before the next session after a failed one.
+func (c *Collector) backoff(err error) time.Duration {
+	n, limit := c.failures, backoffMax
+	if _, ok := stclient.IsCertChanged(err); ok {
+		n, limit = c.certFails, certBackoffMax
+	}
+	return min(max(time.Duration(n)*backoffStep, backoffStep), limit)
 }
 
 // session connects, runs a full check and then follows events (or polls)
@@ -195,6 +218,8 @@ func continues(evs []stclient.Event, last int64) bool {
 func (c *Collector) succeeded() {
 	c.failures = 0
 	c.firstFail = time.Time{}
+	c.certFails = 0
+	c.certWarned = time.Time{}
 	cert := c.client.LastCert()
 	c.update(func(s *model.Server) {
 		s.Status = model.StatusUp
@@ -212,14 +237,23 @@ func (c *Collector) failed(err error) {
 	}
 	now := time.Now()
 	if ce, ok := stclient.IsCertChanged(err); ok {
-		c.log.Warn("certificate changed; not connecting until it is accepted", "old", stclient.ShortFP(ce.Old), "new", stclient.ShortFP(ce.New))
+		c.certFails++
+		fresh := false
 		c.update(func(s *model.Server) {
 			if s.CertChange == nil || s.CertChange.New != ce.New {
 				s.CertChange = &model.CertChange{Old: ce.Old, New: ce.New, NotAfter: ce.NotAfter, SeenAt: now}
+				fresh = true
 			}
 			s.Status = model.StatusCertChanged
 			s.LastError = err.Error()
 		})
+		// Nothing changes until an admin accepts the certificate, so the
+		// warning is repeated at most once an hour.
+		level := slog.LevelDebug
+		if fresh || now.Sub(c.certWarned) >= time.Hour {
+			level, c.certWarned = slog.LevelWarn, now
+		}
+		c.log.Log(context.Background(), level, "certificate changed; not connecting until it is accepted", "old", stclient.ShortFP(ce.Old), "new", stclient.ShortFP(ce.New))
 		return
 	}
 	if c.failures == 0 {
