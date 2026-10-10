@@ -7,8 +7,11 @@
 # https://<nas>:8080/healthz. See "Where to run syncwatch" in the README.
 #
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch/data
-#    chown 65534:65534 /share/CACHEDEV1_DATA/Containers/syncwatch/data
+#    chown 65532:65532 /share/CACHEDEV1_DATA/Containers/syncwatch/data
 #    chmod 700 /share/CACHEDEV1_DATA/Containers/syncwatch/data
+#    65532 is the user of the image. A different user ID also works if it
+#    owns the directory and is in the user: line below. If the user cannot
+#    write to the directory, the log shows "permission denied" at the start.
 #    Caution: keep this directory private. secret.key in it decrypts the
 #    stored Syncthing API keys.
 # 2. If necessary, copy examples/ivar.yaml to data/syncwatch.yaml. syncwatch
@@ -25,7 +28,7 @@ services:
     image: ghcr.io/ivarstudios/syncwatch:1.0.0
     container_name: syncwatch
     restart: unless-stopped
-    user: "65534:65534"
+    user: "65532:65532"          # the user of the image. It must own the data directory
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

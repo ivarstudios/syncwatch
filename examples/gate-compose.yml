@@ -14,7 +14,9 @@
 #    token is also in data/gate-token.
 # 4. In syncwatch, open Settings → Servers → SOL. Type the API URL
 #    https://192.168.2.10:8385 and the gate token as the API key. syncwatch
-#    pins the gate certificate the same as a Syncthing certificate.
+#    pins the gate certificate the same as a Syncthing certificate. Also type
+#    https://192.168.2.10:8384 as the GUI URL for links. Without it, the
+#    "Open in Syncthing" links open the gate.
 # 5. Port 8384 (the Syncthing GUI) does not need to be open to the syncwatch
 #    host now. Port 8385 must be open.
 services:
@@ -46,6 +48,8 @@ services:
       - /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data:/data
       # The config.xml of Syncthing, read-only. The gate reads the API key
       # from it. Thus there is no copy of the key in a different location.
+      # The gate reads the key only at the start. After a change of the API
+      # key in Syncthing, restart the gate.
       - /share/CACHEDEV1_DATA/Containers/syncthing/config/config.xml:/syncthing/config.xml:ro
     labels:
       - com.centurylinklabs.watchtower.enable=false

@@ -7,7 +7,7 @@ The [README](README.md) describes what syncwatch does and how: install, configur
 | Part | State |
 |---|---|
 | Built | The read-only client (one typed method for each `GET` of the allowlist). The collector (event stream, periodic full checks, polled mode, structure scan, traffic counters). The checks H1 to H11, X1 to X2, S1 to S7, C1 to C3. The finding engine. The Discord notifier (urgent messages, resolved messages, daily reminder, quiet hours, weekly report, settings notices, a banner while a send fails). The SQLite store. The dashboard (Overview, Folders, Findings) and Settings. The JSON status API and the Home Assistant endpoint. The CLI (`serve`, `probe`, `gate`, `reset-admin-password`, `import-config`, `export-config`, `healthcheck`, `--version`). The read-only gate. The Docker image. The CI and release workflows. |
-| Reviews | 2 security reviews and the review of October 2026 (13 branches of corrections, [docs/CHANGES-review.md](docs/CHANGES-review.md)). The team corrected or documented all findings. |
+| Reviews | 2 security reviews and the review of October 2026. The review had 13 branches of corrections in the first round (r0) and 8 in the second round (r1), see [docs/CHANGES-review.md](docs/CHANGES-review.md). The team corrected or documented all findings, or added them to the open items below. |
 | Tests | Unit tests (with the race detector in CI). An integration suite against real Syncthing 2.1.5 processes (3 servers, 2 PCs, a fake Discord). A Docker Compose suite (the image, Syncthing containers, a gate, a fake Discord). A structure scan load simulation (Docker, started by hand). The Compose and load stacks run their Syncthing with discovery, relays, NAT traversal and reports off. |
 | CI | `gofmt`, `go vet`, `go mod tidy -diff`, govulncheck and the unit suite on each push to `main` and on each pull request, then the integration and Compose suites. CI checks the Syncthing download against the checksum list of the release. |
 | Release | No release until now: no tag, thus no image and no binaries on GitHub. The status note in the README reports it. The release workflow runs the unit suite before it makes the image and the binaries. A pre-release tag (with a `-`) does not move `latest`. |
@@ -38,11 +38,22 @@ Items that the review found and did not do. The source is in parentheses.
 - A pinned certificate that matches is accepted after its expiry date and for a different host name ([docs/changes/r0-a.md](docs/changes/r0-a.md)).
 - The collector package needs 90 seconds in `go test ./...`. `SYNCWATCH_TEST_SLOW` exists for slow hosts ([docs/changes/r0-d.md](docs/changes/r0-d.md), [docs/changes/r0-s.md](docs/changes/r0-s.md)).
 - The Compose test stack addresses the gate on port 8080 through one environment line. A move to 8385 needs 3 changes in `test/compose/docker-compose.yml` ([docs/changes/r0-j.md](docs/changes/r0-j.md)).
-- The notification form limits `weekly_top` to 25 and `down_after_failures` to 10. The validation permits 50 and 20 ([docs/changes/r0-g.md](docs/changes/r0-g.md)).
 - The notification form refuses `OFF`. `off` works ([docs/changes/r0-g.md](docs/changes/r0-g.md)).
 - `settings.DropRemovedServers` does not delete the stored device ID of a removed server ([docs/changes/r0-i.md](docs/changes/r0-i.md)).
 - The lower limit of the thresholds is 10 seconds, not 1 minute, because the test suites use 20 and 40 seconds ([docs/changes/r0-g.md](docs/changes/r0-g.md)).
 - The product text does not follow the STE style guide until the product groups of the rewrite go into the code ([docs/changes/ste-docs.md](docs/changes/ste-docs.md)).
+
+### Open items from the second round (r1)
+
+- `/api/v1/ha` gives `running: false` also for a server that syncwatch did not contact after a start. `null` for that case is a change of the API contract and needs a decision.
+- H10 does not name the conflict copies and does not resolve when you delete them. A read of `/metrics` at each structure scan changes the request pattern of the collector.
+- The urgent message does not wait for findings that become due some seconds later. A wait time for more findings changes the rule "Findings that open in the same cycle go into one message".
+- The notification banner does not show the time of the next try.
+- Settings does not show an API key of a server that syncwatch cannot decrypt.
+- C1 keeps the time of the last local change only in memory.
+- The CSRF protection does not refuse `Origin: null`. syncwatch has no setting that names a reverse proxy for `X-Forwarded-For`.
+- H5 does not list the files that a PC cannot store. The list needs `/rest/db/remoteneed` in the allowlist of the client and the gate.
+- The screenshots in `docs/screenshots/` show the dashboard before r1.
 
 ## 3. Decisions
 
@@ -63,10 +74,10 @@ Items that the review found and did not do. The source is in parentheses.
 - syncwatch sends an API key only to the URL that you typed it for. A changed server URL needs the API key again, also by import. syncwatch deletes the API key of a removed server. A plain `http://` server URL needs `allow_http`. A server URL cannot have user names, passwords, queries or fragments.
 - To accept a changed certificate or to remove a pinned certificate, you need the administrator password or the API key of the server.
 - Changes that reduce the access control (proxy mode, a more open view, a new viewer password) need the administrator password, also by import. An import cannot set built-in login to on without an administrator password.
-- syncwatch announces each settings change with a settings notice, immediately, also during quiet hours, with the client address and the old and new values. It sends the settings notice to the webhook that was configured before the change. syncwatch tries a failed settings notice again for 1 day. syncwatch discards a settings notice that Discord refuses, after one warning. A kept settings notice never delays an urgent message.
+- syncwatch announces each settings change with a settings notice, immediately, also during quiet hours, with the client address and the old and new values. This includes `import-config` and `reset-admin-password` on the command line. It sends the settings notice to the webhook that was configured before the change. syncwatch tries a failed settings notice again for 1 day. syncwatch discards a settings notice that Discord refuses, after one warning. A kept settings notice never delays an urgent message.
 - The Discord webhook must be a Discord webhook (`SYNCWATCH_ALLOW_ANY_WEBHOOK=true` for test installations). syncwatch checks it again at each send and does not follow redirects. syncwatch escapes names from Syncthing in titles, summaries and lines of Discord messages.
 - `SYNCWATCH_SECRET_KEY` takes only a random base64-encoded key of 32 bytes. The database files have mode 0600, and the image makes `/data` with mode 0700.
-- Failed logins from many addresses make logins slower instead of a block for all persons. Password checks run at most 2 at the same time. The limit of 5 failed logins in 10 minutes applies to each address and each role, also for parallel tries.
+- Failed logins from many addresses make logins slower instead of a block for all persons. Password checks run at most 2 at the same time. The limit of 5 failed logins in 10 minutes applies to each address, also for parallel tries. 5 failures at one address block the logins of all roles from that address. The password confirmations of a logged-in administrator have a separate count for each session.
 - The session cookies are `SameSite=Lax`, thus links from Discord open the dashboard with the current session. The CSRF token, the Origin check and the Host check protect the forms.
 - syncwatch answers only to known host names (IP addresses, `localhost`, the host of `public_url`, the listen host, `SYNCWATCH_TLS_HOSTS`). Other names get 421.
 - No support for a proxy with `X-Forwarded-For`. The README documents the limits behind a reverse proxy instead.
@@ -76,11 +87,11 @@ Items that the review found and did not do. The source is in parentheses.
 ### Behavior
 
 - H4 waits `thresholds.failing_files` (default 1 hour) when failed items are its only reason. A folder error and a full disk open it immediately. A file watcher error is a separate WARNING finding after 1 hour and never urgent.
-- A device that never connected gets only C2 after `old_device`. H6 and C3 keep the last known device state through a disconnect.
-- Findings of an unreachable server are stale, not resolved. This also applies after a start until syncwatch contacted the server, and to structure findings until the first scan. Cross-server findings are stale only when none of their servers is reachable. syncwatch closes the findings of a removed or disabled server without a message.
+- A device that never connected gets only C2 after `old_device`. H5, H6 and C3 keep the last known device state through a disconnect. H5 counts only the time while the device is connected.
+- Findings of an unreachable server are stale, not resolved. This also applies after a start until syncwatch contacted the server, and to structure findings until the first scan. H7 and C2 wait while one of their servers is unreachable, because only a server that is up can show that a PC is offline. The other cross-server findings are stale only when none of their servers is reachable. syncwatch closes the findings of a removed or disabled server without a message. A disabled server stays a server, not a PC.
 - A higher threshold does not close open findings. The debounce of an urgent message counts from the time the finding became urgent.
 - syncwatch sends the resolved message after the finding stayed resolved for 5 minutes (or the debounce, if shorter). A finding that opens again in that time is the same incident.
-- Failed notifications wait longer between tries (1, 2, 4 … then every 30 minutes) and show a banner on each page. Without a webhook, syncwatch marks no notification as sent. A webhook that got a message does not get it again.
+- Failed notifications wait longer between tries and show a banner on each page. A Discord outage (HTTP 5xx or 429, a timeout or a network error) gives tries after 1, 2 and 4 minutes, then every 5 minutes. A refused webhook (HTTP 400, 401, 403 or 404) gives tries after 1, 2, 4 … minutes, up to every 30 minutes. The first message after a failure lists the urgent findings that opened and resolved during the failure. Without a webhook, syncwatch marks no notification as sent. A webhook that got a message does not get it again.
 - The self-signed certificate follows `public_url`, a specific listen address and `SYNCWATCH_TLS_HOSTS`. syncwatch makes a new one 30 days before the expiry date, also while it runs, and reads own certificate files again when they change. The dashboard serves HTTP/2.
 - In polled mode, each structure scan also scans the project folders in Syncthing folders. The depth limit `nested_scan_depth` applies to scans and to events.
 
@@ -114,5 +125,14 @@ Items that the review found and did not do. The source is in parentheses.
 ## 5. Later ideas (not in v1)
 
 - **Registration of new project folders** as paused, unshared Syncthing folders with `.stignore` present. A migration from a different sync tool then becomes: resume, compare, share for each folder. It needs the full Syncthing API key, thus it is a separate tool next to the gate, never a part of syncwatch. The author tested the API behavior that it depends on with 2.1.5 (`docs/api-findings.md`, "Folders added paused through the API").
-- A tree view of the folder structure · trend graphs or a Prometheus `/metrics` endpoint · an optional PC agent · disk space through SNMP · an HTML email report.
-- A heartbeat watchdog · repair hints for each finding type · settings drift checks · a Windows service · translations · Syncthing 1.x.
+- A tree view of the folder structure.
+- Trend graphs or a Prometheus `/metrics` endpoint.
+- An optional PC agent.
+- Disk space through SNMP.
+- An HTML email report.
+- A heartbeat watchdog.
+- Repair hints for each finding type.
+- Settings drift checks.
+- A Windows service.
+- Translations.
+- Syncthing 1.x.

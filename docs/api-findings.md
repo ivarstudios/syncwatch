@@ -63,6 +63,8 @@ Still to check on a NAS (Linux, Docker): the owner and the permissions of a `.st
 
 ## Probe runs
 
+The run below is a record of 2026-10-01. It keeps the output of the probe of that date, with the old texts (for example `full re-check` and `trusted on first use`). A probe run now writes the texts of the current version.
+
 ## AKKA (simulated, Windows host) — 2026-10-01 22:32 CEST
 
 URL: `https://127.0.0.1:18400`
