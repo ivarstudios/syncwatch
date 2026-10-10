@@ -241,9 +241,21 @@ func setup(t *testing.T) (*fakeST, *model.Hub, *config.Holder, *Manager, func())
 	hub := model.NewHub(nil)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := NewManager(hub, st, h, log)
+	stop := runManager(m)
+	return fake, hub, h, m, func() { stop(); srv.Close() }
+}
+
+// runManager runs m until the returned stop function is called, which waits
+// for Run (and so for every collector goroutine) to return: a test's cleanup
+// must not restore the backoff variables under a collector still using them.
+func runManager(m *Manager) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
-	go m.Run(ctx)
-	return fake, hub, h, m, func() { cancel(); srv.Close() }
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Run(ctx)
+	}()
+	return func() { cancel(); <-done }
 }
 
 // slow scales a test timeout by SYNCWATCH_TEST_SLOW (default 1), for runs
@@ -532,8 +544,10 @@ func dropAndReconnect(t *testing.T, fake *fakeST, m *Manager, between func()) {
 	m.mu.Lock()
 	r := m.running["akka"]
 	m.mu.Unlock()
-	r.c.Wake()
+	// A wake-up that arrives while the failed session is still winding down
+	// is drained as stale (see Run), so keep waking until the reconnect.
 	waitUntil(t, "the collector to reconnect", func() bool {
+		r.c.Wake()
 		return fake.count("/rest/system/status") > status && fake.count("/rest/events") >= events+2
 	})
 }
@@ -671,9 +685,7 @@ func startManager(t *testing.T, srv *httptest.Server, extra string, log *slog.Lo
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	m = NewManager(hub, st, h, log)
-	ctx, cancel := context.WithCancel(context.Background())
-	go m.Run(ctx)
-	return hub, m, st, cancel
+	return hub, m, st, runManager(m)
 }
 
 // An HTTP error on one folder's db/status or db/completion is that folder's
@@ -935,8 +947,12 @@ func TestStaleWakeDoesNotSkipBackoff(t *testing.T) {
 	}
 	c.Wake() // left over from before the session
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go c.Run(ctx)
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }() // before the cleanup restores the backoff
+	go func() {
+		defer close(done)
+		c.Run(ctx)
+	}()
 	time.Sleep(150 * time.Millisecond) // the first session has failed; the backoff is 300 ms
 	mu.Lock()
 	n := requests
