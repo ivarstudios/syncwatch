@@ -540,7 +540,13 @@ func (n *Notifier) checked(cfg *config.Config, v *engine.View, now time.Time) bo
 // SendTest sends a test message to every configured channel.
 func (n *Notifier) SendTest(ctx context.Context) error {
 	cfg := n.cfg.Get()
-	m := Message{Kind: KindTest, Title: "syncwatch test message", Summary: "Notifications from syncwatch reach this channel.", Color: ColorInfo, URL: cfg.PublicURL}
+	// With a role, the test mentions it like an urgent message does, so a
+	// wrong role ID shows now and not at the first incident.
+	summary := "Notifications from syncwatch reach this channel. Urgent messages mention no role."
+	if cfg.Notify.DiscordRoleID != "" {
+		summary = "Notifications from syncwatch reach this channel. This test message mentions the role, the same as urgent messages. If your phone did not notify you, check the role ID and that you have the role."
+	}
+	m := Message{Kind: KindTest, Mention: cfg.Notify.DiscordRoleID != "", Title: "syncwatch test message", Summary: summary, Color: ColorInfo, URL: cfg.PublicURL}
 	gen := n.generation()
 	senders := n.senders()
 	if len(senders) == 0 {
