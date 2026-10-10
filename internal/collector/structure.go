@@ -180,7 +180,9 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 		return ctx.Err()
 	}
 
-	// Keep earlier findings (from events or deeper baselines) that still exist.
+	// Keep earlier findings (from events or deeper baselines) that still exist
+	// and still count under the current rules: the pattern, ignore_dirs, the
+	// depth and the shares may have changed since they were found.
 	var prev map[string]*model.NestedDir
 	c.hub.View(c.id, func(s *model.Server) {
 		if s.Structure != nil {
@@ -199,7 +201,16 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 			}
 			continue
 		}
+		share := rules.ShareOf(refs, n.Path, st)
+		if share == nil {
+			continue
+		}
+		top, ok := nestedIn(st, cs, share.Path, n.Path)
+		if !ok {
+			continue
+		}
 		if c.exists(browse, st, n.Path) {
+			n.Parent, n.Share = top, share.Path
 			found[k] = n
 		}
 	}
@@ -240,11 +251,10 @@ func (c *Collector) descend(ctx context.Context, browse func(string) ([]string, 
 	}
 	for _, p := range entries {
 		p = st.Clean(p)
-		name := st.Base(p)
-		if cs.Ignored(name) {
-			continue
+		if cs.Ignored(st.Base(p)) {
+			continue // with its subtree
 		}
-		if cs.IsProject(name) {
+		if _, ok := nestedIn(st, cs, sh.Path, p); ok {
 			n := &model.NestedDir{Path: p, Parent: top.Path, Share: sh.Path, Source: "scan", FoundAt: now}
 			for _, f := range folders {
 				if st.Equal(f.path, p) || st.Within(p, f.path) {
@@ -255,6 +265,27 @@ func (c *Collector) descend(ctx context.Context, browse func(string) ([]string, 
 		}
 		c.descend(ctx, browse, st, cs, sh, top, p, depth+1, maxDepth, folders, now, emit)
 	}
+}
+
+// nestedIn reports whether p is a nested project folder of the share: its
+// top-level directory in the share is a project folder, p lies one to
+// cs.Depth levels below it, and no directory on the way is ignored. It
+// returns that top-level directory. The scan, the event path and the entries
+// kept between scans all use it, so they agree on what counts.
+func nestedIn(st pathx.Style, cs *config.CompiledStructure, share, p string) (top string, ok bool) {
+	if !st.Within(p, share) {
+		return "", false
+	}
+	rel := st.Split(st.Rel(p, share))
+	if len(rel) < 2 || len(rel) > cs.Depth+1 {
+		return "", false
+	}
+	for i, name := range rel {
+		if cs.Ignored(name) || ((i == 0 || i == len(rel)-1) && !cs.IsProject(name)) {
+			return "", false
+		}
+	}
+	return st.Join(share, rel[0]), true
 }
 
 // exists checks that a directory is still there by listing its parent.

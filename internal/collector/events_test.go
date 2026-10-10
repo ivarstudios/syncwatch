@@ -1,12 +1,20 @@
 package collector
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/stclient"
+	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
 // pushAt is push with an explicit event time.
@@ -59,5 +67,73 @@ func TestLocalChangeTimeTracked(t *testing.T) {
 	sv = waitFor(t, hub, "full re-check", func(s *model.Server) bool { return s.LastFullCheck.After(lastFull) })
 	if got := sv.Folders["p-alpha"].LastLocalChange; !got.Equal(at) {
 		t.Fatalf("LastLocalChange lost by the full re-check: %v", got)
+	}
+}
+
+// setupWith is setup with extra YAML appended to the configuration.
+func setupWith(t *testing.T, extra string) (*fakeST, *model.Hub, func()) {
+	t.Helper()
+	fake := newFakeST(t)
+	srv := httptest.NewTLSServer(fake)
+	cfg, err := config.ParseYAML([]byte(rulesYAML + fmt.Sprintf("servers: [{name: AKKA, url: %q}]\ncollector: {event_timeout: 5s}\n", srv.URL) + extra))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := config.NewHolder(cfg)
+	st, _ := store.OpenMemory(make([]byte, 32))
+	_ = st.SetServerKey("akka", "k", srv.URL)
+	hub := model.NewHub(nil)
+	m := NewManager(hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	return fake, hub, func() { cancel(); srv.Close() }
+}
+
+func dirEvent(folder, path string) map[string]any {
+	return map[string]any{"folder": folder, "folderID": folder, "type": "dir", "action": "modified", "path": path}
+}
+
+// The event path uses the scan's definition of a nested project folder:
+// no ignored directory on the way and at most nested_scan_depth levels below
+// the top-level project folder.
+func TestEventNestedUsesScanRules(t *testing.T) {
+	fake, hub, _, _, stop := setup(t)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Structure != nil })
+	fake.push("LocalChangeDetected", dirEvent("p-alpha", `.stversions\LIVE-IGNORED-2PROJECTFILES`))
+	fake.push("LocalChangeDetected", dirEvent("p-alpha", `a\b\c\LIVE-DEEP-2PROJECTFILES`))
+	fake.push("LocalChangeDetected", dirEvent("p-alpha", `a\b\LIVE-OK-2PROJECTFILES`))
+	sv := waitFor(t, hub, "nested folder from events", func(s *model.Server) bool { return len(s.Structure.Nested) > 0 })
+	for _, n := range sv.Structure.Nested {
+		if !strings.HasSuffix(n.Path, `LIVE-ALPHA-2PROJECTFILES\a\b\LIVE-OK-2PROJECTFILES`) || !strings.HasSuffix(n.Parent, `LIVE-ALPHA-2PROJECTFILES`) {
+			t.Errorf("nested entry %+v", n)
+		}
+	}
+	if len(sv.Structure.Nested) != 1 {
+		t.Fatalf("%d nested entries, want only the one within depth and not behind an ignored directory", len(sv.Structure.Nested))
+	}
+}
+
+// A matching directory below a top-level directory that isn't a project
+// folder isn't nested "inside a project folder", as the scan never reports it.
+func TestEventNestedNeedsProjectTop(t *testing.T) {
+	// The 2PROJECTFILES share is replaced by its parent, so p-alpha's top-level
+	// directory in the share is AKKA-LIVE-2PROJECTFILES, not a project folder.
+	fake, hub, stop := setupWith(t, `shares:
+  add: {akka: ['D:\tmp\swsim\st\akka\share']}
+  exclude: {akka: ['D:\tmp\swsim\st\akka\share\AKKA-LIVE-2PROJECTFILES']}
+`)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Structure != nil })
+	fake.push("LocalChangeDetected", dirEvent("p-alpha", `renders\LIVE-NESTED-2PROJECTFILES`))
+	fake.push("LocalChangeDetected", dirEvent("p-beta", `x\LIVE-OK-1SOURCE`))
+	sv := waitFor(t, hub, "nested folder from events", func(s *model.Server) bool { return len(s.Structure.Nested) > 0 })
+	for _, n := range sv.Structure.Nested {
+		if !strings.HasSuffix(n.Path, `LIVE-BETA-1SOURCE\x\LIVE-OK-1SOURCE`) {
+			t.Errorf("nested entry %+v", n)
+		}
+	}
+	if len(sv.Structure.Nested) != 1 {
+		t.Fatalf("%d nested entries, want 1", len(sv.Structure.Nested))
 	}
 }

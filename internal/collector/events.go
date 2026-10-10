@@ -172,9 +172,10 @@ func (c *Collector) refreshPending(ctx context.Context) {
 	c.update(func(s *model.Server) { s.PendingDevices, s.PendingFolders = devs, folds })
 }
 
-// diskChange catches nested project folders inside synced folders at any
-// depth. Syncthing 2.1 reports new directories as action "modified" (and
-// sometimes "added"); deletions remove known nested folders.
+// diskChange catches nested project folders inside synced folders as they
+// appear, by the scan's rules (nestedIn). Syncthing 2.1 reports new
+// directories as action "modified" (and sometimes "added"); deletions remove
+// known nested folders.
 func (c *Collector) diskChange(d stclient.DiskChangeData, at time.Time) {
 	if d.Type != "dir" {
 		return
@@ -205,7 +206,7 @@ func (c *Collector) diskChange(d stclient.DiskChangeData, at time.Time) {
 		}
 		name := st.Base(full)
 		if cs.Ignored(name) || !cs.IsProject(name) {
-			return
+			return // cheap pre-check; nestedIn decides
 		}
 		var add, exclude []string
 		if sc, ok := cfg.ServerByKey(s.ID); ok {
@@ -216,11 +217,13 @@ func (c *Collector) diskChange(d stclient.DiskChangeData, at time.Time) {
 		if share == nil {
 			return
 		}
-		rel := st.Split(st.Rel(full, share.Path))
-		if len(rel) < 2 {
-			return // a top-level directory, not nested
+		// The same test as the scan's, so a top-level directory, a directory
+		// under a non-project top, one behind an ignored directory or one
+		// deeper than nested_scan_depth is not reported.
+		top, ok := nestedIn(st, cs, share.Path, full)
+		if !ok {
+			return
 		}
-		top := st.Join(share.Path, rel[0])
 		key := nestedKey(st, full)
 		if _, ok := s.Structure.Nested[key]; ok {
 			return
