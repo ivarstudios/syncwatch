@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -556,6 +557,86 @@ func TestGateLogsRefusalsOnceAMinute(t *testing.T) {
 	refused("/rest/system/status", "", http.StatusForbidden)
 	if n := strings.Count(logs.String(), "gate refused a request"); n != 4 || !strings.Contains(logs.String(), "count=50") {
 		t.Fatalf("after a minute: %d lines, want 4 with count=50:\n%s", n, logs.String())
+	}
+}
+
+// When Syncthing refuses the API key of the gate (it changed after the gate
+// started), the gate answers 502 with a short instruction, not Syncthing's
+// 403: syncwatch must not tell the administrator to check the gate token.
+// The gate logs it once a minute, with a count.
+func TestGateSyncthingRefusesKey(t *testing.T) {
+	st := &fakeSyncthing{}
+	up := httptest.NewTLSServer(st)
+	defer up.Close()
+	var logs syncBuffer
+	g, err := New(Options{Syncthing: up.URL, APIKey: "old-syncthing-api-key-0123", Token: token, Log: slog.New(slog.NewTextHandler(&logs, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	const want = "syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key\n"
+	mask := strings.Join(stclient.EventMask, ",")
+	for _, path := range []string{"/rest/system/status", "/rest/events?since=0&timeout=1&events=" + mask, "/rest/config/folders",
+		"/rest/db/status?folder=f", "/metrics", "/rest/system/browse?current=/s/"} {
+		if code, body := get(t, gs, http.MethodGet, path, token); code != http.StatusBadGateway || body != want {
+			t.Errorf("%s: %d %q", path, code, body)
+		}
+	}
+	if len(want) >= 150 {
+		t.Fatalf("the answer has %d bytes", len(want))
+	}
+	// Syncthing gets no API key for its health, so it cannot refuse one.
+	if code, _ := get(t, gs, http.MethodGet, "/rest/noauth/health", token); code != 200 {
+		t.Fatalf("health: %d", code)
+	}
+	// A wrong gate token is still the 403 of the gate itself.
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", "wrong"); code != http.StatusForbidden || !strings.Contains(body, "gate token") {
+		t.Fatalf("wrong gate token: %d %q", code, body)
+	}
+	const line = "Syncthing refused the API key of the gate: restart the gate with the current API key"
+	if n := strings.Count(logs.String(), line); n != 1 || !strings.Contains(logs.String(), "status=403") {
+		t.Fatalf("%d log lines in a minute, want 1 with status=403:\n%s", n, logs.String())
+	}
+	now = now.Add(61 * time.Second)
+	get(t, gs, http.MethodGet, "/rest/system/version", token)
+	if n := strings.Count(logs.String(), line); n != 2 || !strings.Contains(logs.String(), "count=5") {
+		t.Fatalf("after a minute: %d lines, want 2, the second with count=5:\n%s", n, logs.String())
+	}
+}
+
+// syncwatch's client shows what the gate refused: H1 finds a refused gate
+// token by "HTTP 403", a key that Syncthing refused is a 502, and a share
+// outside the browse roots gets the name of the setting.
+func TestClientThroughGateErrors(t *testing.T) {
+	st, g, gs := setup(t)
+	client := func(tok string) *stclient.Client {
+		cl, err := stclient.New(stclient.Options{Name: "NAS", URL: gs.URL, APIKey: tok, Timeout: 5 * time.Second, Retries: -1,
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cl
+	}
+	ctx := context.Background()
+	refused := regexp.MustCompile(`HTTP 40[13]\b`)
+	_, err := client("wrong-gate-token").SystemStatus(ctx)
+	if err == nil || !refused.MatchString(err.Error()) || !strings.Contains(err.Error(), "gate token missing or not correct") || strings.Contains(err.Error(), "check the API key") {
+		t.Errorf("wrong gate token: %v", err)
+	}
+	_, err = client(token).Browse(ctx, "/elsewhere", "/")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || !strings.Contains(err.Error(), "SYNCWATCH_GATE_BROWSE_ROOTS") {
+		t.Errorf("browse outside the roots: %v", err)
+	}
+	if st.countPath("/rest/system/browse") != 0 {
+		t.Fatal("the refused browse reached Syncthing")
+	}
+	g.o.APIKey = "old-syncthing-api-key-0123"
+	_, err = client(token).SystemStatus(ctx)
+	if err == nil || refused.MatchString(err.Error()) || !strings.Contains(err.Error(), "HTTP 502: syncwatch gate: Syncthing refused the API key of the gate") {
+		t.Errorf("key refused by Syncthing: %v", err)
 	}
 }
 

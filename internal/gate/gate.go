@@ -230,8 +230,23 @@ func (g *Gate) verify(cs tls.ConnectionState) error {
 // more when there is more to say. Refusals are logged once a minute per
 // client and reason, with a count, so a scanner can't fill the log.
 func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why, detail string) {
-	ip, now := clientIP(r), g.now()
+	ip := clientIP(r)
+	if n := g.due(ip + " " + why); n > 0 {
+		g.o.Log.Warn("gate refused a request", "why", why, "detail", detail, "method", r.Method, "path", r.URL.Path, "ip", ip, "count", n)
+	}
+	if detail != "" {
+		why += ": " + detail
+	}
+	http.Error(w, "syncwatch gate: "+why, code)
+}
+
+// due counts one refusal for key (a client and a reason) and returns how
+// many to log now: all since the last line for key, at most once a minute;
+// 0 in between.
+func (g *Gate) due(key string) int {
+	now := g.now()
 	g.lmu.Lock()
+	defer g.lmu.Unlock()
 	if len(g.refusals) >= maxRefusals {
 		for k, rf := range g.refusals {
 			if now.Sub(rf.at) >= logInterval {
@@ -242,24 +257,27 @@ func (g *Gate) deny(w http.ResponseWriter, r *http.Request, code int, why, detai
 			clear(g.refusals)
 		}
 	}
-	rf := g.refusals[ip+" "+why]
+	rf := g.refusals[key]
 	if rf == nil {
 		rf = &refusal{}
-		g.refusals[ip+" "+why] = rf
+		g.refusals[key] = rf
 	}
 	rf.n++
 	n := 0
 	if rf.at.IsZero() || now.Sub(rf.at) >= logInterval {
 		n, rf.n, rf.at = rf.n, 0, now
 	}
-	g.lmu.Unlock()
-	if n > 0 {
-		g.o.Log.Warn("gate refused a request", "why", why, "detail", detail, "method", r.Method, "path", r.URL.Path, "ip", ip, "count", n)
+	return n
+}
+
+// keyRefused answers a request that Syncthing refused with the API key of
+// the gate (the key changed after the gate read it): 502, so that syncwatch
+// can tell it from a wrong gate token, which the gate refuses with 403.
+func (g *Gate) keyRefused(w http.ResponseWriter, r *http.Request, status int) {
+	if n := g.due(errKeyRefused.Error()); n > 0 {
+		g.o.Log.Warn("Syncthing refused the API key of the gate: restart the gate with the current API key", "status", status, "path", r.URL.Path, "count", n)
 	}
-	if detail != "" {
-		why += ": " + detail
-	}
-	http.Error(w, "syncwatch gate: "+why, code)
+	http.Error(w, keyRefusedText, http.StatusBadGateway)
 }
 
 // ServeHTTP passes allowlisted GET requests with the right token on to
@@ -331,6 +349,10 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && r.URL.Path != pathHealth {
+		g.keyRefused(w, r, resp.StatusCode)
+		return
+	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
@@ -620,6 +642,9 @@ func (g *Gate) getJSON(ctx context.Context, path string, out any) error {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return fmt.Errorf("%s: HTTP %d: %w", path, resp.StatusCode, errKeyRefused)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
 	}
@@ -678,12 +703,21 @@ func cleanFolders(body []byte) ([]byte, error) {
 // errCertChanged marks the verify error for a changed Syncthing certificate.
 var errCertChanged = errors.New("the certificate of Syncthing changed")
 
+// errKeyRefused marks a 401 or 403 from Syncthing to the API key of the
+// gate, and keyRefusedText is the body of the 502 the gate answers then.
+var errKeyRefused = errors.New("Syncthing refused the API key of the gate")
+
+const keyRefusedText = "syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key"
+
 // upstreamError is the body of a 502 for an error reaching Syncthing.
 // syncwatch's client keeps 200 bytes of it, so it stays under 150, and it
-// says what to do in the one case where the operator must act.
+// says what to do in the cases where the operator must act.
 func upstreamError(err error, what string) string {
 	if errors.Is(err, errCertChanged) || strings.Contains(err.Error(), errCertChanged.Error()) {
 		return "syncwatch gate: the certificate of Syncthing changed. Delete syncthing.pin in the data directory of the gate. Then restart the gate"
+	}
+	if errors.Is(err, errKeyRefused) {
+		return keyRefusedText
 	}
 	return "syncwatch gate: " + what + ": " + cleanErr(err)
 }
