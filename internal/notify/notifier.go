@@ -356,6 +356,13 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		if n.announced(h) {
 			continue
 		}
+		// Not when it is ignored or snoozed, now or when it resolved.
+		if _, z := v.Snoozed(h.FindingID, now); z {
+			continue
+		}
+		if _, z := v.Snoozed(h.FindingID, h.ResolvedAt); z {
+			continue
+		}
 		blips = append(blips, h)
 	}
 	if len(due) > 0 || len(pend) > 0 || len(blips) > 0 {

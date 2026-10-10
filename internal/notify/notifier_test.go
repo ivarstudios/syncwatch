@@ -779,3 +779,40 @@ func TestReminderInsideQuietHoursRejected(t *testing.T) {
 		}
 	}
 }
+
+// Findings that are ignored or snoozed don't show up in the overnight
+// "opened and resolved" list.
+func TestOvernightSkipsIgnoredAndSnoozed(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 23, 0), "AKKA", "SOL", "SIRIUS")
+	r.at(r.now)
+	r.now = local(2026, 10, 7, 1, 0)
+	for _, s := range []string{"AKKA", "SOL", "SIRIUS"} {
+		r.setDown(s, true)
+	}
+	r.at(r.now)
+	for _, rec := range r.eng.View().Open {
+		var err error
+		switch rec.Server {
+		case "akka":
+			err = r.eng.Ignore(rec.ID, "known flaky", "admin")
+		case "sol":
+			err = r.eng.Snooze(rec.ID, local(2026, 10, 8, 1, 0), "maintenance", "admin")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.at(local(2026, 10, 7, 1, 30))
+	for _, s := range []string{"AKKA", "SOL", "SIRIUS"} {
+		r.setDown(s, false)
+	}
+	r.at(local(2026, 10, 7, 2, 0))
+	r.at(local(2026, 10, 7, 7, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindOvernight {
+		t.Fatalf("overnight summary: %+v", msgs)
+	}
+	if lines := msgs[0].Sections[2].Lines; len(lines) != 1 || !strings.Contains(lines[0], "SIRIUS") {
+		t.Fatalf("opened-and-resolved section should list only SIRIUS: %+v", lines)
+	}
+}
