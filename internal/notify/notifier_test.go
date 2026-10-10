@@ -989,7 +989,7 @@ func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
 	r.setDown("SOL", true)
 	r.at(start.Add(2 * time.Minute))
 	msgs := r.sender.take()
-	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1 of 2 servers up \(SOL down\)`) { // parentheses escaped for Discord
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1 of 3 servers up \(SOL down, OLD disabled\)`) { // parentheses escaped for Discord
 		t.Fatalf("weekly report once every server reported: %+v", msgs)
 	}
 

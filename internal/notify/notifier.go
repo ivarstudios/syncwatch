@@ -1198,15 +1198,32 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 	var parts []string
 	snap := v.Snapshot
 	if snap != nil {
-		up, total := 0, 0
-		var down, unknown []string
+		// Disabled servers are not polled and not in the snapshot.
+		disabled := map[string]bool{}
+		var off []string
+		for _, s := range cfg.Servers {
+			if s.Disabled {
+				disabled[s.ID] = true
+				off = append(off, s.Name)
+			}
+		}
+		up, total, loaded := 0, len(off), false
+		known := map[string]bool{} // up and loaded: its view of the PCs is current
+		var down, cert, unknown []string
 		for _, sv := range snap.Servers {
+			if disabled[sv.ID] {
+				continue
+			}
 			total++
+			loaded = loaded || sv.Loaded
 			switch sv.Status {
 			case model.StatusUp:
 				up++
+				known[sv.ID] = sv.Loaded
 			case model.StatusUnknown:
 				unknown = append(unknown, sv.Name)
+			case model.StatusCertChanged:
+				cert = append(cert, sv.Name)
 			default:
 				down = append(down, sv.Name)
 			}
@@ -1215,30 +1232,53 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			parts = append(parts, plural(total, "server")+" up")
 		} else {
 			var why []string
-			if len(down) > 0 {
-				why = append(why, strings.Join(down, ", ")+" down")
-			}
-			if len(unknown) > 0 {
-				why = append(why, strings.Join(unknown, ", ")+" not contacted")
+			for _, g := range []struct {
+				names []string
+				state string
+			}{{down, "down"}, {cert, "certificate changed"}, {unknown, "not contacted"}, {off, "disabled"}} {
+				if len(g.names) > 0 {
+					why = append(why, strings.Join(g.names, ", ")+" "+g.state)
+				}
 			}
 			parts = append(parts, fmt.Sprintf("%d of %d servers up (%s)", up, total, strings.Join(why, ", ")))
 		}
-		pcs, offline := 0, 0
-		for _, d := range snap.Devices() {
-			if d.IsServer {
-				continue
+		if !loaded {
+			// No server answered a full check since the start: the PCs are
+			// not known, which is not "0 PCs".
+			parts = append(parts, "PCs unknown")
+		} else {
+			pcs, offline, unsure := 0, 0, 0
+			for _, d := range snap.Devices() {
+				if d.IsServer {
+					continue
+				}
+				pcs++
+				if d.Connected || (!d.LastSeen.IsZero() && now.Sub(d.LastSeen) <= cfg.Thresholds.PCOffline.D()) {
+					continue
+				}
+				// Offline only when every server that has the PC configured
+				// can say so; else the PC can be connected to one of the others.
+				if allKnown(known, d.SeenBy) {
+					offline++
+				} else {
+					unsure++
+				}
 			}
-			pcs++
-			if !d.Connected && (d.LastSeen.IsZero() || now.Sub(d.LastSeen) > cfg.Thresholds.PCOffline.D()) {
-				offline++
+			pc := fmt.Sprintf("%s, %d offline more than %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D()))
+			if unsure > 0 {
+				pc += fmt.Sprintf(", %d unknown", unsure)
 			}
+			parts = append(parts, pc)
 		}
-		parts = append(parts, fmt.Sprintf("%s, %d offline more than %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
 	}
-	var errs, warns, infos, snoozed int
+	var errs, warns, infos, snoozed, ignored int
 	for _, r := range v.Open {
-		if _, ok := v.Snoozed(r.ID, now); ok {
-			snoozed++
+		if z, ok := v.Snoozed(r.ID, now); ok {
+			if z.Kind == store.IgnoreKind {
+				ignored++
+			} else {
+				snoozed++
+			}
 			continue
 		}
 		switch r.Severity {
@@ -1252,7 +1292,20 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 	}
 	parts = append(parts, fmt.Sprintf("ERROR %d · WARNING %d · INFO %d", errs, warns, infos))
 	parts = append(parts, fmt.Sprintf("%d snoozed", snoozed))
+	if ignored > 0 {
+		parts = append(parts, fmt.Sprintf("%d ignored", ignored))
+	}
 	return strings.Join(parts, " · ")
+}
+
+// allKnown reports whether every one of the servers is up and loaded.
+func allKnown(known map[string]bool, ids []string) bool {
+	for _, id := range ids {
+		if !known[id] {
+			return false
+		}
+	}
+	return true
 }
 
 // plural writes a count with its noun: "1 server", "2 servers".

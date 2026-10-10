@@ -358,3 +358,43 @@ func TestUrgentMessageKeepsServerFindingsApart(t *testing.T) {
 		t.Errorf("%s: %q", m.Title, lines)
 	}
 }
+
+// The health line names each state for what it is (W-036, W-003, W-005):
+// ignored findings are not "snoozed", a changed certificate is not "down",
+// a disabled server is listed, the PCs are unknown until a server answered
+// a full check, and a PC counts as offline only when every server that has
+// it configured is up and loaded.
+func TestHealthLineStates(t *testing.T) {
+	now := local(2026, 10, 6, 10, 0)
+	cfg := &config.Config{Servers: []config.Server{{ID: "akka", Name: "AKKA"}, {ID: "sol", Name: "SOL"}, {ID: "old", Name: "OLD", Disabled: true}}}
+	cfg.ApplyDefaults()
+	away := now.Add(-10 * 24 * time.Hour)
+	akka := &model.Server{ID: "akka", Name: "AKKA", Status: model.StatusUp, Loaded: true, MyID: "AKKA-ID", Devices: map[string]*model.Device{
+		"PC1": {ID: "PC1", Name: "pc1", LastSeen: away}, // only on AKKA: offline
+		"PC2": {ID: "PC2", Name: "pc2", LastSeen: away}, // also on SOL: unknown
+	}}
+	sol := &model.Server{ID: "sol", Name: "SOL", Status: model.StatusCertChanged, Loaded: true, MyID: "SOL-ID", Devices: map[string]*model.Device{
+		"PC2": {ID: "PC2", Name: "pc2", LastSeen: away},
+	}}
+	open := func(id string) *store.Record {
+		return &store.Record{Finding: model.Finding{ID: id, Check: "H11", Severity: model.Warn}}
+	}
+	v := &engine.View{Snapshot: &model.Snapshot{Servers: []*model.Server{akka, sol}}, Open: []*store.Record{open("z"), open("i"), open("w")},
+		Snoozes: map[string]store.Snooze{
+			"z": {FindingID: "z", Kind: store.SnoozeKind, Until: now.Add(time.Hour)},
+			"i": {FindingID: "i", Kind: store.IgnoreKind},
+		}}
+	want := "1 of 3 servers up (SOL certificate changed, OLD disabled) · 2 PCs, 1 offline more than 7 days, 1 unknown · ERROR 0 · WARNING 1 · INFO 0 · 1 snoozed · 1 ignored"
+	if got := HealthLine(cfg, v, now); got != want {
+		t.Errorf("health line:\n got %s\nwant %s", got, want)
+	}
+	// Right after a start: nothing answered a full check yet.
+	for _, sv := range []*model.Server{akka, sol} {
+		sv.Status, sv.Loaded, sv.Devices = model.StatusUnknown, false, nil
+	}
+	v = &engine.View{Snapshot: &model.Snapshot{Servers: []*model.Server{akka, sol}}}
+	want = "0 of 3 servers up (AKKA, SOL not contacted, OLD disabled) · PCs unknown · ERROR 0 · WARNING 0 · INFO 0 · 0 snoozed"
+	if got := HealthLine(cfg, v, now); got != want {
+		t.Errorf("health line after a start:\n got %s\nwant %s", got, want)
+	}
+}
