@@ -816,3 +816,37 @@ func TestOvernightSkipsIgnoredAndSnoozed(t *testing.T) {
 		t.Fatalf("opened-and-resolved section should list only SIRIUS: %+v", lines)
 	}
 }
+
+// The daily reminder doesn't repeat what was announced less than an hour
+// before its time: an urgent ping at 07:59, or the overnight summary at
+// 07:00.
+func TestReminderSkipsRecentlyAnnounced(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 7, 54), "AKKA", "SOL")
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 7, 59))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
+		t.Fatalf("ping at 07:59: %+v", m)
+	}
+	r.at(local(2026, 10, 6, 8, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("reminder a minute after the ping: %s", m[0].Title)
+	}
+	// Next morning: AKKA (pinged yesterday) is reminded; SOL, announced by
+	// the overnight summary at 07:00, isn't.
+	r.now = local(2026, 10, 6, 23, 0)
+	r.setDown("SOL", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 7, 7, 0).Add(20 * time.Second))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindOvernight || !strings.Contains(messageText(m[0]), "SOL") {
+		t.Fatalf("overnight summary: %+v", m)
+	}
+	r.at(local(2026, 10, 7, 8, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindReminder {
+		t.Fatalf("reminder: %+v", msgs)
+	}
+	if text := messageText(msgs[0]); !strings.Contains(text, "AKKA") || strings.Contains(text, "SOL") {
+		t.Fatalf("reminder should list AKKA only:\n%s", text)
+	}
+}

@@ -409,9 +409,10 @@ func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.V
 	}
 	var open []*store.Record
 	for _, r := range v.Open {
-		// Only findings announced before the reminder time; one pinged just
-		// now (e.g. after quiet hours or a snooze) doesn't need a reminder.
-		if !r.Urgent || r.PingedAt.IsZero() || !r.PingedAt.Before(at) {
+		// Only findings announced more than an hour before the reminder
+		// time; one pinged just now (after a snooze, say) or listed in the
+		// overnight summary at quiet end doesn't need a reminder yet.
+		if !r.Urgent || r.PingedAt.IsZero() || r.PingedAt.After(at.Add(-time.Hour)) {
 			continue
 		}
 		if _, snoozed := v.Snoozed(r.ID, now); snoozed {
