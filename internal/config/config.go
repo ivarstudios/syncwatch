@@ -254,9 +254,17 @@ func (c *Config) ApplyDefaults() {
 			*f = "off"
 		}
 	}
+	// Explicit ids are reserved first, so a generated id never collides with one.
+	taken := map[string]bool{}
+	for _, s := range c.Servers {
+		if s.ID != "" {
+			taken[strings.ToLower(s.ID)] = true
+		}
+	}
 	for i := range c.Servers {
 		if c.Servers[i].ID == "" {
-			c.Servers[i].ID = Slug(c.Servers[i].Name)
+			c.Servers[i].ID = uniqueSlug(c.Servers[i].Name, taken)
+			taken[c.Servers[i].ID] = true
 		}
 		if c.Servers[i].Name == "" {
 			c.Servers[i].Name = c.Servers[i].ID
@@ -272,15 +280,35 @@ func setDur(d *Duration, def time.Duration) {
 	}
 }
 
-var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+// maxIDLen is the longest server id.
+const maxIDLen = 40
 
-// Slug turns a name into a lowercase ID.
+var (
+	slugRe     = regexp.MustCompile(`[^a-z0-9]+`)
+	serverIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+)
+
+// Slug turns a name into a lowercase ID of at most maxIDLen characters.
 func Slug(name string) string {
 	s := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	if len(s) > maxIDLen {
+		s = strings.TrimRight(s[:maxIDLen], "-")
+	}
 	if s == "" {
 		s = "server"
 	}
 	return s
+}
+
+// uniqueSlug returns Slug(name), or "<slug>-2", "<slug>-3", … when that id is taken.
+func uniqueSlug(name string, taken map[string]bool) string {
+	base := Slug(name)
+	id := base
+	for n := 2; taken[id]; n++ {
+		suffix := "-" + strconv.Itoa(n)
+		id = strings.TrimRight(base[:min(len(base), maxIDLen-len(suffix))], "-") + suffix
+	}
+	return id
 }
 
 // Validate checks the configuration for errors.
@@ -291,16 +319,27 @@ func (c *Config) Validate() error {
 			errs = append(errs, err)
 		}
 	}
-	ids := map[string]bool{}
-	for _, s := range c.Servers {
+	// Lookups by id or name ignore case, so ids and names must be unique
+	// ignoring case, and a name must not be another server's id.
+	seen := map[string]int{}
+	for i, s := range c.Servers {
 		if s.ID == "" {
 			errs = append(errs, errors.New("a server has no id or name"))
 			continue
 		}
-		if ids[s.ID] {
-			errs = append(errs, fmt.Errorf("duplicate server id %q", s.ID))
+		if !serverIDRe.MatchString(s.ID) {
+			errs = append(errs, fmt.Errorf("server id %q must be 1-40 characters of a-z, 0-9 and -, starting with a letter or digit", s.ID))
 		}
-		ids[s.ID] = true
+		for _, key := range []string{s.ID, s.Name} {
+			k := strings.ToLower(key)
+			if key == "" {
+				continue
+			}
+			if j, ok := seen[k]; ok && j != i {
+				errs = append(errs, fmt.Errorf("server %s: id or name %q is already used by server %s (ids and names are compared ignoring case)", s.ID, key, c.Servers[j].ID))
+			}
+			seen[k] = i
+		}
 		// The URL isn't a secret: it's shown, exported and sent in notices.
 		u, err := url.Parse(s.URL)
 		switch {

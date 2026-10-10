@@ -309,6 +309,55 @@ func TestParseClockStrict(t *testing.T) {
 	}
 }
 
+// Ids are looked up ignoring case and used in URLs, JSON keys and secret
+// names, so they have a fixed charset and are unique ignoring case; names
+// too, since lookups also match names.
+func TestServerIDs(t *testing.T) {
+	const u = "url: 'https://10.0.0.1:8384'"
+	bad := map[string]string{
+		"servers: [{id: AKKA, name: a, " + u + "}]":                                 "server id \"AKKA\" must be 1-40",
+		"servers: [{id: 'a,b', name: a, " + u + "}]":                                "server id \"a,b\" must be",
+		"servers: [{id: '<b>x</b>', name: a, " + u + "}]":                           "must be 1-40 characters",
+		"servers: [{id: '-a', name: a, " + u + "}]":                                 "must be 1-40 characters",
+		"servers: [{id: 'a b', name: a, " + u + "}]":                                "must be 1-40 characters",
+		"servers: [{id: " + strings.Repeat("a", 41) + ", name: a, " + u + "}]":      "must be 1-40 characters",
+		"servers: [{id: akka, name: A, " + u + "}, {id: AKKA, name: B, " + u + "}]": "already used by server akka",
+		"servers: [{id: akka, name: A, " + u + "}, {id: akka, name: B, " + u + "}]": "already used by server akka",
+		"servers: [{name: Akka, " + u + "}, {name: AKKA, " + u + "}]":               "name \"AKKA\" is already used by server akka",
+		"servers: [{name: A, id: nas, " + u + "}, {name: nas, id: b, " + u + "}]":   "server b: id or name \"nas\" is already used by server nas",
+		"servers: [{name: nas, id: a, " + u + "}, {name: B, id: NAS, " + u + "}]":   "already used by server a",
+	}
+	for in, want := range bad {
+		_, err := ParseYAML([]byte(in + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", in, err, want)
+		}
+	}
+	c, err := ParseYAML([]byte("servers: [{id: " + strings.Repeat("a", 40) + ", name: a, " + u + "}, {id: nas-1, name: 'NAS 1', " + u + "}, {id: '9', name: nine, " + u + "}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sv, ok := c.ServerByKey("nas 1"); !ok || sv.ID != "nas-1" {
+		t.Fatalf("lookup by name: %+v %v", sv, ok)
+	}
+	// Generated ids: a slug that is empty or taken gets -2, -3, …; long names are cut to 40.
+	c, err = ParseYAML([]byte("servers: [{name: ÅÄÖ, " + u + "}, {name: ÖÄÅ, " + u + "}, {name: 'NAS 1', " + u + "}, {id: nas-1, name: Other, " + u + "}, {name: '" + strings.Repeat("x", 39) + "yz', " + u + "}, {name: '" + strings.Repeat("x", 39) + "yzz', " + u + "}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range c.Servers {
+		ids = append(ids, s.ID)
+	}
+	want := []string{"server", "server-2", "nas-1-2", "nas-1", strings.Repeat("x", 39) + "y", strings.Repeat("x", 38) + "-2"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ids %q, want %q", ids, want)
+	}
+	if Slug("--Hello, World!--") != "hello-world" || Slug("") != "server" || len(Slug(strings.Repeat("ab-", 30))) > 40 {
+		t.Fatalf("slug: %q %q %q", Slug("--Hello, World!--"), Slug(""), Slug(strings.Repeat("ab-", 30)))
+	}
+}
+
 func TestStructureHelpers(t *testing.T) {
 	c, _ := ParseYAML([]byte(ivarYAML))
 	cs, err := c.Structure.Compile()
