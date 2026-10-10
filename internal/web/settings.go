@@ -9,9 +9,11 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -29,6 +31,7 @@ type checkRow struct {
 	Enabled, Urgent bool
 	Debounce        string
 	SeverityLabel   string
+	Invalid         bool // the debounce of a refused save is not valid
 }
 
 type structureDoc struct {
@@ -55,16 +58,99 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 		"StructureYAML": string(sdoc),
 		"HasWebhook":    s.st.HasSecret(store.SecretDiscordWebhook),
 		"HasToken":      s.st.HasSecret(store.SecretAPIToken),
+		"WebhookLost":   s.undecryptable(store.SecretDiscordWebhook),
+		"TokenLost":     s.undecryptable(store.SecretAPIToken),
 		"HasViewerPW":   hasViewer,
 		"Log":           log,
 		"Weekdays":      []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "off"},
 		"Now":           s.fmtTime(s.now()),
 		"Rev":           configRev(cfg),
+		"Form":          formValues(cfg),
+		"Bad":           map[string]bool{},
+		"Errors":        map[string]string{},
 	}
 	for k, val := range extra {
 		data[k] = val
 	}
 	return data
+}
+
+// formInputs lists, for each form that refuse shows again, the inputs whose
+// typed text it keeps (the rows of the checks table are in checkRow).
+var formInputs = map[string][]string{
+	"notifications": {"discord_webhook_clear", "discord_role_id", "quiet_hours", "reminder_time", "weekly_day", "weekly_time", "weekly_top", "timezone", "public_url"},
+	"checks":        {"failing_files", "stuck_sync", "paused", "pc_offline", "conflict_window", "inactive_project", "old_device", "dead_share"},
+	"collector":     {"mode", "event_timeout", "full_check_interval", "poll_interval", "structure_interval", "baseline_interval", "concurrency", "request_timeout", "down_after_failures"},
+}
+
+// formValues returns the text that each input of formInputs shows for c.
+func formValues(c *config.Config) map[string]string {
+	n, th, col := c.Notify, c.Thresholds, c.Collector
+	return map[string]string{
+		"discord_role_id": n.DiscordRoleID, "quiet_hours": n.QuietHours, "reminder_time": n.ReminderTime, "weekly_day": n.WeeklyDay,
+		"weekly_time": n.WeeklyTime, "weekly_top": strconv.Itoa(n.WeeklyTop), "timezone": c.Timezone, "public_url": c.PublicURL,
+		"failing_files": th.FailingFiles.String(), "stuck_sync": th.StuckSync.String(), "paused": th.Paused.String(), "pc_offline": th.PCOffline.String(),
+		"conflict_window": th.ConflictWindow.String(), "inactive_project": th.InactiveProject.String(), "old_device": th.OldDevice.String(), "dead_share": th.DeadShare.String(),
+		"mode": col.Mode, "event_timeout": col.EventTimeout.String(), "full_check_interval": col.FullCheckInterval.String(), "poll_interval": col.PollInterval.String(),
+		"structure_interval": col.StructureInterval.String(), "baseline_interval": col.BaselineInterval.String(), "concurrency": strconv.Itoa(col.Concurrency),
+		"request_timeout": col.RequestTimeout.String(), "down_after_failures": strconv.Itoa(col.DownAfter),
+	}
+}
+
+// refuse answers a refused save of the Notifications, Checks or Collector
+// form with the settings page itself (HTTP 422) instead of a redirect, so
+// the form keeps each value that was typed: a value such as "3 days" cannot
+// go through the configuration. The page shows the configuration old with
+// its revision (a newer one makes the next save stale), the inputs of
+// section show the posted text, msg shows above the Save button of section
+// and the inputs in bad are marked.
+func (s *Server) refuse(w http.ResponseWriter, r *http.Request, info requestInfo, old *config.Config, section, msg string, bad map[string]bool) {
+	d := s.settingsData(info, nil)
+	form := d["Form"].(map[string]string)
+	for _, name := range formInputs[section] {
+		form[name] = r.FormValue(name)
+	}
+	if section == "checks" {
+		rows := d["Checks"].([]checkRow)
+		for i := range rows {
+			id := rows[i].ID
+			rows[i].Enabled = r.FormValue("enabled_"+id) == "on"
+			rows[i].Urgent = r.FormValue("urgent_"+id) == "on"
+			rows[i].Debounce = r.FormValue("debounce_" + id)
+			rows[i].Invalid = bad["debounce_"+id]
+		}
+	}
+	d["Rev"], d["Bad"], d["Errors"] = configRev(old), bad, map[string]string{section: msg}
+	s.render(w, r, http.StatusUnprocessableEntity, "settings", info, d)
+}
+
+// keyRe finds the YAML keys that config.FieldLabel puts after the labels in
+// a validation message: "H7 PC offline for more than (thresholds.pc_offline)".
+var keyRe = regexp.MustCompile(`\(([a-z_]+(?:\.[A-Za-z0-9_]+)*)\)`)
+
+// badInputs returns the form inputs that a validation error names.
+func badInputs(err error) map[string]bool {
+	bad := map[string]bool{}
+	for _, m := range keyRe.FindAllStringSubmatch(err.Error(), -1) {
+		k := m[1]
+		if id, ok := strings.CutPrefix(k, "checks."); ok {
+			bad["debounce_"+strings.TrimSuffix(id, ".debounce")] = true
+			continue
+		}
+		bad[k[strings.LastIndex(k, ".")+1:]] = true
+	}
+	return bad
+}
+
+// undecryptable reports whether a secret is stored but cannot be decrypted,
+// for example after the secret key changed. The page then does not say
+// "Set" as if the secret worked.
+func (s *Server) undecryptable(name string) bool {
+	if !s.st.HasSecret(name) {
+		return false
+	}
+	_, err := s.st.Secret(name)
+	return err != nil
 }
 
 func (s *Server) setting(key string) (string, bool) {
@@ -95,16 +181,17 @@ func (s *Server) stale(w http.ResponseWriter, r *http.Request, old *config.Confi
 }
 
 // save applies a configuration change, announces what changed and redirects
-// back to a settings section.
-func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Config, section, title, okMsg string) {
+// back to a settings section. When the change is refused, it writes no
+// answer and returns the error.
+func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Config, section, title, okMsg string) error {
 	if err := s.hooks.SaveConfig(c); err != nil {
-		s.redirect(w, r, "/settings#"+section, "Not saved. "+sentence(err.Error()), true)
-		return
+		return err
 	}
 	if ch := configChanges(old, c); len(ch) > 0 {
 		s.announce(r, title, strings.Join(ch, "\n"))
 	}
 	s.redirect(w, r, "/settings#"+section, okMsg, false)
+	return nil
 }
 
 // announce logs a security-relevant settings change and sends it as a notice.
@@ -124,7 +211,9 @@ func (s *Server) announcer(r *http.Request) func(title, summary string) {
 	return func(title, summary string) {
 		s.log.Warn("settings changed", "change", title, "detail", summary, "ip", ip)
 		if send != nil {
-			send(title, summary+" (from "+ip+")")
+			// On a line of its own: after the last change line it read as a
+			// part of that change.
+			send(title, summary+"\nChanged from "+ip+".")
 		}
 	}
 }
@@ -132,40 +221,64 @@ func (s *Server) announcer(r *http.Request) func(title, summary string) {
 // confirmed checks the "confirm" field of a form against the admin password
 // or the server's stored API key. Accepting a new certificate or forgetting a
 // pin can send the stored key to a different machine, so an admin session
-// alone isn't enough. Failures count towards the login rate limit.
-func (s *Server) confirmed(r *http.Request, serverID string) bool {
+// alone isn't enough. Failures count in the rate limit of confirmations and
+// are logged as refused (the limit bounds the lines). It reports whether the
+// confirmation is correct, or the message to show when the rate limit
+// refuses it.
+func (s *Server) confirmed(r *http.Request, info requestInfo, serverID, refused string) (ok bool, limited string) {
 	v := r.FormValue("confirm")
 	if v == "" {
-		return false
+		return false, ""
 	}
-	ok, _ := s.limitedCheck(r, func() bool {
+	ok, limited = s.limitedCheck(r, info, func() bool {
 		if h, _ := s.st.Setting(KeyAdminHash); h != "" && CheckPassword(v, h) {
 			return true
 		}
 		key, _, err := s.st.ServerKey(serverID)
 		return err == nil && key != "" && subtle.ConstantTimeCompare([]byte(v), []byte(key)) == 1
 	})
-	return ok
+	if !ok && limited == "" {
+		s.log.Warn(refused, "ip", clientIP(r), "server", serverID)
+	}
+	return ok, limited
 }
 
-// limitedCheck runs a password check under the login rate limit, so an
-// admin session alone can't be used to guess the admin password. It reports
-// whether the check passed, and limited when the client address is over the
-// limit (the check isn't run then).
-func (s *Server) limitedCheck(r *http.Request, check func() bool) (ok, limited bool) {
-	ip := clientIP(r)
-	allowed, delay := s.limiter.check(ip, s.now())
+// limitedCheck runs a password check under the rate limit of confirmations,
+// so an admin session alone can't be used to guess the admin password: at
+// most 5 failures in 10 minutes for each session (confirmKey). It reports
+// whether the check passed, or the message to show when the session is over
+// the limit (the check isn't run then).
+func (s *Server) limitedCheck(r *http.Request, info requestInfo, check func() bool) (ok bool, limited string) {
+	key := confirmKey(r, info)
+	allowed, delay := s.limiter.check(key, s.now())
 	if !allowed {
-		s.log.Warn("password check rate limit reached", "ip", ip, "path", r.URL.Path)
-		return false, true
+		s.log.Warn("password check rate limit reached", "ip", clientIP(r), "path", r.URL.Path)
+		return false, tooManyTries(s.limiter.retryAfter(key, s.now()))
 	}
 	wait(r, delay)
 	if check() {
-		s.limiter.success(ip, RoleAdmin)
-		return true, false
+		s.limiter.success(key, RoleAdmin)
+		return true, ""
 	}
-	s.limiter.fail(ip, s.now(), RoleAdmin)
-	return false, false
+	s.limiter.fail(key, s.now(), RoleAdmin)
+	return false, ""
+}
+
+// confirmKey is the limiter bucket of a password typed to confirm a change:
+// the administrator's session, so that failed logins of other people at the
+// same address (a VPN, a reverse proxy) cannot block it, or the client
+// address when there is no session (proxy mode). Logins count by address.
+func confirmKey(r *http.Request, info requestInfo) string {
+	if info.Session != nil {
+		return "session " + info.Session.TokenHash
+	}
+	return "confirm " + clientIP(r)
+}
+
+// tooManyTries is the message for a confirmation that the rate limit
+// refuses, with the wait in whole minutes.
+func tooManyTries(d time.Duration) string {
+	return "Too many failed tries. Try again in " + plural(max(1, int((d+time.Minute-1)/time.Minute)), "minute", "minutes") + "."
 }
 
 func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -229,9 +342,11 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		// The stored key is only ever sent to the URL it was entered for.
 		s.redirect(w, r, "/settings#servers", "The API URL changed. Type the API key again for "+sv.URL+". "+keyOnlyToURL, true)
 		return
-	case resetPin && key == "" && !s.confirmed(r, sv.ID):
-		s.redirect(w, r, "/settings#servers", "To remove the pinned certificate, type the administrator password or this server's API key.", true)
-		return
+	case resetPin && key == "":
+		if ok, limited := s.confirmed(r, info, sv.ID, "pinned certificate removal refused"); !ok {
+			s.redirect(w, r, "/settings#servers", orText(limited, "To remove the pinned certificate, type the administrator password or this server's API key."), true)
+			return
+		}
 	}
 	if key != "" {
 		// A key for a new URL also forgets the old URL's pinned certificate.
@@ -302,8 +417,8 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info
 
 func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	id := r.PathValue("id")
-	if !s.confirmed(r, id) {
-		s.redirect(w, r, "/settings#servers", "To accept the new certificate, type the administrator password or this server's API key.", true)
+	if ok, limited := s.confirmed(r, info, id, "certificate accept refused"); !ok {
+		s.redirect(w, r, "/settings#servers", orText(limited, "To accept the new certificate, type the administrator password or this server's API key."), true)
 		return
 	}
 	fp := r.FormValue("fingerprint")
@@ -337,20 +452,28 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	}
 	n.WeeklyDay = r.FormValue("weekly_day")
 	n.WeeklyTime = strings.TrimSpace(r.FormValue("weekly_time"))
-	if top, err := strconv.Atoi(r.FormValue("weekly_top")); err == nil && top > 0 && top <= 25 {
-		n.WeeklyTop = top
+	if top, err := strconv.Atoi(r.FormValue("weekly_top")); err == nil {
+		n.WeeklyTop = top // out of range: Validate names the field and the range
 	}
 	c.Timezone = strings.TrimSpace(r.FormValue("timezone"))
 	c.PublicURL = strings.TrimRight(strings.TrimSpace(r.FormValue("public_url")), "/")
+	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
+	typedHook := hook != ""
+	refused := func(err error) {
+		msg := "Not saved. " + sentence(err.Error())
+		if typedHook {
+			msg += "\nType the Discord webhook URL again." // the page does not show it again
+		}
+		s.refuse(w, r, info, old, "notifications", msg, badInputs(err))
+	}
 	if err := c.Validate(); err != nil {
-		s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
+		refused(err)
 		return
 	}
-	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	if !clearHook && hook != "" {
 		var err error
 		if hook, err = config.CanonicalDiscordWebhook(hook); err != nil {
-			s.redirect(w, r, "/settings#notifications", "Not saved. "+sentence(err.Error()), true)
+			refused(err)
 			return
 		}
 	}
@@ -382,6 +505,14 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 		announce("Notification settings changed", strings.Join(changes, "\n"))
 	}
 	s.redirect(w, r, "/settings#notifications", "The notification settings are saved.", false)
+}
+
+// orText returns msg, or else when msg is empty.
+func orText(msg, other string) string {
+	if msg == "" {
+		return other
+	}
+	return msg
 }
 
 // replacedOrAdded words a stored secret's change as a notice line.
@@ -435,7 +566,6 @@ func configChanges(old, c *config.Config) []string {
 			continue
 		}
 		delete(before, sv.ID)
-		name := "Server " + sv.Name
 		switch {
 		case !config.SameEndpoint(o.URL, sv.URL):
 			out = append(out, "The API URL of the server "+sv.Name+" changed from "+o.URL+" to "+sv.URL+".")
@@ -455,8 +585,14 @@ func configChanges(old, c *config.Config) []string {
 		if o.GUIURL != sv.GUIURL {
 			out = append(out, "The GUI URL of the server "+sv.Name+" changed from "+orNone(o.GUIURL)+" to "+orNone(sv.GUIURL)+".")
 		}
-		if o.AllowHTTP != sv.AllowHTTP {
-			out = append(out, fmt.Sprintf("%s: allow_http changed from %v to %v.", name, o.AllowHTTP, sv.AllowHTTP))
+		switch {
+		case o.AllowHTTP == sv.AllowHTTP:
+		case !sv.AllowHTTP:
+			out = append(out, "The server "+sv.Name+" does not permit a plain http:// URL now.")
+		case strings.HasPrefix(sv.URL, "http://"):
+			out = append(out, "The server "+sv.Name+" permits a plain http:// URL now. syncwatch sends the API key unencrypted.")
+		default:
+			out = append(out, "The server "+sv.Name+" permits a plain http:// URL now.")
 		}
 	}
 	for _, sv := range old.Servers {
@@ -484,7 +620,8 @@ func configChanges(old, c *config.Config) []string {
 			out = append(out, fmt.Sprintf("The check %s waits %s instead of %s before an urgent message.", name, rules.Ago(now), rules.Ago(was)))
 		}
 	}
-	was, now := flatConfig(old), flatConfig(c)
+	was, wasLists := flatConfig(old)
+	now, nowLists := flatConfig(c)
 	keys := map[string]bool{}
 	for k := range was {
 		keys[k] = true
@@ -499,6 +636,12 @@ func configChanges(old, c *config.Config) []string {
 		a, b := orNone(was[k]), orNone(now[k])
 		// A list of rules has no value of its own once it has entries.
 		if a == b || a == "[]" && b == "(none)" || a == "(none)" && b == "[]" {
+			continue
+		}
+		wl, wok := wasLists[k]
+		nl, nok := nowLists[k]
+		if line := listChange(k, wl, nl); (wok || nok) && line != "" {
+			out = append(out, line)
 			continue
 		}
 		out = append(out, describe(k, a, b))
@@ -519,7 +662,7 @@ func describe(key, was, now string) string {
 		}
 		return "Built-in login is on."
 	case "access.viewer":
-		return "Viewer access without the administrator password changed from " + viewerText(was) + " to " + viewerText(now) + "."
+		return "Viewer access: " + viewerText(was) + " → " + viewerText(now)
 	case "notifications.discord_role_id":
 		switch {
 		case now == "(none)":
@@ -529,54 +672,115 @@ func describe(key, was, now string) string {
 		}
 		return "Urgent messages now mention the role " + now + " (before: " + was + ")."
 	}
-	return key + " changed from " + was + " to " + now + "."
+	return changeLabel(key) + ": " + was + " → " + now
 }
 
-// viewerText is the option text of the Viewer access field for a value.
+// keyLabels names the settings that config.FieldLabel does not label, as
+// the Settings page and the validation messages name them.
+var keyLabels = map[string]string{
+	"collector.mode":              "Collector mode",
+	"notifications.quiet_hours":   "Quiet hours",
+	"notifications.reminder_time": "Daily reminder",
+	"notifications.weekly_day":    "Weekly report day",
+	"notifications.weekly_time":   "Weekly report time",
+	"timezone":                    "Time zone",
+	"public_url":                  "Dashboard URL",
+}
+
+// changeLabel names a setting in a notice line: the label of the Settings
+// page (config.FieldLabel without the key, or keyLabels), or the YAML key of
+// a setting that only the YAML has (structure rules, shares).
+func changeLabel(key string) string {
+	if l := config.FieldLabel(key); l != key {
+		return strings.TrimSuffix(l, " ("+key+")")
+	}
+	if l, ok := keyLabels[key]; ok {
+		return l
+	}
+	return key
+}
+
+// listChange words a changed list of values (ignore_dirs, type_tokens, the
+// shares of a server) as the entries added and removed, not as the two
+// complete lists. It returns "" when only the order changed.
+func listChange(key string, was, now []string) string {
+	var parts []string
+	if added := missing(now, was); len(added) > 0 {
+		parts = append(parts, "added "+strings.Join(added, ", "))
+	}
+	if removed := missing(was, now); len(removed) > 0 {
+		parts = append(parts, "removed "+strings.Join(removed, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return changeLabel(key) + ": " + strings.Join(parts, " · ")
+}
+
+// missing returns the entries of a that are not in b. An entry that is in a
+// more times than in b is missing that many times.
+func missing(a, b []string) []string {
+	left := map[string]int{}
+	for _, v := range b {
+		left[v]++
+	}
+	var out []string
+	for _, v := range a {
+		if left[v] > 0 {
+			left[v]--
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// viewerText is the short text of a Viewer access value in a notice line.
 func viewerText(v string) string {
 	switch v {
 	case config.ViewerNone:
 		return "administrator only"
 	case config.ViewerPassword:
-		return "with the viewer password"
+		return "viewer password"
 	case config.ViewerOpen:
-		return "open, without login"
+		return "open (no login)"
 	}
 	return v
 }
 
 // flatConfig renders a configuration as the keys of its YAML form with their
 // values: nested keys joined with dots, a list of values as one value, and
-// secrets removed.
-func flatConfig(c *config.Config) map[string]string {
-	out := map[string]string{}
+// secrets removed. lists has the entries of each list of values.
+func flatConfig(c *config.Config) (out map[string]string, lists map[string][]string) {
+	out, lists = map[string]string{}, map[string][]string{}
 	b, _ := yaml.Marshal(c.Redacted())
 	var doc map[string]any
 	_ = yaml.Unmarshal(b, &doc)
-	flatten("", doc, out)
-	return out
+	flatten("", doc, out, lists)
+	return out, lists
 }
 
-func flatten(key string, v any, out map[string]string) {
+func flatten(key string, v any, out map[string]string, lists map[string][]string) {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, item := range x {
 			if key != "" {
 				k = key + "." + k
 			}
-			flatten(k, item, out)
+			flatten(k, item, out, lists)
 		}
 	case []any:
 		var items []string
 		for i, item := range x {
 			if _, ok := item.(map[string]any); ok {
-				flatten(fmt.Sprintf("%s[%d]", key, i), item, out)
+				flatten(fmt.Sprintf("%s[%d]", key, i), item, out, lists)
 				continue
 			}
 			items = append(items, orNone(fmt.Sprint(item)))
 		}
 		if len(items) == len(x) {
 			out[key] = "[" + strings.Join(items, ", ") + "]"
+			lists[key] = items
 		}
 	case nil:
 		out[key] = ""
@@ -605,7 +809,12 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request, info r
 		s.redirect(w, r, "/settings#notifications", "The test message failed. "+sentence(err.Error()), true)
 		return
 	}
-	s.redirect(w, r, "/settings#notifications", "syncwatch sent the test message.", false)
+	msg := "syncwatch sent the test message."
+	if s.cfg.Get().Notify.DiscordRoleID != "" {
+		// The test message mentions the role, as an urgent message does.
+		msg = "syncwatch sent the test message with the role mention. If your phone shows no notification, check the role ID. Also make sure that you have the role."
+	}
+	s.redirect(w, r, "/settings#notifications", msg, false)
 }
 
 func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -616,6 +825,7 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 	c := old.Clone()
 	c.Checks = map[string]config.Check{}
 	var errs []string
+	bad := map[string]bool{}
 	for _, ci := range config.Catalog {
 		var ch config.Check
 		en := r.FormValue("enabled_"+ci.ID) == "on"
@@ -630,6 +840,7 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 			dv, err := config.ParseDuration(d)
 			if err != nil {
 				errs = append(errs, ci.ID+" debounce: "+err.Error())
+				bad["debounce_"+ci.ID] = true
 			} else if dv.D() != ci.Debounce {
 				ch.Debounce = &dv
 			}
@@ -639,22 +850,26 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 		}
 	}
 	th := &c.Thresholds
-	for name, dst := range map[string]*config.Duration{
+	durations := map[string]*config.Duration{
 		"failing_files": &th.FailingFiles, "stuck_sync": &th.StuckSync, "paused": &th.Paused, "pc_offline": &th.PCOffline, "conflict_window": &th.ConflictWindow,
 		"inactive_project": &th.InactiveProject, "old_device": &th.OldDevice, "dead_share": &th.DeadShare,
-	} {
+	}
+	for _, name := range formInputs["checks"] { // in the order of the form
 		d, err := config.ParseDuration(r.FormValue(name))
 		if err != nil || d <= 0 {
 			errs = append(errs, fieldLabel(name)+": the value must be a duration of more than 0. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.")
+			bad[name] = true
 			continue
 		}
-		*dst = d
+		*durations[name] = d
 	}
 	if len(errs) > 0 {
-		s.redirect(w, r, "/settings#checks", "Not saved. "+strings.Join(errs, " "), true)
+		s.refuse(w, r, info, old, "checks", "Not saved. "+strings.Join(errs, "\n"), bad)
 		return
 	}
-	s.save(w, r, old, c, "checks", "Checks changed", "The checks are saved.")
+	if err := s.save(w, r, old, c, "checks", "Checks changed", "The checks are saved."); err != nil {
+		s.refuse(w, r, info, old, "checks", "Not saved. "+sentence(err.Error()), badInputs(err))
+	}
 }
 
 func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -676,7 +891,9 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 		// scanning recycle bins and snapshots. An explicit [] clears it.
 		c.Structure.IgnoreDirs = old.Structure.IgnoreDirs
 	}
-	s.save(w, r, old, c, "structure", "Structure rules changed", "The structure rules are saved. The next structure scan uses them.")
+	if err := s.save(w, r, old, c, "structure", "Structure rules changed", "The structure rules are saved. The next structure scan uses them."); err != nil {
+		s.redirect(w, r, "/settings#structure", "Not saved. "+sentence(err.Error()), true)
+	}
 }
 
 func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -688,13 +905,20 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 	col := &c.Collector
 	col.Mode = r.FormValue("mode")
 	var errs []string
-	for name, dst := range map[string]*config.Duration{
+	bad := map[string]bool{}
+	durations := map[string]*config.Duration{
 		"event_timeout": &col.EventTimeout, "full_check_interval": &col.FullCheckInterval, "poll_interval": &col.PollInterval,
 		"structure_interval": &col.StructureInterval, "baseline_interval": &col.BaselineInterval, "request_timeout": &col.RequestTimeout,
-	} {
+	}
+	for _, name := range formInputs["collector"] { // in the order of the form
+		dst, ok := durations[name]
+		if !ok {
+			continue
+		}
 		d, err := config.ParseDuration(r.FormValue(name))
 		if err != nil || d <= 0 {
 			errs = append(errs, fieldLabel(name)+": the value must be a duration of more than 0. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.")
+			bad[name] = true
 			continue
 		}
 		*dst = d
@@ -702,14 +926,16 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 	if n, err := strconv.Atoi(r.FormValue("concurrency")); err == nil {
 		col.Concurrency = n
 	}
-	if n, err := strconv.Atoi(r.FormValue("down_after_failures")); err == nil && n > 0 {
-		col.DownAfter = n
+	if n, err := strconv.Atoi(r.FormValue("down_after_failures")); err == nil {
+		col.DownAfter = n // out of range: Validate names the field and the range
 	}
 	if len(errs) > 0 {
-		s.redirect(w, r, "/settings#collector", "Not saved. "+strings.Join(errs, " "), true)
+		s.refuse(w, r, info, old, "collector", "Not saved. "+strings.Join(errs, "\n"), bad)
 		return
 	}
-	s.save(w, r, old, c, "collector", "Collector settings changed", "The collector settings are saved. syncwatch restarted the collectors.")
+	if err := s.save(w, r, old, c, "collector", "Collector settings changed", "The collector settings are saved. syncwatch restarted the collectors."); err != nil {
+		s.refuse(w, r, info, old, "collector", "Not saved. "+sentence(err.Error()), badInputs(err))
+	}
 }
 
 func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -745,7 +971,7 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 	// A new viewer password lets someone else in, too.
 	newViewerPW := viewerPW != "" && c.Access.Mode == config.AccessBuiltin && c.Access.Viewer == config.ViewerPassword
 	if weakensAccess(old, c) || newViewerPW {
-		if msg := s.confirmAdmin(r); msg != "" {
+		if msg := s.confirmAdmin(r, info, "access change refused"); msg != "" {
 			s.redirect(w, r, "/settings#access", msg, true)
 			return
 		}
@@ -789,9 +1015,10 @@ func weakensAccess(old, c *config.Config) bool {
 
 // confirmAdmin checks the admin password in the "confirm" field, which a
 // change that weakens access needs: an admin session alone isn't enough.
-// It returns "" when confirmed, otherwise the message to show. With no admin
-// password set (proxy mode) there's nothing to confirm with.
-func (s *Server) confirmAdmin(r *http.Request) string {
+// It returns "" when confirmed, otherwise the message to show; a password
+// that is not correct is logged as refused. With no admin password set
+// (proxy mode) there's nothing to confirm with.
+func (s *Server) confirmAdmin(r *http.Request, info requestInfo, refused string) string {
 	h, _ := s.setting(KeyAdminHash)
 	if h == "" {
 		return ""
@@ -801,11 +1028,12 @@ func (s *Server) confirmAdmin(r *http.Request) string {
 	if pw == "" {
 		return need
 	}
-	ok, limited := s.limitedCheck(r, func() bool { return CheckPassword(pw, h) })
+	ok, limited := s.limitedCheck(r, info, func() bool { return CheckPassword(pw, h) })
 	switch {
-	case limited:
-		return errTooManyLogins
+	case limited != "":
+		return limited
 	case !ok:
+		s.log.Warn(refused, "ip", clientIP(r))
 		return "The administrator password is not correct. " + need
 	}
 	return ""
@@ -813,12 +1041,13 @@ func (s *Server) confirmAdmin(r *http.Request) string {
 
 func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	if h, _ := s.setting(KeyAdminHash); h != "" {
-		ok, limited := s.limitedCheck(r, func() bool { return CheckPassword(r.FormValue("current"), h) })
+		ok, limited := s.limitedCheck(r, info, func() bool { return CheckPassword(r.FormValue("current"), h) })
 		switch {
-		case limited:
-			s.redirect(w, r, "/settings#access", errTooManyLogins, true)
+		case limited != "":
+			s.redirect(w, r, "/settings#access", limited, true)
 			return
 		case !ok:
+			s.log.Warn("password change refused", "ip", clientIP(r))
 			s.redirect(w, r, "/settings#access", "The current password is not correct.", true)
 			return
 		}
@@ -861,11 +1090,11 @@ func (s *Server) handleAPIToken(w http.ResponseWriter, r *http.Request, info req
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	title := "API token generated"
+	title, summary := "API token generated", "The API token gives read access to /api/v1/status and /api/v1/ha."
 	if had {
-		title = "API token replaced"
+		title, summary = "API token replaced", summary+" syncwatch refuses the old API token now."
 	}
-	s.announce(r, title, "The API token gives read access to /api/v1/status and /api/v1/ha.")
+	s.announce(r, title, summary)
 	s.render(w, r, http.StatusOK, "settings", info, s.settingsData(info, map[string]any{"NewToken": tok}))
 }
 
@@ -910,7 +1139,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 		return
 	}
 	if weakensAccess(old, c) {
-		if msg := s.confirmAdmin(r); msg != "" {
+		if msg := s.confirmAdmin(r, info, "import refused"); msg != "" {
 			s.redirect(w, r, "/settings#import", "Not imported. The file sets login to off or gives viewer access to more people. "+msg, true)
 			return
 		}
@@ -957,7 +1186,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	s.redirect(w, r, "/settings#import", msg, false)
 }
 
-// errTooManyLogins is the one text for every password rate limit.
+// errTooManyLogins is the one text for the rate limit of logins.
 const errTooManyLogins = "Too many failed logins. Try again in 10 minutes."
 
 // fieldLabels maps the duration fields of the Checks and Collector forms to

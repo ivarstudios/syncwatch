@@ -156,21 +156,23 @@ func TestNotificationChangesAreAnnounced(t *testing.T) {
 notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", discord_role_id: "420000000000000000"}
 `)
 	csrf := e.csrf("/settings")
-	notify := func(f url.Values) (string, bool) {
+	notify := func(f url.Values) (int, string) {
 		f.Set("csrf", csrf)
 		f.Set("weekly_day", "monday")
 		f.Set("weekly_time", "08:00")
 		f.Set("timezone", "Local")
-		return flash(e.post("/settings/notifications", f))
+		resp, body := e.postPage("/settings/notifications", f)
+		return resp.StatusCode, body
 	}
-	if msg, isErr := notify(url.Values{"discord_webhook": {"http://10.0.0.5:8080/api/webhooks/1/x"}, "discord_role_id": {"420000000000000000"}}); !isErr || !strings.Contains(msg, "discord.com") {
-		t.Fatalf("internal webhook URL: %q %v", msg, isErr)
+	// A refused save shows the form again with the error (W-016).
+	if code, body := notify(url.Values{"discord_webhook": {"http://10.0.0.5:8080/api/webhooks/1/x"}, "discord_role_id": {"420000000000000000"}}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "discord.com/api/webhooks/…).") {
+		t.Fatalf("internal webhook URL: %d", code)
 	}
 	if v, _ := e.st.Secret(store.SecretDiscordWebhook); v != "https://discord.com/api/webhooks/1/old" {
 		t.Fatalf("webhook changed to %q", v)
 	}
-	if msg, isErr := notify(url.Values{"discord_webhook": {"https://discord.com/api/webhooks/2/new"}}); isErr {
-		t.Fatalf("Discord webhook refused: %s", msg)
+	if code, _ := notify(url.Values{"discord_webhook": {"https://discord.com/api/webhooks/2/new"}}); code != http.StatusSeeOther {
+		t.Fatalf("Discord webhook refused: %d", code)
 	}
 	if n := e.noticesText(); !strings.Contains(n, "Discord webhook is replaced") || !strings.Contains(n, "do not mention a role now") {
 		t.Fatalf("notices: %q", n)
