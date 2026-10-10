@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -633,6 +634,37 @@ func TestGatePinsSyncthing(t *testing.T) {
 	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
 	if code != http.StatusBadGateway || !strings.Contains(body, "certificate changed") {
 		t.Fatalf("changed certificate: %d %s", code, body)
+	}
+}
+
+// A 502 body stays under 150 bytes (syncwatch's client keeps 200) and, when
+// Syncthing's certificate changed, says what to do.
+func TestGate502IsShort(t *testing.T) {
+	_, g, gs := setup(t)
+	g.loopback = false
+	g.pin = strings.Repeat("ab", 32) // not the upstream's certificate
+	const hint = "syncwatch gate: Syncthing's certificate changed; delete syncthing.pin in the gate's data dir and restart the gate\n"
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", token); code != http.StatusBadGateway || body != hint {
+		t.Fatalf("changed certificate: %d %q", code, body)
+	}
+	// Also when it is the gate's own read of the folder list that fails.
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/browse?current=/s/", token); code != http.StatusBadGateway || body != hint {
+		t.Fatalf("changed certificate on browse: %d %q", code, body)
+	}
+	// Syncthing down: short, and still says what happened.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.base.Host = ln.Addr().String()
+	ln.Close()
+	g.hc.CloseIdleConnections()
+	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
+	if code != http.StatusBadGateway || len(body) > 150 || !strings.HasPrefix(body, "syncwatch gate: Syncthing can't be reached: ") {
+		t.Fatalf("down: %d %q (%d bytes)", code, body, len(body))
+	}
+	if s := cleanErr(errors.New(strings.Repeat("x", 300))); len(s) != maxErrText {
+		t.Fatalf("a long error is cut to %d bytes", len(s))
 	}
 }
 

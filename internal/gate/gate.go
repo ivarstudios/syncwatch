@@ -286,7 +286,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == pathBrowse {
 		dir, ok, err := g.checkBrowse(q.Get("current"))
 		if err != nil {
-			http.Error(w, "syncwatch gate: Syncthing's folder list can't be read: "+cleanErr(err), http.StatusBadGateway)
+			http.Error(w, upstreamError(err, "Syncthing's folder list can't be read"), http.StatusBadGateway)
 			return
 		}
 		if !ok {
@@ -318,7 +318,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() == nil {
 			g.o.Log.Warn("reaching Syncthing failed", "path", r.URL.Path, "err", err)
 		}
-		http.Error(w, "syncwatch gate: Syncthing can't be reached: "+cleanErr(err), http.StatusBadGateway)
+		http.Error(w, upstreamError(err, "Syncthing can't be reached"), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -666,6 +666,19 @@ func cleanFolders(body []byte) ([]byte, error) {
 	return json.Marshal(folders)
 }
 
+// upstreamError is the body of a 502 for an error reaching Syncthing.
+// syncwatch's client keeps 200 bytes of it, so it stays under 150, and it
+// says what to do in the one case where the operator must act.
+func upstreamError(err error, what string) string {
+	if strings.Contains(err.Error(), "certificate changed") {
+		return "syncwatch gate: Syncthing's certificate changed; delete syncthing.pin in the gate's data dir and restart the gate"
+	}
+	return "syncwatch gate: " + what + ": " + cleanErr(err)
+}
+
+// maxErrText is how much of an upstream error a 502 body carries.
+const maxErrText = 90
+
 // cleanErr keeps an upstream error short and free of the request URL.
 func cleanErr(err error) string {
 	var ue *url.Error
@@ -673,8 +686,8 @@ func cleanErr(err error) string {
 		err = ue.Err
 	}
 	s := err.Error()
-	if len(s) > 200 {
-		s = s[:200]
+	if len(s) > maxErrText {
+		s = s[:maxErrText]
 	}
 	return s
 }
