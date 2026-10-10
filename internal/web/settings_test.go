@@ -60,22 +60,22 @@ func TestConfigChanges(t *testing.T) {
 	}{
 		{"nothing", base, base, nil},
 		{"server fields", base, "servers: [{name: Akka, id: akka, url: 'https://a:1', disabled: true, gui_url: 'http://a:2', allow_http: true}, {name: SOL, url: 'https://b:1'}]\n",
-			[]string{"The server AKKA has the new name Akka.", "The server Akka is disabled.", "GUI URL of the server Akka changed from (none) to http://a:2.", "allow_http changed from false to true."}},
+			[]string{"The server AKKA has the new name Akka.", "The server Akka is disabled.", "GUI URL of the server Akka changed from (none) to http://a:2.", "The server Akka permits a plain http:// URL now."}},
 		{"server moved, added, removed", base, "servers: [{name: AKKA, url: 'https://a:2'}, {name: NEW, url: 'https://c:1'}]\n",
 			[]string{"The API URL of the server AKKA changed from https://a:1 to https://a:2.", "The server NEW is added (API URL https://c:1).", "The server SOL is removed."}},
 		{"checks both ways", base + "checks: {H1: {enabled: false}, S1: {debounce: 30d}}\n", base + "checks: {H4: {urgent: false}, S1: {urgent: true}}\n",
 			[]string{"The check H1 (Server unreachable) is enabled.", "The check H4 (Folder sync stopped) does not send urgent messages now.", "The check S1 (Syncthing folder inside another) waits 5 minutes instead of 30 days before an urgent message."}},
 		{"thresholds and collector", base, base + "thresholds: {pc_offline: 2d}\ncollector: {mode: polled, down_after_failures: 5}\n",
-			[]string{"collector.down_after_failures changed from 2 to 5.", "collector.mode changed from events to polled.", "thresholds.pc_offline changed from 7d to 2d."}},
+			[]string{"Mark unreachable after failures: 2 → 5", "Collector mode: events → polled", "H7 PC offline for more than: 7d → 2d"}},
 		{"notifications", base + "notifications: {discord_role_id: '420000000000000000'}\n", base + "notifications: {quiet_hours: 'off', weekly_top: 5}\ntimezone: Europe/Stockholm\npublic_url: 'http://dash.invalid'\n",
-			[]string{"Urgent messages do not mention a role now (before: 420000000000000000).", "notifications.quiet_hours changed from 22:00-07:00 to off.", "notifications.weekly_top changed from 10 to 5.", "public_url changed from (none) to http://dash.invalid.", "timezone changed from Local to Europe/Stockholm."}},
+			[]string{"Urgent messages do not mention a role now (before: 420000000000000000).", "Quiet hours: 22:00-07:00 → off", "Findings listed in the weekly report: 10 → 5", "Dashboard URL: (none) → http://dash.invalid", "Time zone: Local → Europe/Stockholm"}},
 		// share_type_from_path names the group that share_must_have refers to
 		// (required since r0-g's placement validation).
 		{"structure and shares", base, base + "structure: {project_pattern: '^LIVE-', ignore_dirs: ['@*'], share_type_from_path: '/(?P<me>me)?/', placement: [{when_name_matches: '^LIVE-', share_must_have: {me: 'false'}}]}\nshares: {add: {AKKA: [/x/LIVE-1]}}\n",
-			[]string{"shares.add.AKKA changed from (none) to [/x/LIVE-1].", "structure.ignore_dirs changed from [.*, @*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found] to [@*].",
-				"structure.placement[0].share_must_have.me changed from (none) to false.", "structure.placement[0].when_name_matches changed from (none) to ^LIVE-.", "structure.project_pattern changed from (none) to ^LIVE-.", "structure.share_type_from_path changed from (none) to /(?P<me>me)?/."}},
+			[]string{"shares.add.AKKA: added /x/LIVE-1", "structure.ignore_dirs: removed .*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found",
+				"structure.placement[0].share_must_have.me: (none) → false", "structure.placement[0].when_name_matches: (none) → ^LIVE-", "structure.project_pattern: (none) → ^LIVE-", "structure.share_type_from_path: (none) → /(?P<me>me)?/"}},
 		{"access", base, base + "access: {mode: proxy, viewer: open, session_ttl: 1d}\n",
-			[]string{"Built-in login is off (proxy mode). Each person who can reach syncwatch is an administrator.", "access.session_ttl changed from 30d to 1d.", "Viewer access without the administrator password changed from administrator only to open, without login."}},
+			[]string{"Built-in login is off (proxy mode). Each person who can reach syncwatch is an administrator.", "access.session_ttl: 30d → 1d", "Viewer access: administrator only → open (no login)"}},
 	} {
 		got := configChanges(parse(tc.old), parse(tc.new))
 		if len(got) != len(tc.want) {
@@ -133,7 +133,7 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 	post("/settings/servers", url.Values{"orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "disabled": {"on"}})
 	expect("disable", "Server AKKA changed", "The server AKKA is disabled.")
 	post("/settings/servers", url.Values{"orig_id": {"akka"}, "name": {"Akka"}, "url": {"https://a:1"}, "gui_url": {"http://a.invalid:8384"}, "allow_http": {"on"}})
-	expect("rename", "has the new name Akka", "GUI URL of the server Akka changed from (none) to http://a.invalid:8384.", "allow_http changed from false to true.")
+	expect("rename", "has the new name Akka", "GUI URL of the server Akka changed from (none) to http://a.invalid:8384.", "The server Akka permits a plain http:// URL now.")
 	post("/settings/servers", url.Values{"orig_id": {"akka"}, "name": {"Akka"}, "url": {"https://a:1"}, "gui_url": {"http://a.invalid:8384"}, "allow_http": {"on"}})
 	none("same server again")
 	post("/settings/servers", url.Values{"orig_id": {"akka"}, "name": {"Akka"}, "url": {"https://a:1"}, "gui_url": {"http://a.invalid:8384"}, "allow_http": {"on"}, "api_key": {"k2"}})
@@ -150,8 +150,8 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 	f.Set("timezone", "Europe/Stockholm")
 	f.Set("public_url", "http://dash.invalid/")
 	post("/settings/notifications", f)
-	expect("notifications", "Notification settings changed", "notifications.quiet_hours changed from 22:00-07:00 to off.", "notifications.reminder_time changed from 08:00 to off.",
-		"notifications.weekly_day changed from monday to off.", "notifications.weekly_top changed from 10 to 5.", "timezone changed from Local to Europe/Stockholm.", "public_url changed from (none) to http://dash.invalid.")
+	expect("notifications", "Notification settings changed", "Quiet hours: 22:00-07:00 → off", "Daily reminder: 08:00 → off",
+		"Weekly report day: monday → off", "Findings listed in the weekly report: 10 → 5", "Time zone: Local → Europe/Stockholm", "Dashboard URL: (none) → http://dash.invalid")
 
 	cfg = e.cfg.Get()
 	post("/settings/checks", checksForm(cfg, csrf))
@@ -161,13 +161,13 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 	f.Set("debounce_H1", "1m")
 	f.Del("enabled_S7")
 	post("/settings/checks", f)
-	expect("checks", "Checks changed", "thresholds.pc_offline changed from 7d to 2d.", "The check H1 (Server unreachable) waits 60 seconds instead of 5 minutes", "S7 (")
+	expect("checks", "Checks changed", "H7 PC offline for more than: 7d → 2d", "The check H1 (Server unreachable) waits 60 seconds instead of 5 minutes", "S7 (")
 	f.Set("enabled_S7", "on")
 	post("/settings/checks", f)
 	expect("check on again", "S7 (", "is enabled.")
 
 	post("/settings/structure", url.Values{"yaml": {"structure: {project_pattern: '^LIVE-', ignore_dirs: ['@*']}"}})
-	expect("structure", "Structure rules changed", "structure.project_pattern changed from (none) to ^LIVE-.", "structure.ignore_dirs changed from [.*, @*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found] to [@*].")
+	expect("structure", "Structure rules changed", "structure.project_pattern: (none) → ^LIVE-", "structure.ignore_dirs: removed .*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found")
 	_, body := e.get("/settings")
 	i := strings.Index(body, `name="yaml"`)
 	j := strings.Index(body[i:], "</textarea>")
@@ -176,10 +176,10 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 
 	post("/settings/collector", url.Values{"mode": {"polled"}, "event_timeout": {"50s"}, "full_check_interval": {"4h"}, "poll_interval": {"15m"},
 		"structure_interval": {"1h"}, "baseline_interval": {"7d"}, "request_timeout": {"30s"}, "concurrency": {"3"}, "down_after_failures": {"5"}})
-	expect("collector", "Collector settings changed", "collector.mode changed from events to polled.", "collector.down_after_failures changed from 2 to 5.")
+	expect("collector", "Collector settings changed", "Collector mode: events → polled", "Mark unreachable after failures: 2 → 5")
 
 	post("/settings/access", url.Values{"mode": {"builtin"}, "viewer": {"password"}, "viewer_password": {"viewer password 1"}, "confirm": {"correct horse battery"}})
-	expect("access", "Access settings changed", "Viewer access without the administrator password changed from administrator only to with the viewer password.", "The new viewer password is set.")
+	expect("access", "Access settings changed", "Viewer access: administrator only → viewer password", "The new viewer password is set.")
 
 	post("/settings/password", url.Values{"current": {"correct horse battery"}, "password": {"another long password"}, "password2": {"another long password"}})
 	expect("password", "Administrator password changed")
@@ -190,7 +190,7 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 	expect("revoke", "API token revoked")
 
 	post("/settings/import", url.Values{"yaml": {"servers: [{name: Akka, id: akka, url: 'https://a:1', api_key: k3}, {name: SOL, url: 'https://b:1'}]\nthresholds: {paused: 1d}\napi: {token: swt_imported_token}\n"}})
-	expect("import", "Configuration imported", "thresholds.paused changed from 3d to 1d.", "The API token is added.", "The API key of the server Akka is replaced.")
+	expect("import", "Configuration imported", "H6 paused for more than: 3d → 1d", "The API token is added.", "The API key of the server Akka is replaced.")
 	if n := e.noticeList()[seen-1]; strings.Contains(n, "k3") || strings.Contains(n, "swt_imported") {
 		t.Fatalf("import notice shows a secret: %q", n)
 	}

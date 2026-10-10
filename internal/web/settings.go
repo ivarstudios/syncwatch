@@ -197,7 +197,9 @@ func (s *Server) announcer(r *http.Request) func(title, summary string) {
 	return func(title, summary string) {
 		s.log.Warn("settings changed", "change", title, "detail", summary, "ip", ip)
 		if send != nil {
-			send(title, summary+" (from "+ip+")")
+			// On a line of its own: after the last change line it read as a
+			// part of that change.
+			send(title, summary+"\nChanged from "+ip+".")
 		}
 	}
 }
@@ -516,7 +518,6 @@ func configChanges(old, c *config.Config) []string {
 			continue
 		}
 		delete(before, sv.ID)
-		name := "Server " + sv.Name
 		switch {
 		case !config.SameEndpoint(o.URL, sv.URL):
 			out = append(out, "The API URL of the server "+sv.Name+" changed from "+o.URL+" to "+sv.URL+".")
@@ -536,8 +537,14 @@ func configChanges(old, c *config.Config) []string {
 		if o.GUIURL != sv.GUIURL {
 			out = append(out, "The GUI URL of the server "+sv.Name+" changed from "+orNone(o.GUIURL)+" to "+orNone(sv.GUIURL)+".")
 		}
-		if o.AllowHTTP != sv.AllowHTTP {
-			out = append(out, fmt.Sprintf("%s: allow_http changed from %v to %v.", name, o.AllowHTTP, sv.AllowHTTP))
+		switch {
+		case o.AllowHTTP == sv.AllowHTTP:
+		case !sv.AllowHTTP:
+			out = append(out, "The server "+sv.Name+" does not permit a plain http:// URL now.")
+		case strings.HasPrefix(sv.URL, "http://"):
+			out = append(out, "The server "+sv.Name+" permits a plain http:// URL now. syncwatch sends the API key unencrypted.")
+		default:
+			out = append(out, "The server "+sv.Name+" permits a plain http:// URL now.")
 		}
 	}
 	for _, sv := range old.Servers {
@@ -565,7 +572,8 @@ func configChanges(old, c *config.Config) []string {
 			out = append(out, fmt.Sprintf("The check %s waits %s instead of %s before an urgent message.", name, rules.Ago(now), rules.Ago(was)))
 		}
 	}
-	was, now := flatConfig(old), flatConfig(c)
+	was, wasLists := flatConfig(old)
+	now, nowLists := flatConfig(c)
 	keys := map[string]bool{}
 	for k := range was {
 		keys[k] = true
@@ -580,6 +588,12 @@ func configChanges(old, c *config.Config) []string {
 		a, b := orNone(was[k]), orNone(now[k])
 		// A list of rules has no value of its own once it has entries.
 		if a == b || a == "[]" && b == "(none)" || a == "(none)" && b == "[]" {
+			continue
+		}
+		wl, wok := wasLists[k]
+		nl, nok := nowLists[k]
+		if line := listChange(k, wl, nl); (wok || nok) && line != "" {
+			out = append(out, line)
 			continue
 		}
 		out = append(out, describe(k, a, b))
@@ -600,7 +614,7 @@ func describe(key, was, now string) string {
 		}
 		return "Built-in login is on."
 	case "access.viewer":
-		return "Viewer access without the administrator password changed from " + viewerText(was) + " to " + viewerText(now) + "."
+		return "Viewer access: " + viewerText(was) + " → " + viewerText(now)
 	case "notifications.discord_role_id":
 		switch {
 		case now == "(none)":
@@ -610,54 +624,108 @@ func describe(key, was, now string) string {
 		}
 		return "Urgent messages now mention the role " + now + " (before: " + was + ")."
 	}
-	return key + " changed from " + was + " to " + now + "."
+	return changeLabel(key) + ": " + was + " → " + now
 }
 
-// viewerText is the option text of the Viewer access field for a value.
+// keyLabels names the settings that config.FieldLabel does not label, as
+// the Settings page and the validation messages name them.
+var keyLabels = map[string]string{
+	"collector.mode":              "Collector mode",
+	"notifications.quiet_hours":   "Quiet hours",
+	"notifications.reminder_time": "Daily reminder",
+	"notifications.weekly_day":    "Weekly report day",
+	"notifications.weekly_time":   "Weekly report time",
+	"timezone":                    "Time zone",
+	"public_url":                  "Dashboard URL",
+}
+
+// changeLabel names a setting in a notice line: the label of the Settings
+// page (config.FieldLabel without the key, or keyLabels), or the YAML key of
+// a setting that only the YAML has (structure rules, shares).
+func changeLabel(key string) string {
+	if l := config.FieldLabel(key); l != key {
+		return strings.TrimSuffix(l, " ("+key+")")
+	}
+	if l, ok := keyLabels[key]; ok {
+		return l
+	}
+	return key
+}
+
+// listChange words a changed list of values (ignore_dirs, type_tokens, the
+// shares of a server) as the entries added and removed, not as the two
+// complete lists. It returns "" when only the order changed.
+func listChange(key string, was, now []string) string {
+	var parts []string
+	if added := missing(now, was); len(added) > 0 {
+		parts = append(parts, "added "+strings.Join(added, ", "))
+	}
+	if removed := missing(was, now); len(removed) > 0 {
+		parts = append(parts, "removed "+strings.Join(removed, ", "))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return changeLabel(key) + ": " + strings.Join(parts, " · ")
+}
+
+// missing returns the entries of a that are not in b.
+func missing(a, b []string) []string {
+	var out []string
+	for _, v := range a {
+		if !slices.Contains(b, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// viewerText is the short text of a Viewer access value in a notice line.
 func viewerText(v string) string {
 	switch v {
 	case config.ViewerNone:
 		return "administrator only"
 	case config.ViewerPassword:
-		return "with the viewer password"
+		return "viewer password"
 	case config.ViewerOpen:
-		return "open, without login"
+		return "open (no login)"
 	}
 	return v
 }
 
 // flatConfig renders a configuration as the keys of its YAML form with their
 // values: nested keys joined with dots, a list of values as one value, and
-// secrets removed.
-func flatConfig(c *config.Config) map[string]string {
-	out := map[string]string{}
+// secrets removed. lists has the entries of each list of values.
+func flatConfig(c *config.Config) (out map[string]string, lists map[string][]string) {
+	out, lists = map[string]string{}, map[string][]string{}
 	b, _ := yaml.Marshal(c.Redacted())
 	var doc map[string]any
 	_ = yaml.Unmarshal(b, &doc)
-	flatten("", doc, out)
-	return out
+	flatten("", doc, out, lists)
+	return out, lists
 }
 
-func flatten(key string, v any, out map[string]string) {
+func flatten(key string, v any, out map[string]string, lists map[string][]string) {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, item := range x {
 			if key != "" {
 				k = key + "." + k
 			}
-			flatten(k, item, out)
+			flatten(k, item, out, lists)
 		}
 	case []any:
 		var items []string
 		for i, item := range x {
 			if _, ok := item.(map[string]any); ok {
-				flatten(fmt.Sprintf("%s[%d]", key, i), item, out)
+				flatten(fmt.Sprintf("%s[%d]", key, i), item, out, lists)
 				continue
 			}
 			items = append(items, orNone(fmt.Sprint(item)))
 		}
 		if len(items) == len(x) {
 			out[key] = "[" + strings.Join(items, ", ") + "]"
+			lists[key] = items
 		}
 	case nil:
 		out[key] = ""

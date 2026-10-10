@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
@@ -279,5 +280,48 @@ func TestTestMessageFlashNamesTheRole(t *testing.T) {
 	msg, isErr := flash(e.post("/settings/notifications/test", url.Values{"csrf": {csrf}}))
 	if isErr || msg != "syncwatch sent the test message with the role mention. If your phone shows no notification, check the role ID. Also make sure that you have the role." {
 		t.Fatalf("with a role: %q %v", msg, isErr)
+	}
+}
+
+// W-039: settings notices showed YAML keys ("thresholds.inactive_project
+// changed from 180d to 10m."), both complete lists for one changed entry,
+// and the client address glued to the last line. The lines now name the
+// labels of the Settings page, a list shows the entries it gained or lost,
+// and the address is a line of its own.
+func TestNoticeLinesUseLabels(t *testing.T) {
+	parse := func(y string) *config.Config {
+		t.Helper()
+		c, err := config.ParseYAML([]byte(y))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	base := "servers: [{name: AKKA, url: 'https://a:1'}]\n"
+	for _, tc := range []struct {
+		name, old, new string
+		want           []string
+	}{
+		{"labels and a list", base + "thresholds: {inactive_project: 180d}\nnotifications: {quiet_hours: '22:30-07:00'}\nstructure: {ignore_dirs: ['.*', '#recycle', '@*']}\n",
+			base + "thresholds: {inactive_project: 10m}\nnotifications: {quiet_hours: '21:43-21:48'}\nstructure: {ignore_dirs: ['.*', '@*', '@eaDir']}\n",
+			[]string{"Quiet hours: 22:30-07:00 → 21:43-21:48", "structure.ignore_dirs: added @eaDir · removed #recycle", "C1 no file change for: 180d → 10m"}},
+		{"only the order", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a]}\n", []string{"structure.ignore_dirs: [a, b] → [b, a]"}},
+		{"viewer access", base + "access: {viewer: password}\n", base + "access: {viewer: open}\n", []string{"Viewer access: viewer password → open (no login)"}},
+		{"plain http", base, "servers: [{name: AKKA, url: 'http://a:1', allow_http: true}]\n",
+			[]string{"The API URL of the server AKKA changed from https://a:1 to http://a:1.", "The server AKKA permits a plain http:// URL now. syncwatch sends the API key unencrypted."}},
+	} {
+		if got := configChanges(parse(tc.old), parse(tc.new)); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+			t.Errorf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	f := checksForm(e.cfg.Get(), csrf)
+	f.Set("inactive_project", "10m")
+	if msg, isErr := flash(e.post("/settings/checks", f)); isErr {
+		t.Fatal(msg)
+	}
+	if n := e.noticesText(); !strings.HasSuffix(n, "Checks changed: C1 no file change for: 180d → 10m\nChanged from 127.0.0.1.") {
+		t.Fatalf("notice: %q", n)
 	}
 }
