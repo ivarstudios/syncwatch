@@ -311,7 +311,7 @@ func importConfig(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Imported %d server(s) and %d secret(s). Restart syncwatch to apply.\n", len(c.Servers), n)
+	fmt.Fprintf(os.Stderr, "Imported %d server(s) and %d secret(s). A running syncwatch applies it within 10 seconds; otherwise it is used on the next start.\n", len(c.Servers), n)
 	if n > 0 {
 		fmt.Fprintf(os.Stderr, "The secrets are stored encrypted now, but %s still contains them in plaintext: delete it.\n", fs.Arg(0))
 	}

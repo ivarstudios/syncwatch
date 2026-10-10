@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+// keyConfigRevision counts configuration saves, so a running server notices
+// a change made by another process (syncwatch import-config).
+const keyConfigRevision = "config_revision"
+
+// ConfigRevision returns the configuration's revision: 0 before any save.
+func (s *Store) ConfigRevision() (int64, error) {
+	var rev int64
+	err := s.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM settings WHERE key=?`, keyConfigRevision).Scan(&rev)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return rev, err
+}
+
+// BumpConfigRevision increments the configuration's revision and returns it.
+func (s *Store) BumpConfigRevision() (int64, error) {
+	var rev int64
+	err := s.db.QueryRow(`INSERT INTO settings(key,value) VALUES(?,'1')
+		ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) RETURNING CAST(value AS INTEGER)`, keyConfigRevision).Scan(&rev)
+	return rev, err
+}
+
 // Pin returns the pinned certificate fingerprint of a server, or "".
 func (s *Store) Pin(serverID string) (string, error) {
 	var fp string

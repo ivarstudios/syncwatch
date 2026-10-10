@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/settings"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
@@ -166,6 +167,85 @@ func TestBootstrapScrubInPlaceWhenRenameFails(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
 		t.Fatalf("temp file left behind: %v", entries)
+	}
+}
+
+// syncwatch import-config while serving: the running server applies the
+// imported configuration, and the next save in the UI keeps it.
+func TestConfigReloadedAfterExternalImport(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg, err := LoadConfig(st, "", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := config.NewHolder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloads := 0
+	w := &configWatcher{st: st, holder: holder, log: log, onReload: func() { reloads++ }}
+	if w.applied, err = st.ConfigRevision(); err != nil || w.applied == 0 {
+		t.Fatalf("revision after the first save: %d %v", w.applied, err)
+	}
+
+	// Saves from this process (the UI) are not reloaded.
+	c := holder.Get().Clone()
+	c.Servers = append(c.Servers, config.Server{Name: "A", URL: "https://a.invalid:8384"})
+	if err := w.save(c); err != nil {
+		t.Fatal(err)
+	}
+	w.check()
+	if reloads != 0 || len(holder.Get().Servers) != 1 {
+		t.Fatal("own save treated as a change from outside")
+	}
+
+	// Another process replaces the configuration.
+	yaml := filepath.Join(dir, "new.yaml")
+	if err := os.WriteFile(yaml, []byte("servers:\n  - name: A\n    url: https://a.invalid:8384\n  - name: B\n    url: https://b.invalid:8384\n    api_key: key-b\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other, err := OpenExistingStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ImportFile(other, yaml); err != nil {
+		t.Fatal(err)
+	}
+	other.Close()
+	if len(holder.Get().Servers) != 1 {
+		t.Fatal("applied before the check")
+	}
+	w.check()
+	if got := holder.Get().Servers; len(got) != 2 || got[1].ID != "b" {
+		t.Fatalf("not reloaded: %+v", got)
+	}
+	if reloads != 1 || !strings.Contains(logs.String(), "configuration reloaded") {
+		t.Fatalf("reloads=%d logs:\n%s", reloads, logs.String())
+	}
+	w.check()
+	if reloads != 1 {
+		t.Fatal("reloaded again without a change")
+	}
+
+	// The next UI save starts from the imported configuration.
+	c = holder.Get().Clone()
+	c.Notify.DiscordRoleID = "1"
+	if err := w.save(c); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := settings.Load(st)
+	if err != nil || len(stored.Servers) != 2 || stored.Notify.DiscordRoleID != "1" {
+		t.Fatalf("UI save undid the import: %+v %v", stored, err)
+	}
+	if key, _, _ := st.ServerKey("b"); key != "key-b" {
+		t.Fatalf("B's key: %q", key)
 	}
 }
 

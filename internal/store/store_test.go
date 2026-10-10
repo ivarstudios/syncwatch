@@ -148,6 +148,21 @@ func TestDatabaseFilesOwnerOnly(t *testing.T) {
 	}
 }
 
+func TestConfigRevision(t *testing.T) {
+	s := testStore(t)
+	if rev, err := s.ConfigRevision(); err != nil || rev != 0 {
+		t.Fatalf("initial revision %d %v", rev, err)
+	}
+	for want := int64(1); want <= 3; want++ {
+		if rev, err := s.BumpConfigRevision(); err != nil || rev != want {
+			t.Fatalf("bump: got %d %v, want %d", rev, err, want)
+		}
+	}
+	if rev, err := s.ConfigRevision(); err != nil || rev != 3 {
+		t.Fatalf("revision %d %v", rev, err)
+	}
+}
+
 func TestRecordsAndHistory(t *testing.T) {
 	s := testStore(t)
 	now := time.Now().Truncate(time.Millisecond)

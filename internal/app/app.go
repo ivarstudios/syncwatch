@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/collector"
@@ -103,7 +104,7 @@ func LoadConfig(st *store.Store, bootstrap string, log *slog.Logger) (*config.Co
 			if err != nil {
 				return nil, err
 			}
-			if err := settings.Save(st, c); err != nil {
+			if _, err := saveConfig(st, c); err != nil {
 				return nil, err
 			}
 			log.Info("imported bootstrap configuration", "file", bootstrap, "servers", len(c.Servers), "secrets", n)
@@ -122,13 +123,23 @@ func LoadConfig(st *store.Store, bootstrap string, log *slog.Logger) (*config.Co
 		}
 	}
 	c := config.Default()
-	if err := settings.Save(st, c); err != nil {
+	if _, err := saveConfig(st, c); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-// ImportFile replaces the stored configuration with a YAML file.
+// saveConfig stores c and bumps the configuration revision, which a running
+// server watches (see configWatcher).
+func saveConfig(st *store.Store, c *config.Config) (int64, error) {
+	if err := settings.Save(st, c); err != nil {
+		return 0, err
+	}
+	return st.BumpConfigRevision()
+}
+
+// ImportFile replaces the stored configuration with a YAML file. A running
+// server applies it within configCheckInterval.
 func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -146,10 +157,80 @@ func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if err := settings.Save(st, c); err != nil {
+	if _, err := saveConfig(st, c); err != nil {
 		return nil, 0, err
 	}
 	return c, n, settings.DropRemovedServers(st, old, c)
+}
+
+// configCheckInterval is how often a running server looks for a
+// configuration saved by another process.
+const configCheckInterval = 10 * time.Second
+
+// configWatcher applies configuration changes another process made in the
+// database (syncwatch import-config while serving), so they take effect
+// without a restart and the next save in the UI doesn't write the old
+// configuration back over them. Every save bumps a revision in the settings
+// table; a revision the watcher didn't apply itself means a reload.
+type configWatcher struct {
+	st       *store.Store
+	holder   *config.Holder
+	log      *slog.Logger
+	onReload func() // after a change from outside was applied
+
+	mu      sync.Mutex
+	applied int64 // the revision the holder has
+}
+
+// save stores a configuration changed in this process and installs it.
+func (w *configWatcher) save(c *config.Config) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	rev, err := saveConfig(w.st, c)
+	if err != nil {
+		return err
+	}
+	w.applied = rev
+	return w.holder.Set(c)
+}
+
+// check reloads the configuration if another process changed it.
+func (w *configWatcher) check() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	rev, err := w.st.ConfigRevision()
+	if err != nil || rev == w.applied {
+		return
+	}
+	w.applied = rev // reported once, even when it can't be applied
+	c, err := settings.Load(w.st)
+	if err == nil && c == nil {
+		err = errors.New("no configuration stored")
+	}
+	if err == nil {
+		err = w.holder.Set(c)
+	}
+	if err != nil {
+		w.log.Error("the configuration was changed by another process but can't be applied", "revision", rev, "err", err)
+		return
+	}
+	w.log.Info("configuration reloaded: it was changed by another process (syncwatch import-config)", "revision", rev, "servers", len(c.Servers))
+	if w.onReload != nil {
+		w.onReload()
+	}
+}
+
+func (w *configWatcher) run(ctx context.Context) {
+	t := time.NewTicker(configCheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			w.check()
+		}
+	}
 }
 
 // Run serves until ctx is cancelled.
@@ -198,6 +279,12 @@ func Run(ctx context.Context, o Options) error {
 		mgr.Sync()
 		eng.Trigger()
 	})
+	// An import may bring a new webhook; retry delivery at once (as the UI's
+	// import does).
+	watcher := &configWatcher{st: st, holder: holder, log: log, onReload: ntf.ChannelsChanged}
+	if watcher.applied, err = st.ConfigRevision(); err != nil {
+		return err
+	}
 
 	srvWeb, err := web.New(holder, st, eng, web.Hooks{
 		SaveConfig: func(c *config.Config) error {
@@ -205,10 +292,7 @@ func Run(ctx context.Context, o Options) error {
 			if err := c.Validate(); err != nil {
 				return err
 			}
-			if err := settings.Save(st, c); err != nil {
-				return err
-			}
-			return holder.Set(c)
+			return watcher.save(c)
 		},
 		AcceptCert:      mgr.AcceptCert,
 		ResetPin:        mgr.ResetPin,
@@ -244,10 +328,11 @@ func Run(ctx context.Context, o Options) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan struct{}, 3)
+	done := make(chan struct{}, 4)
 	go func() { mgr.Run(ctx); done <- struct{}{} }()
 	go func() { eng.Run(ctx); done <- struct{}{} }()
 	go func() { ntf.Run(ctx); done <- struct{}{} }()
+	go func() { watcher.run(ctx); done <- struct{}{} }()
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers))
@@ -264,7 +349,7 @@ func Run(ctx context.Context, o Options) error {
 	defer shCancel()
 	_ = hs.Shutdown(shCtx)
 	cancel()
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
