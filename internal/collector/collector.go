@@ -520,6 +520,11 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		s.PathSep = status.PathSeparator
 		s.Version = version.Version
 		s.OS = version.OS
+		for id, f := range newFolders {
+			if old := s.Folders[id]; old != nil {
+				f.LastLocalChange = old.LastLocalChange // only events know it
+			}
+		}
 		s.Folders = newFolders
 		s.Devices = newDevices
 		s.Connections = newConns

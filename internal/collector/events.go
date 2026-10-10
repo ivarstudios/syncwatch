@@ -122,6 +122,15 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 		if json.Unmarshal(e.Data, &d) != nil {
 			return
 		}
+		if e.Type == "LocalChangeDetected" {
+			// lastFile.at only moves for pulled files, so this is the only
+			// trace of local edits (e.g. over SMB); C1 uses the newer of the two.
+			c.withFolder(firstNonEmpty(d.FolderID, d.Folder), func(f *model.Folder) {
+				if e.Time.After(f.LastLocalChange) {
+					f.LastLocalChange = e.Time
+				}
+			})
+		}
 		c.diskChange(d, e.Time)
 	}
 }
