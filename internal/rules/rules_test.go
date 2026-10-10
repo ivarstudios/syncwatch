@@ -412,6 +412,46 @@ func TestDisabledCheckAndUrgentOverride(t *testing.T) {
 	}
 }
 
+// On a case-sensitive server LIVE-Dup and LIVE-DUP are two directories and
+// need two finding IDs; on a Windows server they are one.
+func TestDirIDsKeepCaseOnCaseSensitiveServers(t *testing.T) {
+	c := ivarConfig(t)
+	cs, _ := c.Structure.Compile()
+	a := server("a", "A", akkaID)
+	addShare(a, cs, "/s/A-LIVE-1SOURCE", "LIVE-Dup-1SOURCE", "LIVE-DUP-1SOURCE")
+	a.Structure.Nested["1"] = &model.NestedDir{Path: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE/LIVE-Nest", Parent: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE", Share: "/s/A-LIVE-1SOURCE", Source: "scan", FoundAt: now}
+	a.Structure.Nested["2"] = &model.NestedDir{Path: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE/LIVE-NEST", Parent: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE", Share: "/s/A-LIVE-1SOURCE", Source: "scan", FoundAt: now}
+	fs := run(t, c, a)
+	ids := map[string]int{}
+	dirs, nested := 0, 0
+	for _, f := range fs {
+		ids[f.ID]++
+		switch {
+		case find([]model.Finding{f}, "S7", "") != nil:
+			dirs++
+		case f.Check == "S3":
+			nested++
+		}
+	}
+	for id, n := range ids {
+		if n > 1 {
+			t.Fatalf("finding ID %s produced %d times in one evaluation:\n%s", id, n, dump(fs))
+		}
+	}
+	if dirs != 2 || nested != 2 {
+		t.Fatalf("want 2 directory rows and 2 S3, got %d and %d:\n%s", dirs, nested, dump(fs))
+	}
+	// The same directory spelled differently on a Windows server is one finding.
+	w := server("w", "WIN", solID)
+	w.PathSep = `\`
+	addShare(w, cs, `D:/s/WIN-LIVE-1SOURCE`, "LIVE-Dup-1SOURCE")
+	w1 := mustFind(t, run(t, c, w), "S7", "LIVE-Dup")
+	w.Structure.Shares[0].Dirs[0].Path = `d:\S\win-live-1source\LIVE-DUP-1SOURCE\`
+	if w2 := mustFind(t, run(t, c, w), "S7", "LIVE-Dup"); w2.ID != w1.ID {
+		t.Fatalf("windows IDs differ: %s vs %s", w1.ID, w2.ID)
+	}
+}
+
 func TestWindowsPaths(t *testing.T) {
 	c := ivarConfig(t)
 	a := server("a", "WIN", akkaID)

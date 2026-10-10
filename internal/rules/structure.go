@@ -97,7 +97,7 @@ func (e *evaluator) nested(sv *model.Server) {
 		if n.FolderID != "" {
 			details = append(details, detail("Syncthing folder", n.FolderID))
 		}
-		e.add("S3", sv.ID, "nested:"+strings.ToLower(n.Path), model.Finding{
+		e.add("S3", sv.ID, "nested:"+pathKey(st, n.Path), model.Finding{
 			Subject: fmt.Sprintf("%s/%s/%s on %s", share, parent, rel, sv.Name),
 			Message: fmt.Sprintf("Project folder %s is nested inside project folder %s (%s on %s)", st.Base(n.Path), parent, share, sv.Name),
 			Since:   n.FoundAt,
@@ -226,7 +226,7 @@ func (e *evaluator) addDir(sv *model.Server, sh *model.Share, d *model.Dir, reas
 		details = append(details, detail("Share attributes", attrDisplay(sh.Attrs)))
 	}
 	e.out = append(e.out, model.Finding{
-		ID:       model.FindingID("DIR", sv.ID, strings.ToLower(d.Path)),
+		ID:       model.FindingID("DIR", sv.ID, pathKey(pathx.StyleFor(sv.PathSep), d.Path)),
 		Check:    primary,
 		Checks:   checks,
 		Severity: sev,
@@ -238,6 +238,17 @@ func (e *evaluator) addDir(sv *model.Server, sh *model.Share, d *model.Dir, reas
 		Link:     e.link(sv.ID),
 		Urgent:   urgent,
 	})
+}
+
+// pathKey is the part of a finding ID that names a directory: the cleaned
+// path, lower-cased only on servers whose file system ignores case, so that
+// LIVE-Dup and LIVE-DUP on a Linux server stay two findings.
+func pathKey(st pathx.Style, p string) string {
+	p = st.Clean(p)
+	if st.CaseInsensitive {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 func attrDisplay(a map[string]string) string {
