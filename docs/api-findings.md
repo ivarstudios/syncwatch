@@ -1,63 +1,65 @@
 # Syncthing API findings
 
-Written by `syncwatch probe` plus notes from development against real Syncthing **2.1.5** instances (three "servers" and two "PCs" running on one Windows host). To check your own servers, run `syncwatch probe` against each of them (see the README); it appends a section like the ones under [Probe runs](#probe-runs).
+`syncwatch probe` wrote the probe reports in this file. The notes come out of the development against real Syncthing **2.1.5** servers (3 "servers" and 2 "PCs" on one Windows host). To check your own servers, run `syncwatch probe` against each of them (see the README). The probe appends a section to this file, the same as the sections under [Probe runs](#probe-runs).
 
 ## Summary
 
 | # | Question | Answer (2.1.5) | Consequence in syncwatch |
 |---|---|---|---|
-| 1 | Does `browse` list every top-level directory, including hidden ones, spaces, å/ä/ö and `[ ]`? | Yes. With a trailing separator it lists all subdirectories, hidden ones included. **`current` is not a glob in 2.x**: the parent is listed and the last segment is matched by prefix, so names with `[ ]`, `*`, `?` need **no escaping**; escaping them actually breaks the match. | The client sends paths as-is (URL-encoded) with a trailing separator, and filters exact names when checking that a directory still exists. |
-| 2 | Browse timing | ~1 ms per listing locally. Re-measure on the largest NAS share. | Throttle stays at 3 concurrent requests per server. |
-| 3a | Long-polls and idle timeouts | A 50 s long-poll returns normally. Across a VPN, check with the probe's `--event-wait`. | `event_timeout: 50s` default, configurable. |
-| 3b | Event mask names | All 16 names are accepted. A custom mask creates its own buffered subscription on first use; **event IDs are per subscription** and restart at 1 when Syncthing restarts (`globalID` is the global counter). | The collector primes the subscription before the full re-check, detects IDs going backwards or gaps, and re-checks when `startTime` changes. |
-| 3c | New directories in `LocalChangeDetected` | Reported with the folder-relative path (server's own separator) and **`action: "modified"`**, not `"added"`. Deleted directories come as `"deleted"`. | Any `type: dir` event other than `deleted` is checked against the project pattern; `deleted` removes known nested folders. |
-| 3d | `ConfigSaved` payload | **Contains the whole config, including `gui.apiKey` and the password hash.** | The client drops the payload of `ConfigSaved` before returning events (unit-tested); the event only triggers a re-check. |
-| 4 | `FolderCompletion` carries `remoteState`? | Yes (2.x). | Events update completion live; the full re-check also calls `db/completion` per (folder, device). |
-| 4b | `db/completion` on a paused folder | **HTTP 404 "folder is paused"**. | Paused folders are skipped; per-folder 4xx answers no longer fail the whole re-check. |
-| 5 | Full re-check cost | 17 requests in a few ms for 3 folders × 5 devices locally. Measure on your servers (CPU/RAM) before choosing events vs. polled mode. | Polled mode exists for servers where this is noticeable. |
-| 6 | `/metrics` with the API key | Reachable; `syncthing_model_folder_conflicts_total{folder=…}` is present for every folder. | H10 uses deltas, with the Syncthing `startTime` to detect counter resets. |
-| 7 | `stats/folder` `lastFile.at` | Present, but **only set for files pulled from other devices** (zero after local changes only, and `0001-01-01` until anything is pulled). | C1 takes the newest `lastFile.at` across all servers holding the folder and skips folders where it was never set. |
-| 8 | TLS | Self-signed GUI certificate (CN `syncthing`), valid ~820 days; TOFU pinning by SHA-256 works, and a regenerated certificate is detected during the handshake. | H3 + accept button. |
+| 1 | Does `browse` list each top-level directory, hidden directories, spaces, å/ä/ö and `[ ]` included? | Yes. With a separator at the end, it lists all subdirectories, hidden directories included. **`current` is not a glob in 2.x**: Syncthing lists the parent and compares the last segment as a prefix. Thus names with `[ ]`, `*` and `?` need **no escape**. An escape makes the comparison fail. | The client sends the paths as they are (URL-encoded) with a separator at the end. It filters exact names when it checks that a directory still exists. |
+| 2 | Browse time | Approximately 1 ms for each listing on the local host. Measure it again on the largest NAS share. | The limit stays at 3 parallel requests for each server. |
+| 3a | Long-polls and idle timeouts | A long-poll of 50 s returns normally. Through a VPN, check it with `--event-wait` of the probe. | `event_timeout: 50s` is the default. You can change it. |
+| 3b | Event mask names | Syncthing accepts all 16 names. A custom mask makes its own buffered subscription on first use. **Event IDs are for each subscription**, and they start at 1 again when Syncthing restarts (`globalID` is the global counter). | The collector starts the subscription before the full check. It finds IDs that decrease or gaps, and it does a full check when `startTime` changes. |
+| 3c | New directories in `LocalChangeDetected` | Syncthing reports them with the path relative to the folder (the separator of the server) and **`action: "modified"`**, not `"added"`. Deleted directories come as `"deleted"`. | The collector compares each `type: dir` event other than `deleted` with the project pattern. A `deleted` event removes known nested project folders. |
+| 3d | `ConfigSaved` payload | **It has the complete configuration, `gui.apiKey` and the password hash included.** | The client discards the payload of `ConfigSaved` before it returns the events (a unit test checks this). The event only starts a full check. |
+| 4 | Does `FolderCompletion` have `remoteState`? | Yes (2.x). | Events update the completion in real time. The full check also calls `db/completion` for each (folder, device) pair. |
+| 4b | `db/completion` on a paused folder | **HTTP 404 "folder is paused"**. | The collector skips paused folders. A 4xx or 5xx answer for one folder marks that folder, not the server. |
+| 5 | Load of a full check | 17 requests in some milliseconds for 3 folders and 5 devices on the local host. Measure the CPU and the RAM on your servers before you select events mode or polled mode. | Polled mode exists for servers where the load is large. |
+| 6 | `/metrics` with the API key | Reachable. `syncthing_model_folder_conflicts_total{folder=…}` is present for each folder. | H10 uses the differences, with the Syncthing `startTime` to find counter resets. syncwatch reads `/metrics` at each full check and each reconnect. |
+| 7 | `stats/folder` `lastFile.at` | Present, but **Syncthing sets it only for files pulled from other devices** (zero after local changes only, and `0001-01-01` until Syncthing pulled a file). | C1 takes the newest `lastFile.at` on all servers with the folder. In events mode, C1 also uses the newest `LocalChangeDetected` time that the collector saw. It skips folders without a time. |
+| 8 | TLS | A self-signed GUI certificate (CN `syncthing`), valid approximately 820 days. The pinned certificate (SHA-256) works, and syncwatch finds a replaced certificate during the handshake. | H3 and the Accept certificate button. |
 | 9 | Counts | Simulation: 3 servers, 2 PCs, 6 project folders. | — |
 
 Other observations:
 
-- Two servers that dial each other at the same moment drop one connection and reconnect a few seconds later, so a short H2 blip at startup is normal. H2's 15-minute debounce absorbs it.
-- On Windows 11 24H2 Syncthing re-launches itself without a console window, so the process you start isn't the one that keeps running.
-- Pinning also protects against **name resolution changing under you**. In a Docker Compose test, a stopped container's short name (`sol`) fell through to the local network's DNS and resolved to a production NAS with the same name. syncwatch saw a different certificate, raised H3 and stopped at the TLS handshake, so no API key or request reached that server. Test stacks now use `*.e2e.invalid` names; in production, prefer IP addresses or fully qualified names in server URLs.
-- In the Syncthing container, `docker stop` often needs the full 10 s before Syncthing is killed; the GUI stops answering immediately, so H1 detection is unaffected.
+- 2 servers that dial each other at the same moment lose one connection and connect again some seconds later. Thus a short H2 at a start is normal. The debounce of 15 minutes of H2 hides it.
+- On Windows 11 24H2, Syncthing starts itself again without a console window. Thus the process that you start is not the process that continues.
+- The pinned certificate also protects against **a changed name resolution**. In a Docker Compose test, the short name (`sol`) of a stopped container went to the DNS of the local network. The name resolved to a production NAS with the same name. syncwatch saw a different certificate, opened H3 and stopped at the TLS handshake. Thus no API key and no request reached that server. Test stacks now use `*.e2e.invalid` names. In production, use IP addresses or fully qualified names in server URLs.
+- In the Syncthing container, `docker stop` frequently needs the full 10 s before Syncthing stops. The GUI stops immediately, thus H1 opens at the usual time.
 
 ## Structure scan load, simulated — 2026-10-04
 
-`test/loadsim` (Docker): one Syncthing 2.1.5 container with a share of 300 project folders, each with 6 subfolders on each of four levels (142,500 directories); 270 of the project folders are Syncthing folders. syncwatch ran from its image with the default `nested_scan_depth: 3` and `concurrency: 3`. The Docker engine runs in a software-emulated VM (about 20× slower than native), so the times are an upper bound.
+`test/loadsim` (Docker): one Syncthing 2.1.5 container with a share of 300 project folders. Each project folder has 6 subdirectories on each of 4 levels (142,500 directories). 270 of the project folders are Syncthing folders. syncwatch ran from its image with the default `nested_scan_depth: 3` and `concurrency: 3`. The Docker engine runs in a software-emulated VM (approximately 20 times slower than native). Thus the times are an upper limit.
 
-| Scan | Listings | Time | |
+| Scan | Listings | Time | Calculation |
 |---|---|---|---|
-| Baseline (every project folder, every `baseline_interval`, default 7d) | 12,901 | 18–30 s | 1 + 300 × (1 + 6 + 36) |
-| Regular (project folders not in Syncthing, every `structure_interval`, default 1h) | 1,291 | 2–4 s | 1 + 30 × 43 |
+| Baseline scan (each project folder, every `baseline_interval`, default 7d) | 12,901 | 18–30 s | 1 + 300 × (1 + 6 + 36) |
+| Structure scan in events mode (project folders not in Syncthing, every `structure_interval`, default 1h) | 1,291 | 2–4 s | 1 + 30 × 43 |
+| Structure scan in polled mode (each project folder, every `structure_interval`) | 12,901 | 18–30 s | the same as the baseline scan |
 
-- The dashboard API answered within 40 ms throughout.
-- `syncwatch probe --project-pattern '^LIVE-'` against the same container estimated exactly 1,291 and 12,901 listings, so a probe run on each server measures the scan's load without deploying syncwatch.
-- Listings grow with the subfolders per level squared (depth 3 lists a project folder, its children and its grandchildren). A project folder with 30 subfolders per level costs 931 listings instead of 43. Measure on the NASes before relying on these numbers.
+- The dashboard API answered in less than 40 ms during the complete run.
+- `syncwatch probe --project-pattern '^LIVE-'` against the same container estimated exactly 1,291 and 12,901 listings. Thus a probe run on each server measures the load of the scan without an installation of syncwatch.
+- The listings grow with the square of the subdirectories for each level (depth 3 lists a project folder, its children and its grandchildren). A project folder with 30 subdirectories for each level needs 931 listings instead of 43. Measure on the NAS hardware before you depend on these numbers.
+- Missed events (a full check during a large sync over a slow link): syncwatch scans the affected folders again 30 s after the last gap. It does at most one gap-caused full check every 10 minutes.
 
 ## Folders added paused through the API, simulated — 2026-10-06
 
-For a possible companion tool (separate from syncwatch, which stays read-only) that registers new project folders as paused, unshared Syncthing folders. Two Syncthing 2.1.5 instances (Windows build) started by `test/harness` on loopback, SIRIUS and SOL, connected to each other. SIRIUS's folder defaults were changed to `rescanIntervalS: 777` with devices SIRIUS and SOL, and its default ignores to `.sync`, `@eaDir`. Each test project folder held Resilio-style content: `.sync/ID`, `.sync/Archive/old.bin`, a directory `.sync-other`, `a.txt`, `sub/b.txt`. These were one-off runs, not a test in the repo.
+For a possible companion tool (separate from syncwatch, which stays read-only) that registers new project folders as paused, unshared Syncthing folders. 2 Syncthing 2.1.5 servers (Windows build), SIRIUS and SOL, started by `test/harness` on loopback and connected to each other. The folder defaults of SIRIUS were set to `rescanIntervalS: 777` with the devices SIRIUS and SOL, and its default ignores to `.sync`, `@eaDir`. Each test project folder had Resilio-style content: `.sync/ID`, `.sync/Archive/old.bin`, a directory `.sync-other`, `a.txt`, `sub/b.txt`. These were one-time runs, not a test in the repository.
 
 | # | Test | Result |
 |---|---|---|
-| 1 | `POST /rest/config/folders` with only `id`, `label`, `path`, `paused: true` | Missing fields come from the **configured** defaults (`rescanIntervalS` 777), **devices included**: SOL listed the folder in `cluster/pending/folders` within seconds, although it was paused. The directory was unchanged. |
-| 2 | `POST` of the full defaults object with `paused: true` and devices = SIRIUS only | Nothing on disk changed: no `.stfolder`, no `.stignore`. `index-v2` held only `main.db`. `db/status` answered 200 with zeros (unlike `db/completion`, which answers 404 for paused folders); `GET db/ignores` answered with empty lists. |
-| 3 | `POST /rest/db/ignores` on that paused folder | Worked: `.stignore` was written and nothing else; the folder stayed paused. |
-| 4 | `browse` with `current=<folder>/.sync` | Returned `.sync` and `.sync-other`: the last segment matches by prefix, and hidden directories are listed. |
-| 5 | `POST` again with the same ID and another label | Replaced the folder's configuration without an error. |
-| 6 | Resume the way the GUI does it | The GUI's `setFolderPause` sets `paused` in its copy of the config and saves the whole config (`PUT /rest/config`). After resuming: `.stfolder` created, settings unchanged, `.stignore` loaded; `.sync/ID` not in the index, 2 files indexed. |
-| 7 | Resume a second folder that had no `.stignore` | `.stignore` was not created from the default ignores. `.sync/ID` and `.sync/Archive/old.bin` were indexed (4 files). |
-| 8 | Syncthing issues syncthing/syncthing#10389 and syncthing/syncthing#10746: `PATCH {"paused": true}`, then `false` | Not reproduced: `rescanIntervalS` 86400, `fsWatcherEnabled` false and `versioning.cleanupIntervalS` 7200 all stayed, and also through a GUI-style pause and resume. |
-| 9 | Settings names | The defaults' key is `blockIndexing` (default `true`). `syncthing cli config folders add` has `--paused`, `--type` and `--block-indexing`. |
-| 10 | The same folder ID registered paused on both instances (SOL's copy with its own `.stignore`), each resumed alone, then shared | When SIRIUS shared it, SOL listed the offer in `cluster/pending/folders` although it had a folder with that ID; adding SIRIUS to SOL's folder paired them. A 32 MB file identical on both (SOL's 48 hours older) was not transferred: 45 KB crossed the connection in total, there was no conflict, and SOL's modification time became SIRIUS's. A file only on SOL was copied to SIRIUS. `c.txt`, different on each, became a conflict copy on both, and the newer content won. `.sync`, ignored on SIRIUS, wasn't sent. |
+| 1 | `POST /rest/config/folders` with only `id`, `label`, `path`, `paused: true` | Missing fields come out of the **configured** defaults (`rescanIntervalS` 777), **devices included**. SOL listed the folder in `cluster/pending/folders` in some seconds, but the folder was paused. The directory was unchanged. |
+| 2 | `POST` of the full defaults object with `paused: true` and devices = SIRIUS only | No change on disk: no `.stfolder`, no `.stignore`. `index-v2` had only `main.db`. `db/status` answered 200 with zeros (`db/completion` answers 404 for paused folders). `GET db/ignores` answered with empty lists. |
+| 3 | `POST /rest/db/ignores` on that paused folder | It worked: Syncthing wrote `.stignore` and no other file. The folder stayed paused. |
+| 4 | `browse` with `current=<folder>/.sync` | It returned `.sync` and `.sync-other`: the last segment is a prefix, and hidden directories are in the list. |
+| 5 | `POST` again with the same ID and a different label | Syncthing replaced the folder configuration without an error. |
+| 6 | Resume the same as the GUI does it | The `setFolderPause` of the GUI sets `paused` in its copy of the configuration and saves the complete configuration (`PUT /rest/config`). After the resume: `.stfolder` made, settings unchanged, `.stignore` loaded, `.sync/ID` not in the index, 2 files in the index. |
+| 7 | Resume a second folder that had no `.stignore` | Syncthing did not make `.stignore` from the default ignores. `.sync/ID` and `.sync/Archive/old.bin` went into the index (4 files). |
+| 8 | Syncthing issues syncthing/syncthing#10389 and syncthing/syncthing#10746: `PATCH {"paused": true}`, then `false` | Not reproduced: `rescanIntervalS` 86400, `fsWatcherEnabled` false and `versioning.cleanupIntervalS` 7200 all stayed, also through a GUI-style pause and resume. |
+| 9 | Setting names | The key of the defaults is `blockIndexing` (default `true`). `syncthing cli config folders add` has `--paused`, `--type` and `--block-indexing`. |
+| 10 | The same folder ID registered paused on both servers (the copy of SOL with its own `.stignore`), each resumed alone, then shared | When SIRIUS shared it, SOL listed the offer in `cluster/pending/folders`, but it had a folder with that ID. The addition of SIRIUS to the folder of SOL paired them. Syncthing did not transfer a 32 MB file that was identical on both (the copy of SOL 48 hours older). 45 KB crossed the connection in total, and there was no conflict. The change time of SOL became the time of SIRIUS. Syncthing copied a file that was only on SOL to SIRIUS. `c.txt`, different on each, became a conflict copy on both, and the newer content won. Syncthing did not send `.sync`, ignored on SIRIUS. |
 
-Still to check on a NAS (Linux, Docker): the owner and permissions of a `.stignore` written by the API, and the inotify watch limit.
+Still to check on a NAS (Linux, Docker): the owner and the permissions of a `.stignore` written by the API, and the inotify limit.
 
 ## Probe runs
 
@@ -107,5 +109,4 @@ URL: `https://127.0.0.1:18400`
 - Events seen in 40s: map[StateChanged:12]
 - No FolderCompletion event seen; the full re-check calls `db/completion` per pair either way.
 - Event IDs are per subscription (one per event mask) and restart at 1 when Syncthing restarts; the collector re-checks when they go backwards or `startTime` changes.
-
 
