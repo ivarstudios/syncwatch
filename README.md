@@ -126,9 +126,11 @@ Each server has an ID that syncwatch makes from the name (`AKKA` gives `akka`). 
 
 ### Bootstrap file
 
-Instead of the settings forms, you can put a YAML file at `/data/syncwatch.yaml` before the first start. Or point `SYNCWATCH_CONFIG` to the file. syncwatch imports the bootstrap file one time, when the database has no configuration. The import includes `api_key`, `discord_webhook` and `api.token`. syncwatch encrypts these secrets in the database and removes them from the file. The rest of the file, comments included, stays as it is.
+Instead of the settings forms, you can put a YAML file at `/data/syncwatch.yaml` before the first start. Or point `SYNCWATCH_CONFIG` to the file. syncwatch imports the bootstrap file one time, when the database has no configuration. The import includes `api_key`, `discord_webhook` and `api.token`. syncwatch encrypts these secrets in the database and removes them from the file. To remove them, syncwatch writes the file again: the comments stay, but the format of the file can change.
 
 syncwatch also rewrites a file behind a symlink and a single-file bind mount. If syncwatch cannot rewrite the file (a read-only mount), the log reports it at each start until you delete the file. A value of `null` or `~` is not a secret.
+
+A bootstrap file with an error stops the start of syncwatch. Examples are an unknown key, a value outside its range, or a webhook that is not a Discord URL. The log (`docker logs syncwatch`) names the line or the key. Correct the file or remove it. Until then, a container with `restart: unless-stopped` starts and stops again and again.
 
 Later changes: use the dashboard, or **Settings → Export and import**, or `syncwatch import-config FILE`. A syncwatch that runs applies the imported file in less than 10 seconds. Delete the file after the import if it had secrets. Exports never contain secrets.
 
