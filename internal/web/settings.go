@@ -686,7 +686,12 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request, info r
 		s.redirect(w, r, "/settings#notifications", "The test message failed. "+sentence(err.Error()), true)
 		return
 	}
-	s.redirect(w, r, "/settings#notifications", "syncwatch sent the test message.", false)
+	msg := "syncwatch sent the test message."
+	if s.cfg.Get().Notify.DiscordRoleID != "" {
+		// The test message mentions the role, as an urgent message does.
+		msg = "syncwatch sent the test message with the role mention. If your phone shows no notification, check the role ID. Also make sure that you have the role."
+	}
+	s.redirect(w, r, "/settings#notifications", msg, false)
 }
 
 func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info requestInfo) {

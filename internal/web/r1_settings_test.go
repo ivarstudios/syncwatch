@@ -262,3 +262,22 @@ func TestServersTextPinsEachCertificate(t *testing.T) {
 		t.Fatal("the Servers text does not say that each certificate is pinned")
 	}
 }
+
+// W-018: with a role, the test message mentions it (notify), so the flash
+// tells the administrator what to check when the phone shows nothing.
+func TestTestMessageFlashNamesTheRole(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	if msg, isErr := flash(e.post("/settings/notifications/test", url.Values{"csrf": {csrf}})); isErr || msg != "syncwatch sent the test message." {
+		t.Fatalf("without a role: %q %v", msg, isErr)
+	}
+	f := notifyForm(e.cfg.Get(), csrf)
+	f.Set("discord_role_id", "420000000000000000")
+	if msg, isErr := flash(e.post("/settings/notifications", f)); isErr {
+		t.Fatal(msg)
+	}
+	msg, isErr := flash(e.post("/settings/notifications/test", url.Values{"csrf": {csrf}}))
+	if isErr || msg != "syncwatch sent the test message with the role mention. If your phone shows no notification, check the role ID. Also make sure that you have the role." {
+		t.Fatalf("with a role: %q %v", msg, isErr)
+	}
+}
