@@ -48,6 +48,10 @@ const (
 // maxBody caps an answer that has to be read to be cleaned.
 const maxBody = 64 << 20
 
+// maxErrBody caps the body of an error answer that the gate forwards.
+// syncwatch's client keeps 200 bytes of it.
+const maxErrBody = 4 << 10
+
 // Limits on what a request may ask for, and how long the gate keeps
 // Syncthing's folder list.
 const (
@@ -357,7 +361,18 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	clean := cleaner(r.URL.Path)
-	if clean == nil || resp.StatusCode/100 != 2 {
+	if resp.StatusCode/100 != 2 {
+		if clean != nil {
+			// An error answer isn't cleaned, and it can have the secrets
+			// that the cleaner removes: only its status is passed on.
+			http.Error(w, fmt.Sprintf("syncwatch gate: Syncthing answered HTTP %d", resp.StatusCode), resp.StatusCode)
+			return
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, maxErrBody))
+		return
+	}
+	if clean == nil {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, io.LimitReader(resp.Body, maxBody))
 		return

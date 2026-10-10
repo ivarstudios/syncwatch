@@ -607,6 +607,61 @@ func TestGateSyncthingRefusesKey(t *testing.T) {
 	}
 }
 
+// An error answer from Syncthing on a path that the gate cleans is not
+// forwarded: it can have the secrets that the cleaner removes from a 200.
+// The other paths forward the status and the start of the body, which
+// syncwatch reads (404 "folder is paused").
+func TestGateDoesNotForwardUncleanedErrors(t *testing.T) {
+	long := strings.Repeat("x", 100<<10)
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/rest/events":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`[{"id":1,"type":"ConfigSaved","data":{"gui":{"apiKey":"` + realKey + `","password":"$2a$10$hash"}}}]`))
+		case "/rest/config/folders":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`[{"id":"f","devices":[{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]}]`))
+		case "/rest/db/status":
+			http.Error(w, "folder is paused", http.StatusNotFound)
+		default:
+			http.Error(w, long, http.StatusInternalServerError)
+		}
+	}))
+	defer up.Close()
+	g, err := New(Options{Syncthing: up.URL, APIKey: realKey, Token: token, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gs := httptest.NewTLSServer(g)
+	defer gs.Close()
+	mask := strings.Join(stclient.EventMask, ",")
+	for path, want := range map[string]int{"/rest/events?since=0&timeout=1&events=" + mask: 500, "/rest/config/folders": 503} {
+		code, body := get(t, gs, http.MethodGet, path, token)
+		if code != want || body != "syncwatch gate: Syncthing answered HTTP "+strconv.Itoa(want)+"\n" {
+			t.Errorf("%s: %d %q", path, code, body)
+		}
+		if strings.Contains(body, realKey) || strings.Contains(body, "hash") || strings.Contains(body, "untrusted-secret") {
+			t.Errorf("%s: a secret was forwarded: %q", path, body)
+		}
+	}
+	if code, body := get(t, gs, http.MethodGet, "/rest/db/status?folder=f", token); code != 404 || body != "folder is paused\n" {
+		t.Errorf("paused folder: %d %q", code, body)
+	}
+	if code, body := get(t, gs, http.MethodGet, "/rest/system/version", token); code != 500 || len(body) != maxErrBody || !strings.HasPrefix(body, "xxx") {
+		t.Errorf("long error answer: %d, %d bytes", code, len(body))
+	}
+	// syncwatch's client still finds the paused folder.
+	cl, err := stclient.New(stclient.Options{Name: "NAS", URL: gs.URL, APIKey: token, Timeout: 5 * time.Second, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var se *stclient.StatusError
+	if _, err := cl.DBStatus(context.Background(), "f"); !errors.As(err, &se) || se.Code != 404 || se.Body != "folder is paused" {
+		t.Errorf("db/status through the gate: %v", err)
+	}
+}
+
 // syncwatch's client shows what the gate refused: H1 finds a refused gate
 // token by "HTTP 403", a key that Syncthing refused is a 502, and a share
 // outside the browse roots gets the name of the setting.
