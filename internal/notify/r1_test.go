@@ -466,3 +466,45 @@ func TestNoticeLogsOneDecision(t *testing.T) {
 		t.Fatalf("replaced webhook: %d warnings:\n%s", n, logs.String())
 	}
 }
+
+// A successful test message during a failure clears the banner but not the
+// catch-up, which goes out at the next tick. An ignored finding is not in
+// it.
+func TestCatchUpSurvivesTestMessage(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 10, 0), "AKKA", "SOL")
+	r.n.now = func() time.Time { return r.now }
+	r.sender.fail(&httpError{code: 503})
+	r.setDown("AKKA", true)
+	r.setDown("SOL", true)
+	r.at(local(2026, 10, 6, 10, 0))
+	r.at(local(2026, 10, 6, 10, 5)) // both due: the urgent message fails
+	for _, rec := range r.eng.View().Open {
+		if rec.Server == "sol" {
+			if err := r.eng.Ignore(rec.ID, "planned work", "admin"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	r.now = local(2026, 10, 6, 10, 10)
+	r.setDown("AKKA", false)
+	r.setDown("SOL", false)
+	r.at(r.now)
+	r.sender.fail(nil)
+	if err := r.n.SendTest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d := r.n.Delivery(); d.Failing {
+		t.Fatalf("banner after a successful test message: %+v", d)
+	}
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindTest {
+		t.Fatalf("test message: %+v", m)
+	}
+	r.at(local(2026, 10, 6, 10, 11))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindResolved || msgs[0].Mention {
+		t.Fatalf("catch-up after the test message: %+v", msgs)
+	}
+	if text := messageText(msgs[0]); !strings.Contains(text, "AKKA") || strings.Contains(text, "SOL") {
+		t.Fatalf("catch-up lists:\n%s", text)
+	}
+}
