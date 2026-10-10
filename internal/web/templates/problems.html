@@ -37,8 +37,8 @@
     <span class="sev sev-error">🔴 {{plural $vm.Errors "error" "errors"}}</span>
     <span class="sev sev-warn">🟠 {{plural $vm.Warns "warning" "warnings"}}</span>
     <span class="sev sev-info">🔵 {{plural $vm.Infos "suggestion" "suggestions"}}</span>
-    {{if $vm.Hidden}}<span class="muted">· {{$vm.Hidden}} snoozed or ignored hidden</span>{{end}}
-    <span class="muted">· {{$vm.NewThisWeek}} new and {{len $vm.ResolvedThisWeek}} resolved this week</span>
+    {{if $vm.Hidden}}<span class="muted">· <a class="muted" href="#snoozed">{{$vm.Hidden}} snoozed or ignored</a> below</span>{{end}}
+    <span class="muted">· {{$vm.NewThisWeek}} new and {{$vm.ResolvedCount}} resolved this week</span>
   </p>
   {{if not $vm.Rows}}<p class="card c-ok">✔ Nothing to show.</p>{{end}}
   <ul class="plist">
@@ -68,13 +68,14 @@
           {{if $admin}}
           <div class="actions">
             {{if .Snoozed}}
-            <form method="post" action="/problems/{{.ID}}/unsnooze"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Un-snooze</button></form>
+            <form method="post" action="/problems/{{.ID}}/unsnooze"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">{{if .Ignored}}Stop ignoring{{else}}Un-snooze{{end}}</button></form>
             {{else}}
             <form method="post" action="/problems/{{.ID}}/snooze" class="inline">
               <input type="hidden" name="csrf" value="{{$csrf}}">
+              <label>Reason <input name="reason" placeholder="optional"></label>
               <button type="submit" name="for" value="1d">Snooze 1 day</button>
               <button type="submit" name="for" value="1w">Snooze 1 week</button>
-              <label>until <input type="date" name="until"></label>
+              <label>until <input type="date" name="until" min="{{$vm.Today}}"></label>
               <button type="submit" name="for" value="date">Snooze until date</button>
             </form>
             <form method="post" action="/problems/{{.ID}}/ignore" class="inline">
@@ -90,9 +91,25 @@
     </li>
   {{end}}
   </ul>
+  {{if $vm.Snoozed}}
+  <details class="card" id="snoozed" data-key="snoozed">
+    <summary><strong>Snoozed and ignored ({{len $vm.Snoozed}})</strong> <span class="muted small">· still open, hidden above, never ping</span></summary>
+    <ul class="plist compact">
+    {{range $vm.Snoozed}}
+      <li id="f-{{.ID}}" class="sev-row-{{.Severity}} snoozed">
+        {{template "sev" .}} <span class="chk" title="{{.Title}}">{{.Checks}}</span>
+        <span class="tag snoozed">{{.SnoozeLabel}}</span>
+        <span class="msg">{{.Message}}</span>
+        <span class="muted nowrap">· open {{.OpenFor}}</span>
+        {{if $admin}}<form method="post" action="/problems/{{.ID}}/unsnooze" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="link">{{if .Ignored}}Stop ignoring{{else}}Un-snooze{{end}}</button></form>{{end}}
+      </li>
+    {{end}}
+    </ul>
+  </details>
+  {{end}}
   {{if $vm.ResolvedThisWeek}}
   <details class="card" data-key="resolved-week">
-    <summary><strong>Resolved this week ({{len $vm.ResolvedThisWeek}})</strong></summary>
+    <summary><strong>Resolved this week ({{$vm.ResolvedCount}})</strong>{{if gt $vm.ResolvedCount (len $vm.ResolvedThisWeek)}} <span class="muted small">· the latest {{len $vm.ResolvedThisWeek}}</span>{{end}}</summary>
     <ul class="plist compact">{{range $vm.ResolvedThisWeek}}<li><span class="c-ok">{{.Icon}}</span> <span class="chk">{{.Check}}</span> {{.Message}} <span class="muted">· {{.When}}</span></li>{{end}}</ul>
   </details>
   {{end}}

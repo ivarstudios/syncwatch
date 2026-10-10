@@ -21,7 +21,7 @@ import (
 type problemRow struct {
 	ID, Check, Checks, Severity, SeverityLabel, Icon, Category string
 	Server, ServerName, Subject, Message, Title                string
-	Urgent, Stale, Snoozed                                     bool
+	Urgent, Stale, Snoozed, Ignored                            bool
 	SnoozeLabel, OpenFor, Since, OpenedAt, Pinged              string
 	Details                                                    []model.Detail
 	Paths                                                      []string
@@ -62,6 +62,7 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 		if z, ok := v.Snoozed(r.ID, now); ok {
 			row.Snoozed = true
 			if z.Kind == store.IgnoreKind {
+				row.Ignored = true
 				row.SnoozeLabel = "ignored: " + z.Reason
 			} else {
 				row.SnoozeLabel = "snoozed until " + s.fmtTime(z.Until)
@@ -95,6 +96,7 @@ type overviewVM struct {
 	PCOffLabel               string
 	Top                      []problemRow
 	OpenCount, UrgentOpen    int
+	SnoozedCount             int // open findings hidden by a snooze or ignore
 	Evaluated                string
 }
 
@@ -119,6 +121,7 @@ func (s *Server) overview(v *engine.View) overviewVM {
 	var visible []*store.Record
 	for _, r := range v.Open {
 		if _, ok := v.Snoozed(r.ID, now); ok {
+			vm.SnoozedCount++
 			continue
 		}
 		visible = append(visible, r)
@@ -473,16 +476,19 @@ type historyRow struct {
 
 type problemsVM struct {
 	Rows             []problemRow
+	Snoozed          []problemRow // hidden by a snooze or ignore, shown in their own list
 	Hidden           int
 	Filter           problemFilter
 	Query            string
+	Today            string // in the configured zone, for the snooze date field
 	Checks           []config.CheckInfo
 	Servers          []*model.Server
 	Severities       []severityOption
 	Errors, Warns    int
 	Infos            int
 	NewThisWeek      int
-	ResolvedThisWeek []historyRow
+	ResolvedCount    int          // resolved in the last 7 days
+	ResolvedThisWeek []historyRow // the latest of those, newest first
 }
 
 // severityOption is one choice of the severity filter: the value in the
@@ -497,12 +503,13 @@ var severityOptions = []severityOption{
 
 func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 	now := s.now()
-	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions}
-	var recs []*store.Record
+	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions,
+		Today: now.In(s.cfg.Get().Location()).Format("2006-01-02")}
+	var recs, hidden []*store.Record
 	for _, r := range v.Open {
 		_, snoozed := v.Snoozed(r.ID, now)
 		if snoozed && !f.ShowSnoozed {
-			vm.Hidden++
+			hidden = append(hidden, r)
 			continue
 		}
 		if f.Severity != "" && r.Severity.Lower() != f.Severity {
@@ -528,18 +535,27 @@ func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 		recs = append(recs, r)
 	}
 	vm.Rows = s.problemRows(v, recs)
+	vm.Snoozed = s.problemRows(v, hidden)
+	vm.Hidden = len(hidden)
 	if hist, err := s.st.HistoryBetween(now.Add(-7*24*time.Hour), now.Add(time.Second)); err == nil {
 		from := now.Add(-7 * 24 * time.Hour)
-		for i := len(hist) - 1; i >= 0; i-- {
-			h := hist[i]
+		var resolved []store.HistoryEntry
+		for _, h := range hist {
 			if !h.OpenedAt.Before(from) {
 				vm.NewThisWeek++
 			}
-			if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) && len(vm.ResolvedThisWeek) < 30 {
-				vm.ResolvedThisWeek = append(vm.ResolvedThisWeek, historyRow{Icon: "✔", Check: h.Check, Message: h.Message, When: s.fmtTime(h.ResolvedAt)})
+			if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) {
+				resolved = append(resolved, h)
 			}
 		}
-		sort.SliceStable(vm.ResolvedThisWeek, func(a, b int) bool { return vm.ResolvedThisWeek[a].When > vm.ResolvedThisWeek[b].When })
+		vm.ResolvedCount = len(resolved)
+		sort.SliceStable(resolved, func(a, b int) bool { return resolved[a].ResolvedAt.After(resolved[b].ResolvedAt) })
+		if len(resolved) > 30 {
+			resolved = resolved[:30]
+		}
+		for _, h := range resolved {
+			vm.ResolvedThisWeek = append(vm.ResolvedThisWeek, historyRow{Icon: "✔", Check: h.Check, Message: h.Message, When: s.fmtTime(h.ResolvedAt)})
+		}
 	}
 	return vm
 }

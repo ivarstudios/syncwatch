@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -667,5 +668,89 @@ func TestSeverityWordsAndPlurals(t *testing.T) {
 	}
 	if model.ParseSeverity("suggestion") != model.Info || model.ParseSeverity("warning") != model.Warn {
 		t.Error("ParseSeverity does not accept the dashboard words")
+	}
+}
+
+// "Snooze until date" covers the whole chosen day in the configured zone,
+// today included, and takes a reason like ignore does.
+func TestSnoozeUntilDate(t *testing.T) {
+	e := adminEnv(t, twoServers+"timezone: Pacific/Auckland\n")
+	auckland := e.cfg.Get().Location()
+	// 10:00 UTC is 23:00 in Auckland (NZDT): still 2026-10-10 there.
+	now := time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)
+	e.web.now = func() time.Time { return now }
+	id := e.eng.View().Open[0].ID
+	csrf := e.csrf("/problems")
+	msg, isErr := flash(e.post("/problems/"+id+"/snooze", url.Values{"csrf": {csrf}, "for": {"date"}, "until": {"2026-10-10"}, "reason": {"waiting for the disk"}}))
+	if isErr {
+		t.Fatalf("snoozing until today refused: %s", msg)
+	}
+	z, ok := e.eng.View().Snoozes[id]
+	if want := time.Date(2026, 10, 11, 0, 0, 0, 0, auckland); !ok || !z.Until.Equal(want) || z.Reason != "waiting for the disk" {
+		t.Fatalf("snooze = %+v, want until %v with the reason", z, want)
+	}
+	if msg != "Snoozed until 2026-10-11 00:00." {
+		t.Errorf("flash %q", msg)
+	}
+	if msg, isErr := flash(e.post("/problems/"+id+"/snooze", url.Values{"csrf": {csrf}, "for": {"date"}, "until": {"2026-10-09"}})); !isErr {
+		t.Errorf("yesterday accepted: %q", msg)
+	}
+	_, body := e.get("/problems")
+	if !strings.Contains(body, `name="until" min="2026-10-10"`) {
+		t.Error("the date field does not start at today")
+	}
+	i := strings.Index(body, "/snooze\"")
+	if j := strings.Index(body[i:], "/ignore\""); i < 0 || j < 0 || !strings.Contains(body[i:i+j], `name="reason"`) {
+		t.Error("the snooze form has no reason field")
+	}
+}
+
+// "Resolved this week" counts every resolution of the last 7 days and
+// lists the latest 30, newest first.
+func TestResolvedThisWeekCountAndOrder(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	now := time.Now()
+	e.web.now = func() time.Time { return now }
+	// Opened in order 00..34 three weeks ago; 00 resolved most recently.
+	for i := 0; i < 35; i++ {
+		r := &store.Record{Finding: model.Finding{ID: fmt.Sprintf("h%02d", i), Check: "H7", Severity: model.Warn, Message: fmt.Sprintf("resolved-%02d", i)},
+			OpenedAt: now.Add(-21*24*time.Hour + time.Duration(i)*time.Hour)}
+		if err := e.st.HistoryOpen(r); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.HistoryResolve(r.ID, now.Add(-time.Duration(i+1)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, body := e.get("/problems")
+	if !strings.Contains(body, "35 resolved this week") || !strings.Contains(body, "Resolved this week (35") {
+		t.Error("the summary does not show the real count")
+	}
+	first, second, dropped := strings.Index(body, "resolved-00"), strings.Index(body, "resolved-01"), strings.Index(body, "resolved-30")
+	if first < 0 || second < first || dropped >= 0 {
+		t.Errorf("list order: resolved-00 at %d, resolved-01 at %d, resolved-30 at %d (want newest first, oldest five dropped)", first, second, dropped)
+	}
+}
+
+// Ignored and snoozed findings stay visible: a collapsed list on the
+// problems page with a way back, and a count on the overview.
+func TestSnoozedAndIgnoredStayVisible(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	id := e.eng.View().Open[0].ID
+	csrf := e.csrf("/problems")
+	e.post("/problems/"+id+"/ignore", url.Values{"csrf": {csrf}, "reason": {"known and harmless"}})
+	_, body := e.get("/problems")
+	for _, want := range []string{"Snoozed and ignored (1)", "ignored: known and harmless", "/problems/" + id + "/unsnooze", "Stop ignoring", `id="f-` + id + `"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("problems page lacks %q", want)
+		}
+	}
+	if _, ov := e.get("/"); !strings.Contains(ov, "1 snoozed or ignored") {
+		t.Error("overview does not mention the ignored finding")
+	}
+	// With "Show snoozed and ignored" on, the rows are inline and the block is gone.
+	_, body = e.get("/problems?snoozed=1")
+	if strings.Contains(body, "Snoozed and ignored (") || !strings.Contains(body, "ignored: known and harmless") {
+		t.Error("snoozed=1: want the ignored finding inline, no separate block")
 	}
 }

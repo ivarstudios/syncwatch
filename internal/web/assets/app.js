@@ -17,14 +17,17 @@
     });
   }
 
+  // Opens the finding (#f-<id>) or section (#snoozed) named in the URL,
+  // and every fold-out it sits in.
   function openFromHash() {
-    if (!location.hash || location.hash.indexOf("#f-") !== 0) return;
+    if (!location.hash) return;
     var el = document.getElementById(location.hash.slice(1));
     if (!el) return;
-    var d = el.querySelector("details");
-    if (d) {
+    var d = el.tagName === "DETAILS" ? el : el.querySelector("details") || el.closest("details");
+    while (d) {
       d.open = true;
-      openKeys[d.getAttribute("data-key")] = true;
+      if (d.hasAttribute("data-key")) openKeys[d.getAttribute("data-key")] = true;
+      d = d.parentElement && d.parentElement.closest("details");
     }
   }
 

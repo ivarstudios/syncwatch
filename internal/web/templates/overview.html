@@ -42,7 +42,7 @@
   <section class="card">
     <header class="row">
       <h2>Top problems</h2>
-      <a href="/problems">All {{$vm.OpenCount}} open →</a>
+      <span><a href="/problems">All {{$vm.OpenCount}} open →</a>{{if $vm.SnoozedCount}} <a class="muted small" href="/problems#snoozed">· {{$vm.SnoozedCount}} snoozed or ignored</a>{{end}}</span>
     </header>
     {{if $vm.Top}}
     <ul class="plist compact">
