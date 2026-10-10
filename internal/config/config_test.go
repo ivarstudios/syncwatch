@@ -465,8 +465,11 @@ func TestDiscordWebhookCanonical(t *testing.T) {
 	}
 	// An import stores the canonical form.
 	c, err := ParseYAML([]byte("servers: [{name: a, url: 'https://10.0.0.1:8384'}]\nnotifications: {discord_webhook: ' https://DISCORD.com/api/webhooks/1/abc/ '}\n"))
-	if err != nil || c.Notify.DiscordWebhook != "https://discord.com/api/webhooks/1/abc" {
-		t.Fatalf("import: %q %v", c.Notify.DiscordWebhook, err)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if c.Notify.DiscordWebhook != "https://discord.com/api/webhooks/1/abc" {
+		t.Fatalf("import stored %q", c.Notify.DiscordWebhook)
 	}
 	AllowAnyWebhook = true
 	defer func() { AllowAnyWebhook = false }()
