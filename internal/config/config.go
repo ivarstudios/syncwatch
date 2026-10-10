@@ -349,7 +349,7 @@ func (c *Config) Validate() error {
 		// The URL isn't a secret: it's shown, exported and sent in notices.
 		u, err := url.Parse(s.URL)
 		switch {
-		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "":
+		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || !hostOK(u):
 			errs = append(errs, fmt.Errorf("server %s: url must be http(s)://host:port", s.ID))
 		case u.User != nil:
 			errs = append(errs, fmt.Errorf("server %s: url must not contain a user name or password; syncwatch authenticates with the API key only", s.ID))
@@ -467,10 +467,16 @@ func intRange(name string, n, lo, hi int) error {
 	return nil
 }
 
+// hostOK reports whether a parsed URL has a host name without whitespace.
+// url.Parse accepts "https://:8384" and non-ASCII spaces in the host.
+func hostOK(u *url.URL) bool {
+	return u.Hostname() != "" && strings.IndexFunc(u.Host, unicode.IsSpace) < 0
+}
+
 // webURL reports whether s is an absolute http(s) URL without credentials.
 func webURL(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && hostOK(u) && u.User == nil
 }
 
 // AllowAnyWebhook lifts the restriction of the Discord webhook to Discord's

@@ -475,6 +475,33 @@ func TestDiscordWebhookCanonical(t *testing.T) {
 	}
 }
 
+// url.Parse accepts an empty host name with a port and non-ASCII whitespace
+// in the host; both are rejected.
+func TestServerURLHost(t *testing.T) {
+	for _, bad := range []string{
+		"servers: [{name: a, url: 'https://:8384'}]",
+		"servers: [{name: a, url: 'https://\u00a0nas:8384'}]",
+		"servers: [{name: a, url: 'https://nas\u00a0:8384'}]",
+		"servers: [{name: a, url: 'https://'}]",
+		"servers: [{name: a, url: 'https://10.0.0.1:8384', gui_url: 'https://:8384'}]",
+		"public_url: 'https://:8080'",
+		"public_url: 'https://\u00a0sw.lan'",
+	} {
+		if _, err := ParseYAML([]byte(bad + "\n")); err == nil {
+			t.Errorf("accepted: %q", bad)
+		}
+	}
+	for _, ok := range []string{
+		"servers: [{name: a, url: 'https://[::1]:8384'}]",
+		"servers: [{name: a, url: 'https://nas.lan'}]",
+		"servers: [{name: a, url: 'https://10.0.0.1:8384/st'}]",
+	} {
+		if _, err := ParseYAML([]byte(ok + "\n")); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+}
+
 func TestStructureHelpers(t *testing.T) {
 	c, _ := ParseYAML([]byte(ivarYAML))
 	cs, err := c.Structure.Compile()
