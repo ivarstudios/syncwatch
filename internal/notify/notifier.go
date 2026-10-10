@@ -310,23 +310,24 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		return err
 	}
 	engine.SortRecords(pend)
-	hist, err := n.st.HistoryBetween(start, end)
+	// Resolved findings that were due (open for their debounce) at some
+	// moment of the night and were never announced: also ones that opened
+	// before quiet hours, and ones that resolved after them but before this
+	// summary went out.
+	hist, err := n.st.HistoryBetween(start, now.Add(time.Second))
 	if err != nil {
 		return err
 	}
-	pendIDs := map[string]bool{}
-	for _, r := range pend {
-		pendIDs[r.ID] = true
-	}
 	var blips []store.HistoryEntry
 	for _, h := range hist {
-		if !h.Urgent || h.ResolvedAt.IsZero() || pendIDs[h.FindingID] {
+		if !h.Urgent || h.ResolvedAt.IsZero() {
 			continue
 		}
-		if h.OpenedAt.Before(start) || !h.ResolvedAt.Before(end.Add(time.Second)) {
+		dueAt := h.OpenedAt.Add(cfg.Debounce(h.Check))
+		if !dueAt.Before(end) || h.ResolvedAt.Before(dueAt) {
 			continue
 		}
-		if h.ResolvedAt.Sub(h.OpenedAt) < cfg.Debounce(h.Check) {
+		if n.announced(h) {
 			continue
 		}
 		blips = append(blips, h)
@@ -341,6 +342,17 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		n.src.MarkResolvedNotified(ids(pend), now)
 	}
 	return n.st.SetSetting(keyOvernight, marker)
+}
+
+// announced reports whether an occurrence of a finding was pinged: its
+// record was pinged before the occurrence resolved. A re-open that carried
+// PingedAt over counts as the same, already announced problem.
+func (n *Notifier) announced(h store.HistoryEntry) bool {
+	r, err := n.st.Record(h.FindingID)
+	if err != nil || r == nil || r.PingedAt.IsZero() {
+		return false
+	}
+	return !r.PingedAt.After(h.ResolvedAt)
 }
 
 func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.View, local, now time.Time) error {

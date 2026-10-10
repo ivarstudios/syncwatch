@@ -610,3 +610,32 @@ func TestDiscordPayload(t *testing.T) {
 		t.Fatal(escapeMD("a*b_@everyone"))
 	}
 }
+
+// An urgent finding that opens just before quiet hours, becomes due inside
+// them and resolves before they end was never pinged: the overnight summary
+// must list it.
+func TestOvernightListsDueBeforeQuietResolvedDuring(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 21, 58), "AKKA")
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 21, 59))
+	r.at(local(2026, 10, 6, 22, 10)) // due at 22:03, inside quiet hours
+	r.setDown("AKKA", false)
+	r.at(local(2026, 10, 6, 23, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent during quiet hours: %s", m[0].Title)
+	}
+	r.at(local(2026, 10, 7, 7, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindOvernight || msgs[0].Mention {
+		t.Fatalf("overnight summary: %+v", msgs)
+	}
+	lines := msgs[0].Sections[2].Lines
+	if len(lines) != 1 || !strings.Contains(lines[0], "AKKA") || !strings.Contains(lines[0], "(21:58–23:00)") {
+		t.Fatalf("opened-and-resolved section: %+v", msgs[0].Sections)
+	}
+	r.at(local(2026, 10, 7, 8, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("follow-up for a resolved finding: %s", m[0].Title)
+	}
+}
