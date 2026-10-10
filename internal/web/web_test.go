@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -547,5 +548,35 @@ func TestLoginRedirectStaysOnSite(t *testing.T) {
 	r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}, "next": {"/\t/evil.example"}})
 	if r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/" {
 		t.Fatalf("login redirect: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+}
+
+// The setup token is logged at WARN. When the log level hides warnings it
+// is printed to stderr as well, since the first start can't finish without it.
+func TestSetupTokenPrintedWhenLogHidesWarnings(t *testing.T) {
+	e := newEnv(t, twoServers)
+	var logBuf, errBuf bytes.Buffer
+	e.web.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+	e.web.LogSetupToken(&errBuf)
+	tok := e.web.SetupToken()
+	if tok == "" || !strings.Contains(errBuf.String(), tok) || logBuf.Len() != 0 {
+		t.Fatalf("log level error: stderr %q, log %q", errBuf.String(), logBuf.String())
+	}
+	errBuf.Reset()
+	e.web.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+	e.web.LogSetupToken(&errBuf)
+	if !strings.Contains(logBuf.String(), tok) || errBuf.Len() != 0 {
+		t.Fatalf("log level info: stderr %q, log %q", errBuf.String(), logBuf.String())
+	}
+	// Nothing once an admin password exists, or in proxy mode.
+	logBuf.Reset()
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	e.web.LogSetupToken(&errBuf)
+	e2 := newEnv(t, twoServers+"access: {mode: proxy}\n")
+	e2.web.log = e.web.log
+	e2.web.LogSetupToken(&errBuf)
+	if logBuf.Len() != 0 || errBuf.Len() != 0 {
+		t.Fatalf("admin set or proxy mode: stderr %q, log %q", errBuf.String(), logBuf.String())
 	}
 }

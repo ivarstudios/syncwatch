@@ -9,6 +9,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -90,6 +91,21 @@ func (s *Server) SetupToken() string {
 		s.setupToken = randomToken(18)
 	}
 	return s.setupToken
+}
+
+// LogSetupToken logs the setup token while no admin password is set in
+// built-in mode. When the log level hides warnings the line goes to stderr
+// as well: the first start can't be finished without it.
+func (s *Server) LogSetupToken(stderr io.Writer) {
+	tok := s.SetupToken()
+	if tok == "" || s.cfg.Get().Access.Mode != config.AccessBuiltin {
+		return
+	}
+	const msg = "no admin password is set yet: open the dashboard and enter this one-time setup token"
+	s.log.Warn(msg, "setup_token", tok)
+	if !s.log.Enabled(context.Background(), slog.LevelWarn) {
+		fmt.Fprintf(stderr, "syncwatch: %s: %s\n", msg, tok)
+	}
 }
 
 func (s *Server) adminConfigured() bool {
