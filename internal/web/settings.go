@@ -451,9 +451,6 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 	}
 	c := s.cfg.Get().Clone()
 	c.Structure, c.Shares = doc.Structure, doc.Shares
-	if c.Structure.IgnoreDirs == nil {
-		c.Structure.IgnoreDirs = []string{}
-	}
 	s.save(w, r, c, "structure", "Structure rules saved. The next structure scan uses them.")
 }
 

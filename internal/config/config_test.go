@@ -358,6 +358,36 @@ func TestServerIDs(t *testing.T) {
 	}
 }
 
+// An omitted ignore_dirs means the defaults; an explicit empty list means
+// none. Both through YAML and through the stored JSON form.
+func TestIgnoreDirsNilVersusEmpty(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	c, err := ParseYAML([]byte(srv + "structure: {project_pattern: '^LIVE-'}\n"))
+	if err != nil || !reflect.DeepEqual(c.Structure.IgnoreDirs, DefaultIgnoreDirs) {
+		t.Fatalf("omitted: %q %v", c.Structure.IgnoreDirs, err)
+	}
+	e, err := ParseYAML([]byte(srv + "structure: {ignore_dirs: []}\n"))
+	if err != nil || e.Structure.IgnoreDirs == nil || len(e.Structure.IgnoreDirs) != 0 {
+		t.Fatalf("explicit empty: %#v %v", e.Structure.IgnoreDirs, err)
+	}
+	for _, in := range []*Config{c, e} {
+		b, _ := json.Marshal(in)
+		var back Config
+		if err := json.Unmarshal(b, &back); err != nil {
+			t.Fatal(err)
+		}
+		back.ApplyDefaults()
+		if !reflect.DeepEqual(back.Structure.IgnoreDirs, in.Structure.IgnoreDirs) || !reflect.DeepEqual(in.Clone().Structure.IgnoreDirs, in.Structure.IgnoreDirs) {
+			t.Fatalf("round trip changed ignore_dirs: %q -> %q, clone %q", in.Structure.IgnoreDirs, back.Structure.IgnoreDirs, in.Clone().Structure.IgnoreDirs)
+		}
+	}
+	var nilCfg Config
+	nilCfg.ApplyDefaults()
+	if !reflect.DeepEqual(nilCfg.Structure.IgnoreDirs, DefaultIgnoreDirs) {
+		t.Fatal("nil should get the defaults")
+	}
+}
+
 func TestStructureHelpers(t *testing.T) {
 	c, _ := ParseYAML([]byte(ivarYAML))
 	cs, err := c.Structure.Compile()
