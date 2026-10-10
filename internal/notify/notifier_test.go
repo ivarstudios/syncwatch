@@ -413,7 +413,7 @@ func TestWeeklyReport(t *testing.T) {
 	if weekly == nil {
 		t.Fatal("no weekly report")
 	}
-	if !strings.Contains(weekly.Summary, "1/2 servers OK (SOL down)") || !strings.Contains(weekly.Summary, "1 errors") {
+	if !strings.Contains(weekly.Summary, "1/2 servers OK (SOL down)") || !strings.Contains(weekly.Summary, "1 error,") {
 		t.Fatalf("health line: %s", weekly.Summary)
 	}
 	if len(weekly.Sections[2].Lines) != 1 {
@@ -677,5 +677,27 @@ func TestResolveHysteresisDuringFlapping(t *testing.T) {
 	r.at(local(2026, 10, 6, 12, 15))
 	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
 		t.Fatalf("new outage after a settled resolution: %+v", msgs)
+	}
+}
+
+// The health line reads correctly with one of something.
+func TestHealthLineWording(t *testing.T) {
+	now := local(2026, 10, 6, 10, 0)
+	r := newRig(t, now, "AKKA")
+	r.at(now)
+	want := "1 server OK · 0 PCs, 0 offline > 7 days · 0 errors, 0 warnings, 0 suggestions · 0 snoozed"
+	if got := HealthLine(r.n.cfg.Get(), r.eng.View(), now); got != want {
+		t.Fatalf("health line:\n got %s\nwant %s", got, want)
+	}
+	r = newRig(t, now, "AKKA", "SOL")
+	r.hub.Update("akka", func(s *model.Server) {
+		s.Devices = map[string]*model.Device{"PC1": {ID: "PC1", Name: "pc1", LastSeen: now.Add(-10 * 24 * time.Hour)}}
+	})
+	r.setDown("SOL", true)
+	r.at(now)
+	// The PC that has been away for 10 days is also a warning finding.
+	want = "1/2 servers OK (SOL down) · 1 PC, 1 offline > 7 days · 1 error, 1 warning, 0 suggestions · 0 snoozed"
+	if got := HealthLine(r.n.cfg.Get(), r.eng.View(), now); got != want {
+		t.Fatalf("health line:\n got %s\nwant %s", got, want)
 	}
 }

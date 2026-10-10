@@ -802,7 +802,7 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			}
 		}
 		if up == total {
-			parts = append(parts, fmt.Sprintf("%d servers OK", total))
+			parts = append(parts, plural(total, "server")+" OK")
 		} else {
 			parts = append(parts, fmt.Sprintf("%d/%d servers OK (%s down)", up, total, strings.Join(down, ", ")))
 		}
@@ -816,7 +816,7 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 				offline++
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%d PCs, %d offline > %s", pcs, offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
+		parts = append(parts, fmt.Sprintf("%s, %d offline > %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
 	}
 	var errs, warns, infos, snoozed int
 	for _, r := range v.Open {
@@ -833,9 +833,17 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			infos++
 		}
 	}
-	parts = append(parts, fmt.Sprintf("%d errors, %d warnings, %d suggestions", errs, warns, infos))
+	parts = append(parts, plural(errs, "error")+", "+plural(warns, "warning")+", "+plural(infos, "suggestion"))
 	parts = append(parts, fmt.Sprintf("%d snoozed", snoozed))
 	return strings.Join(parts, " · ")
+}
+
+// plural writes a count with its noun: "1 server", "2 servers".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // WeeklyMessage is the weekly report.
