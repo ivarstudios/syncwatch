@@ -102,3 +102,45 @@ func TestSyncStatus(t *testing.T) {
 		}
 	}
 }
+
+// The hub keeps the completion that a device had in its last connection
+// with a valid state, for H5 while the device is away.
+func TestLastCompletionRemembered(t *testing.T) {
+	h := NewHub(nil)
+	h.SetServers([]*Server{{ID: "a"}})
+	report := func(connected bool, state string, percent float64) {
+		h.Update("a", func(s *Server) {
+			s.Folders = map[string]*Folder{"f": {ID: "f", SharedWith: []string{"PC"}, Completion: map[string]*Completion{"PC": {Percent: percent, NeedItems: 3, RemoteState: state}}}}
+			s.Connections["PC"] = &Connection{Connected: connected}
+		})
+	}
+	last := func() (Completion, bool) { return h.Snapshot().Server("a").LastCompletion("f", "PC") }
+	report(true, "unknown", 0) // just connected, the state is not known yet
+	if _, ok := last(); ok {
+		t.Fatal("a completion without a valid state is not remembered")
+	}
+	report(true, "valid", 99.5)
+	// Disconnected: Syncthing reports "unknown" and another percentage.
+	report(false, "unknown", 40)
+	if c, ok := last(); !ok || c.Percent != 99.5 || c.NeedItems != 3 {
+		t.Fatalf("after the disconnect: %+v %v", c, ok)
+	}
+	// A valid state from a server that has lost the connection is old data.
+	report(false, "valid", 10)
+	if c, _ := last(); c.Percent != 99.5 {
+		t.Fatalf("remembered without a connection: %+v", c)
+	}
+	snap := h.Snapshot()
+	snap.Server("a").LastCompletions["f"]["PC"] = Completion{Percent: 1}
+	if c, _ := last(); c.Percent != 99.5 {
+		t.Fatalf("the snapshot shares state with the hub: %+v", c)
+	}
+	report(true, "valid", 100)
+	if c, _ := last(); c.Percent != 100 {
+		t.Fatalf("a new report while connected: %+v", c)
+	}
+	h.Update("a", func(s *Server) { s.Folders["f"].SharedWith = nil })
+	if _, ok := last(); ok {
+		t.Fatal("an unshared folder is still remembered")
+	}
+}

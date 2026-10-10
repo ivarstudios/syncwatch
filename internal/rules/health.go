@@ -178,28 +178,53 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			}
 			dn := e.devName(dev)
 			conn := sv.Connections[dev]
-			connected := conn != nil && conn.Connected
+			// The connections of a server that cannot be reached are old data.
+			connected := sv.Status == model.StatusUp && conn != nil && conn.Connected
+			state := sv.RemoteState(f.ID, dev)
 			switch {
-			case sv.RemoteState(f.ID, dev) == "paused" && !e.Snapshot.IsServerDevice(dev):
+			case state == "paused" && !e.Snapshot.IsServerDevice(dev):
 				e.add("H6", sv.ID, "remote-paused:"+f.ID+":"+dev, model.Finding{
 					Subject:     fmt.Sprintf("%s on %s", name, dn),
 					Message:     fmt.Sprintf("Device %s paused folder %s (seen from %s)", dn, name, sv.Name),
 					MinDuration: e.Config.Thresholds.Paused.D(),
 					Details:     []model.Detail{detail("Folder ID", f.ID), detail("Device ID", dev)},
 				})
-			case connected && c.RemoteState == "valid" && c.Percent < 100:
-				e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
-					Subject:     fmt.Sprintf("%s on %s", name, dn),
-					Message:     fmt.Sprintf("Device %s is stuck at %.0f%% of folder %s for more than %s (seen from %s)", dn, c.Percent, name, Ago(e.Config.Thresholds.StuckSync.D()), sv.Name),
-					MinDuration: e.Config.Thresholds.StuckSync.D(),
-					Details: []model.Detail{
-						detail("Folder ID", f.ID), detail("Device ID", dev),
-						detail("Completion", fmt.Sprintf("%.1f%%", c.Percent)), detail("Items left", fmt.Sprint(c.NeedItems)),
-					},
-				})
+			case connected && c.RemoteState == "valid":
+				if c.Percent < 100 {
+					e.stuckDevice(sv, f, dev, *c, false)
+				}
+			case state == "valid" || state == "":
+				// The device is away, or Syncthing does not report its state
+				// yet: H5 holds the view of the last connection, so that the
+				// time away neither counts as stuck nor ends the finding.
+				// After a restart of syncwatch there is no such view; then
+				// what Syncthing reports now must do.
+				last, ok := sv.LastCompletion(f.ID, dev)
+				if !ok {
+					last = *c
+				}
+				if last.Percent < 100 {
+					e.stuckDevice(sv, f, dev, last, true)
+				}
 			}
 		}
 	}
+}
+
+// H5 for a device. held: the device is away and c is its last known
+// completion (see model.Finding.Held).
+func (e *evaluator) stuckDevice(sv *model.Server, f *model.Folder, dev string, c model.Completion, held bool) {
+	name, dn := f.DisplayName(), e.devName(dev)
+	e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
+		Subject:     fmt.Sprintf("%s on %s", name, dn),
+		Message:     fmt.Sprintf("Device %s is stuck at %.0f%% of folder %s for more than %s (seen from %s)", dn, c.Percent, name, Ago(e.Config.Thresholds.StuckSync.D()), sv.Name),
+		MinDuration: e.Config.Thresholds.StuckSync.D(),
+		Held:        held,
+		Details: []model.Detail{
+			detail("Folder ID", f.ID), detail("Device ID", dev),
+			detail("Completion", fmt.Sprintf("%.1f%%", c.Percent)), detail("Items left", fmt.Sprint(c.NeedItems)),
+		},
+	})
 }
 
 // H6 for devices paused in a server's configuration.

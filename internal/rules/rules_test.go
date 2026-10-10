@@ -674,3 +674,41 @@ func TestDetectShares(t *testing.T) {
 		t.Fatalf("exclude: %+v", got)
 	}
 }
+
+// H5 for a device that is away is made from the completion of its last
+// connection and marked held; the engine then keeps it as it is.
+func TestStuckDeviceHeldWhileAway(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now}
+	f := folder("s", "LIVE-STUCK", "/s/AKKA-LIVE-1SOURCE/LIVE-STUCK", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 7, RemoteState: "unknown"}
+	akka.Folders["s"] = f
+	akka.RemoteStates = map[string]map[string]string{"s": {pcID: "valid"}}
+	akka.LastCompletions = map[string]map[string]model.Completion{"s": {pcID: {Percent: 99, NeedItems: 3, RemoteState: "valid"}}}
+	h5 := mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS")
+	if !h5.Held || !strings.Contains(h5.Message, "99%") || h5.DetailValue("Items left") != "3" {
+		t.Fatalf("away: %+v", h5)
+	}
+	// Connected and valid: judged from live data.
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f.Completion[pcID].RemoteState = "valid"
+	if h5 = mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS"); h5.Held || !strings.Contains(h5.Message, "40%") {
+		t.Fatalf("connected: %+v", h5)
+	}
+	// The connections of a server that is down are old data.
+	akka.Status = model.StatusDown
+	if h5 = mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS"); !h5.Held {
+		t.Fatalf("server down: %+v", h5)
+	}
+	// Synced in its last connection: nothing to hold.
+	akka.Status = model.StatusUp
+	akka.Connections[pcID].Connected = false
+	akka.LastCompletions["s"][pcID] = model.Completion{Percent: 100, RemoteState: "valid"}
+	mustNot(t, run(t, c, akka), "H5", "MORTIS")
+	// Paused or not shared back in its last connection: H6 or C3, not H5.
+	akka.LastCompletions["s"][pcID] = model.Completion{Percent: 50, RemoteState: "valid"}
+	akka.RemoteStates["s"][pcID] = "notSharing"
+	f.Completion[pcID].RemoteState = "unknown"
+	mustNot(t, run(t, c, akka), "H5", "MORTIS")
+}
