@@ -109,14 +109,12 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 			}
 		})
 	case "PendingDevicesChanged", "PendingFoldersChanged":
-		c.refreshPending(ctx)
+		c.pendingDue = true // re-read once per batch, by applyBatch
 	case "ConfigSaved":
 		// The payload is never used: it contains the GUI credentials and is
-		// stripped by the client. Re-read the folder and device config instead.
-		if err := c.refreshConfig(ctx); err != nil {
-			c.log.Warn("re-reading config after ConfigSaved", "err", shortErr(err))
-			c.FullCheckNow()
-		}
+		// stripped by the client. The folder and device config is re-read
+		// instead, once per batch, by applyBatch.
+		c.configDue = true
 	case "LocalChangeDetected", "RemoteChangeDetected":
 		var d stclient.DiskChangeData
 		if json.Unmarshal(e.Data, &d) != nil {
@@ -141,14 +139,14 @@ func (c *Collector) withFolder(id string, fn func(*model.Folder)) {
 	})
 }
 
-func (c *Collector) refreshPending(ctx context.Context) {
+func (c *Collector) refreshPending(ctx context.Context) error {
 	pdev, err := c.client.PendingDevices(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	pfold, err := c.client.PendingFolders(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	var devs []model.PendingDevice
 	for id, p := range pdev {
@@ -161,6 +159,7 @@ func (c *Collector) refreshPending(ctx context.Context) {
 		}
 	}
 	c.update(func(s *model.Server) { s.PendingDevices, s.PendingFolders = devs, folds })
+	return nil
 }
 
 // diskChange catches nested project folders inside synced folders at any

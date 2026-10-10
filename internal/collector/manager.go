@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
@@ -24,6 +25,7 @@ type Manager struct {
 	ctx     context.Context
 	running map[string]*running
 	lastCol config.Collector
+	keyErr  bool // the last Sync couldn't read some server's API key
 }
 
 type running struct {
@@ -39,18 +41,37 @@ func NewManager(hub *model.Hub, st *store.Store, cfg *config.Holder, log *slog.L
 	return &Manager{hub: hub, st: st, cfg: cfg, log: log, running: map[string]*running{}}
 }
 
+// keyRetry is how often Sync runs on its own while a server's API key can't
+// be read (a database error, a secret key being restored), so monitoring
+// resumes without a settings save.
+var keyRetry = 5 * time.Minute
+
 // Run starts collectors and keeps them in line with the configuration until ctx ends.
 func (m *Manager) Run(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
 	m.mu.Unlock()
 	m.Sync()
-	<-ctx.Done()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, r := range m.running {
-		r.cancel()
-		<-r.done
+	t := time.NewTicker(keyRetry)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			for _, r := range m.running {
+				r.cancel()
+				<-r.done
+			}
+			return
+		case <-t.C:
+			m.mu.Lock()
+			retry := m.keyErr
+			m.mu.Unlock()
+			if retry {
+				m.Sync()
+			}
+		}
 	}
 }
 
@@ -76,10 +97,14 @@ func (m *Manager) Sync() {
 	}
 	m.hub.SetServers(hubServers)
 
+	m.keyErr = false
 	for id, r := range m.running {
-		key, bound, _ := m.st.ServerKey(id)
 		w, ok := want[id]
-		if !ok || colChanged || w.URL != r.conf.URL || key != r.keyRev || !config.SameEndpoint(bound, w.URL) {
+		key, bound, err := m.st.ServerKey(id)
+		// A key that can't be read now hasn't changed as far as anyone
+		// knows; the running collector keeps the one it started with.
+		keyChanged := err == nil && (key != r.keyRev || !config.SameEndpoint(bound, w.URL))
+		if !ok || colChanged || w.URL != r.conf.URL || keyChanged {
 			r.cancel()
 			<-r.done
 			delete(m.running, id)
@@ -91,7 +116,12 @@ func (m *Manager) Sync() {
 		}
 		key, bound, err := m.st.ServerKey(id)
 		if err != nil {
-			m.log.Error("reading API key", "server", s.Name, "err", err)
+			m.log.Error("reading API key; trying again in "+keyRetry.String(), "server", s.Name, "err", err)
+			m.keyErr = true
+			m.hub.Update(id, func(sv *model.Server) {
+				sv.Status = model.StatusDown
+				sv.LastError = "API key can't be read (secret key changed?)"
+			})
 			continue
 		}
 		if key == "" {

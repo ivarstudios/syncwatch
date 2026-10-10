@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -28,18 +27,23 @@ type Collector struct {
 	log    *slog.Logger
 	client *stclient.Client
 
-	wake        chan struct{}
-	fullNow     chan struct{}
-	lastEventID int64
-	startTime   time.Time
-	failures    int
-	firstFail   time.Time
-	lastFull    time.Time
-	needFull    bool // a full check was started and hasn't completed
-	lastScan    time.Time
-	lastBase    time.Time
-	scanMu      sync.Mutex
-	scanning    bool
+	wake          chan struct{}
+	fullNow       chan struct{}
+	lastEventID   int64
+	startTime     time.Time
+	failures      int
+	firstFail     time.Time
+	certFails     int       // failed sessions in a row because the certificate changed
+	certWarned    time.Time // when the certificate change was last logged at WARN
+	lastFull      time.Time
+	needFull      bool // a full check was started and hasn't completed
+	configDue     bool // a ConfigSaved event in the current batch; see applyBatch
+	pendingDue    bool // a Pending*Changed event in the current batch
+	pendingWarned bool // the pending re-read failed and was logged this session
+	lastScan      time.Time
+	lastBase      time.Time
+	scanMu        sync.Mutex
+	scanning      bool
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
@@ -91,27 +95,53 @@ func (c *Collector) FullCheckNow() {
 
 func (c *Collector) update(fn func(*model.Server)) { c.hub.Update(c.id, fn) }
 
+// Backoff between failed sessions: backoffStep per failure in a row, up to
+// backoffMax. After a certificate change nothing changes until an admin
+// accepts it (which wakes the collector), so those retries slow down to
+// one every certBackoffMax.
+var (
+	backoffStep    = 10 * time.Second
+	backoffMax     = time.Minute
+	certBackoffMax = 5 * time.Minute
+)
+
 // Run loops until ctx is cancelled.
 func (c *Collector) Run(ctx context.Context) {
 	defer c.client.Close()
 	go c.trafficLoop(ctx)
 	for ctx.Err() == nil {
-		err := c.session(ctx)
+		// The session's context also bounds the structure scan it starts,
+		// so a scan stops when the server goes down.
+		sctx, cancel := context.WithCancel(ctx)
+		err := c.session(sctx)
+		cancel()
 		if ctx.Err() != nil {
 			return
 		}
 		c.failed(err)
-		backoff := time.Duration(math.Min(60, float64(10*c.failures))) * time.Second
-		if backoff < 10*time.Second {
-			backoff = 10 * time.Second
+		// A wake-up that arrived while the session was running (an
+		// in-session FullCheckNow, a pin reset while the server was up) is
+		// stale: it must not turn this backoff into an immediate retry.
+		select {
+		case <-c.wake:
+		default:
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-c.wake:
-		case <-time.After(backoff):
+		case <-time.After(c.backoff(err)):
 		}
 	}
+}
+
+// backoff is the wait before the next session after a failed one.
+func (c *Collector) backoff(err error) time.Duration {
+	n, limit := c.failures, backoffMax
+	if _, ok := stclient.IsCertChanged(err); ok {
+		n, limit = c.certFails, certBackoffMax
+	}
+	return min(max(time.Duration(n)*backoffStep, backoffStep), limit)
 }
 
 // session connects, runs a full check and then follows events (or polls)
@@ -132,6 +162,7 @@ func (c *Collector) session(ctx context.Context) error {
 	cfg := c.cfg.Get().Collector
 	mode := cfg.Mode
 	c.update(func(s *model.Server) { s.Mode = mode })
+	c.pendingWarned = false
 	// After a dropped connection (a VPN or firewall closing an idle
 	// long-poll, a short outage) the state from the last full check is still
 	// current if Syncthing didn't restart: Syncthing keeps buffering events
@@ -149,12 +180,8 @@ func (c *Collector) session(ctx context.Context) error {
 		}
 		if recent && time.Since(c.lastFull) < cfg.FullCheckInterval.D() && continues(evs, c.lastEventID) {
 			c.log.Debug("reconnected; resuming events without a full re-check", "since", c.lastEventID)
-			for _, e := range evs {
-				if e.ID > c.lastEventID {
-					c.lastEventID = e.ID
-					c.apply(ctx, e)
-				}
-			}
+			c.applyBatch(ctx, evs)
+			c.readConflicts(ctx, status.StartTime)
 			c.succeeded()
 			c.maybeScan(ctx)
 			return c.eventLoop(ctx)
@@ -166,6 +193,7 @@ func (c *Collector) session(ctx context.Context) error {
 		}
 	} else if recent && time.Since(c.lastFull) < cfg.PollInterval.D() {
 		// Polled mode: the next full check is due at lastFull + poll_interval anyway.
+		c.readConflicts(ctx, status.StartTime)
 		c.succeeded()
 		return c.pollLoop(ctx)
 	}
@@ -195,6 +223,8 @@ func continues(evs []stclient.Event, last int64) bool {
 func (c *Collector) succeeded() {
 	c.failures = 0
 	c.firstFail = time.Time{}
+	c.certFails = 0
+	c.certWarned = time.Time{}
 	cert := c.client.LastCert()
 	c.update(func(s *model.Server) {
 		s.Status = model.StatusUp
@@ -212,14 +242,23 @@ func (c *Collector) failed(err error) {
 	}
 	now := time.Now()
 	if ce, ok := stclient.IsCertChanged(err); ok {
-		c.log.Warn("certificate changed; not connecting until it is accepted", "old", stclient.ShortFP(ce.Old), "new", stclient.ShortFP(ce.New))
+		c.certFails++
+		fresh := false
 		c.update(func(s *model.Server) {
 			if s.CertChange == nil || s.CertChange.New != ce.New {
 				s.CertChange = &model.CertChange{Old: ce.Old, New: ce.New, NotAfter: ce.NotAfter, SeenAt: now}
+				fresh = true
 			}
 			s.Status = model.StatusCertChanged
 			s.LastError = err.Error()
 		})
+		// Nothing changes until an admin accepts the certificate, so the
+		// warning is repeated at most once an hour.
+		level := slog.LevelDebug
+		if fresh || now.Sub(c.certWarned) >= time.Hour {
+			level, c.certWarned = slog.LevelWarn, now
+		}
+		c.log.Log(context.Background(), level, "certificate changed; not connecting until it is accepted", "old", stclient.ShortFP(ce.Old), "new", stclient.ShortFP(ce.New))
 		return
 	}
 	if c.failures == 0 {
@@ -238,8 +277,10 @@ func (c *Collector) failed(err error) {
 	})
 }
 
+// shortErr turns an error into a short text for the dashboard, the API and
+// notifications: HTTP errors as they are, the common network failures as a
+// phrase, anything else trimmed.
 func shortErr(err error) string {
-	s := err.Error()
 	var se *stclient.StatusError
 	if errors.As(err, &se) {
 		return se.Error()
@@ -247,15 +288,40 @@ func shortErr(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timed out"
 	}
-	for _, p := range []string{"connection refused", "no route to host", "i/o timeout", "connection reset", "host is unreachable", "network is unreachable", "No connection could be made", "actively refused"} {
-		if strings.Contains(s, p) {
-			return p
+	s := err.Error()
+	for _, p := range netErrs {
+		if strings.Contains(s, p.match) {
+			return p.text
 		}
 	}
+	// The client strips the "Get <url>" prefix of transport errors, which
+	// can leave a bare ": EOF".
+	s = strings.TrimLeft(s, ": ")
 	if len(s) > 200 {
 		s = s[:200]
 	}
 	return s
+}
+
+// netErrs maps the wording of Go's network errors (Linux and Windows) to
+// short phrases. The first match wins.
+var netErrs = []struct{ match, text string }{
+	{"connection refused", "connection refused"},
+	{"actively refused", "connection refused"},
+	{"No connection could be made", "connection refused"},
+	{"no route to host", "no route to host"},
+	{"host is unreachable", "no route to host"},
+	{"network is unreachable", "network unreachable"},
+	{"TLS handshake timeout", "timed out"},
+	{"i/o timeout", "timed out"},
+	{"timed out", "timed out"},
+	{"did not properly respond", "timed out"},
+	{"connection reset", "connection reset"},
+	{"forcibly closed", "connection reset"},
+	{"broken pipe", "connection closed early"},
+	{"EOF", "connection closed early"},
+	{"no such host", "host name not found"},
+	{"server misbehaving", "host name lookup failed"},
 }
 
 func (c *Collector) eventLoop(ctx context.Context) error {
@@ -297,32 +363,51 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 			c.log.Info("missed events; running a full re-check", "from", c.lastEventID, "to", evs[0].ID)
 			c.FullCheckNow()
 		}
-		for _, e := range evs {
-			if e.ID <= c.lastEventID {
-				continue
-			}
-			c.lastEventID = e.ID
-			c.apply(ctx, e)
-		}
+		c.applyBatch(ctx, evs)
 		c.update(func(s *model.Server) { s.LastEvent = now })
 	}
 	return ctx.Err()
 }
 
+// applyBatch applies the events of one long-poll answer. The re-reads some
+// of them ask for (ConfigSaved, Pending*Changed) are done once per batch
+// afterwards, not once per event: five ConfigSaved in a batch are one
+// config re-read, while no long-poll is open.
+func (c *Collector) applyBatch(ctx context.Context, evs []stclient.Event) {
+	for _, e := range evs {
+		if e.ID <= c.lastEventID {
+			continue
+		}
+		c.lastEventID = e.ID
+		c.apply(ctx, e)
+	}
+	if c.configDue {
+		c.configDue = false
+		if err := c.refreshConfig(ctx); err != nil {
+			c.log.Warn("re-reading config after ConfigSaved", "err", shortErr(err))
+			c.FullCheckNow()
+		}
+	}
+	if c.pendingDue {
+		c.pendingDue = false
+		if err := c.refreshPending(ctx); err != nil && !c.pendingWarned {
+			// Once per session: the next full check reads the lists anyway.
+			c.pendingWarned = true
+			c.log.Warn("re-reading pending devices and folders", "err", shortErr(err))
+		}
+	}
+}
+
 func (c *Collector) pollLoop(ctx context.Context) error {
 	for ctx.Err() == nil {
 		cfg := c.cfg.Get().Collector
-		wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
-		if w := time.Until(c.lastScan.Add(cfg.StructureInterval.D())); w < wait {
-			wait = w
-		}
 		forced := false
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.fullNow:
 			forced = true
-		case <-time.After(wait):
+		case <-time.After(c.pollWait(cfg)):
 		}
 		if forced || time.Since(c.lastFull) >= cfg.PollInterval.D() {
 			if err := c.fullCheck(ctx); err != nil {
@@ -332,6 +417,22 @@ func (c *Collector) pollLoop(ctx context.Context) error {
 		c.maybeScan(ctx)
 	}
 	return ctx.Err()
+}
+
+// pollWait is how long the polled mode sleeps: until the next full check or
+// the next structure scan, whichever comes first, but at least a second. A
+// scan that is still running when the next one is due doesn't count,
+// because maybeScan does nothing while one runs: the loop waits for the
+// next poll instead of spinning until the scan ends.
+func (c *Collector) pollWait(cfg config.Collector) time.Duration {
+	wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
+	c.scanMu.Lock()
+	scanning := c.scanning
+	c.scanMu.Unlock()
+	if w := time.Until(c.lastScan.Add(cfg.StructureInterval.D())); !scanning && w < wait {
+		wait = w
+	}
+	return max(wait, time.Second)
 }
 
 // fullCheck reads everything from the server and replaces its state.
@@ -346,6 +447,15 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	status, err := cl.SystemStatus(ctx)
 	if err != nil {
 		return err
+	}
+	if !status.StartTime.Equal(c.startTime) {
+		// Syncthing restarted between two requests without breaking one:
+		// its event IDs start over, so the stream is followed from 0 again.
+		if !c.startTime.IsZero() {
+			c.log.Info("Syncthing restarted; re-reading everything", "startTime", status.StartTime)
+		}
+		c.startTime = status.StartTime
+		c.lastEventID = 0
 	}
 	version, err := cl.SystemVersion(ctx)
 	if err != nil {
@@ -415,16 +525,42 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			}
 		}()
 	}
+	// A per-folder request answered with an HTTP error (other than 401/403,
+	// which the key gets everywhere) is that folder's problem, not the
+	// server's: the folder shows the error and the check goes on. The 404 a
+	// paused folder answers is normal and only logged. Transport errors and
+	// timeouts fail the check as above.
+	problems := map[string]string{} // by folder ID; applied after the parallel phase
+	folderErr := func(f *model.Folder, dev, what string, err error) error {
+		id := f.ID
+		if dev != "" {
+			id += "/" + model.ShortID(dev)
+		}
+		if serverLevel(err) {
+			return fmt.Errorf("%s %s: %w", what, id, err)
+		}
+		msg := shortErr(err)
+		if f.Paused || paused404(err) {
+			c.log.Debug(what+" unavailable", "folder", id, "err", msg)
+			return nil
+		}
+		c.log.Warn(what+" failed; the folder shows the error", "folder", id, "err", msg)
+		if dev != "" {
+			msg += " (device " + model.ShortID(dev) + ")"
+		}
+		mu.Lock()
+		if _, ok := problems[f.ID]; !ok {
+			problems[f.ID] = msg
+		}
+		mu.Unlock()
+		return nil
+	}
 	for _, f := range newFolders {
 		f := f
 		run(func() error {
 			ds, err := cl.DBStatus(fctx, f.ID)
 			if err != nil {
-				if perFolder(err) {
-					c.log.Debug("db/status unavailable for folder", "folder", f.ID, "err", shortErr(err))
-					return nil
-				}
-				return fmt.Errorf("db/status %s: %w", f.ID, err)
+				return folderErr(f, "", "db/status", err)
 			}
 			mu.Lock()
 			applyDBStatus(f, ds)
@@ -438,10 +574,11 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			if ds.Errors > 0 || ds.PullErrors > 0 {
 				fe, err := cl.FolderErrors(fctx, f.ID, 5)
 				if err != nil {
-					if perFolder(err) {
-						return nil
+					if serverLevel(err) {
+						return fmt.Errorf("folder/errors %s: %w", f.ID, err)
 					}
-					return fmt.Errorf("folder/errors %s: %w", f.ID, err)
+					c.log.Debug("folder/errors unavailable", "folder", f.ID, "err", shortErr(err))
+					return nil
 				}
 				mu.Lock()
 				f.FileErrors = fileErrors(fe.Errors)
@@ -458,11 +595,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 			run(func() error {
 				comp, err := cl.Completion(fctx, f.ID, dev)
 				if err != nil {
-					if perFolder(err) {
-						c.log.Debug("completion unavailable", "folder", f.ID, "device", model.ShortID(dev), "err", shortErr(err))
-						return nil
-					}
-					return fmt.Errorf("completion %s/%s: %w", f.ID, model.ShortID(dev), err)
+					return folderErr(f, dev, "completion", err)
 				}
 				mu.Lock()
 				f.Completion[dev] = completionFrom(comp, time.Now())
@@ -478,13 +611,17 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	if firstErr != nil {
 		return firstErr
 	}
-
-	conflicts, err := cl.ConflictCounters(ctx)
-	if err != nil {
-		c.log.Warn("reading conflict counters from /metrics", "err", shortErr(err))
-	} else if err := c.st.RecordConflicts(c.id, status.StartTime.UTC().Format(time.RFC3339), conflicts, time.Now()); err != nil {
-		c.log.Warn("recording conflict counters", "err", err)
+	for id, msg := range problems {
+		f := newFolders[id]
+		if f.State == "" {
+			f.State = "unknown" // db/status didn't answer
+		}
+		if f.Error == "" {
+			f.Error = msg
+		}
 	}
+
+	c.readConflicts(ctx, status.StartTime)
 
 	newDevices := map[string]*model.Device{}
 	for _, d := range devices {
@@ -525,9 +662,6 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		s.Connections = newConns
 		s.PendingDevices = pendingDevices
 		s.PendingFolders = pendingFolders
-		if conflicts != nil {
-			s.Conflicts = conflicts
-		}
 		s.Loaded = true
 		s.LastFullCheck = now
 		s.LastContact = now
@@ -538,12 +672,45 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	return nil
 }
 
+// readConflicts reads the conflict counters from /metrics and records their
+// increase since the last reading (H10). Besides every full check it runs
+// at each session start, so a counter reset by a Syncthing restart is seen
+// sooner; the whole new value counts as new conflicts then. A failure only
+// costs this reading.
+func (c *Collector) readConflicts(ctx context.Context, startTime time.Time) {
+	conflicts, err := c.client.ConflictCounters(ctx)
+	if err != nil {
+		c.log.Warn("reading conflict counters from /metrics", "err", shortErr(err))
+		return
+	}
+	if err := c.st.RecordConflicts(c.id, startTime.UTC().Format(time.RFC3339), conflicts, time.Now()); err != nil {
+		c.log.Warn("recording conflict counters", "err", err)
+	}
+	c.update(func(s *model.Server) { s.Conflicts = conflicts })
+}
+
 // perFolder reports whether an error concerns only one folder or device
 // (e.g. 404 "folder is paused", or a folder removed since the config was
 // read), so the rest of the full check can go on.
 func perFolder(err error) bool {
 	var se *stclient.StatusError
 	return errors.As(err, &se) && se.Code >= 400 && se.Code < 500 && se.Code != 401 && se.Code != 403
+}
+
+// serverLevel reports whether an error from a per-folder request means the
+// server itself is in trouble: a transport error or timeout, or 401/403,
+// which the key gets on every request. Any other HTTP status concerns only
+// that folder or device.
+func serverLevel(err error) bool {
+	var se *stclient.StatusError
+	return !errors.As(err, &se) || se.Code == 401 || se.Code == 403
+}
+
+// paused404 reports whether err is the 404 "folder is paused" Syncthing
+// answers for a folder that was paused after the config was read.
+func paused404(err error) bool {
+	var se *stclient.StatusError
+	return errors.As(err, &se) && se.Code == 404 && strings.Contains(se.Body, "paused")
 }
 
 func folderFromConfig(fc stclient.FolderConfig, self string) *model.Folder {
