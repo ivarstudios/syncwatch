@@ -346,12 +346,12 @@ syncwatch is for direct access on the LAN, and it does not read `X-Forwarded-For
 
 Use proxy mode with the authentication of the proxy there, or accept the shared limit.
 
-The proxy must forward the original `Host` header of the browser. syncwatch refuses a form when the `Origin` of the browser does not match the host that received it. With an incorrect `Host`, each save fails with "cross-origin request refused". The forwarded host name must also be a known name: the host of `public_url` or a name in `SYNCWATCH_TLS_HOSTS` (see the [Host check](#https)). The proxy must also send `X-Forwarded-Proto`, then the cookies get the `Secure` flag over HTTPS. Caddy and Traefik do both by default. nginx needs:
+The proxy must forward the original `Host` header of the browser, with the port. syncwatch refuses a form when the `Origin` of the browser does not match the host and the port that received it. With an incorrect `Host`, the login and each save fail with "cross-origin request refused". The forwarded host name must also be a known name: the host of `public_url` or a name in `SYNCWATCH_TLS_HOSTS` (see the [Host check](#https)). The proxy must also send `X-Forwarded-Proto`, then the cookies get the `Secure` flag over HTTPS. Caddy and Traefik do both by default. nginx needs:
 
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;               # nginx sends the upstream address by default
+    proxy_set_header Host $http_host;          # the Host header of the browser, with the port ($host removes the port)
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
