@@ -220,3 +220,29 @@ func TestScanReappliesRulesToKeptEntries(t *testing.T) {
 		}
 	}
 }
+
+// Polled mode has no events to cover synced project folders, so every scan
+// walks them like a baseline does. Events mode leaves them to events between
+// baselines.
+func TestPolledScanWalksSyncedFolders(t *testing.T) {
+	for _, mode := range []string{config.ModeEvents, config.ModePolled} {
+		fake := newFakeST(t)
+		bl := &browseLog{}
+		c, _, _, stop := startCollector(t, bl.wrap(fake), "collector: {mode: "+mode+"}\n")
+		if err := c.scan(context.Background(), false); err != nil {
+			t.Fatal(err)
+		}
+		stop()
+		synced := bl.count("LIVE-BETA-1SOURCE") + bl.count("LIVE-GAMMA-1SOURCE") + bl.count("LIVE-ALPHA-2PROJECTFILES")
+		if n := bl.count("LIVE-NOTSYNCED-1SOURCE"); n != 1 {
+			t.Errorf("%s: project folder not in Syncthing listed %d times, want 1", mode, n)
+		}
+		want := 0
+		if mode == config.ModePolled {
+			want = 3
+		}
+		if synced != want {
+			t.Errorf("%s: synced project folders listed %d times on a regular scan, want %d", mode, synced, want)
+		}
+	}
+}

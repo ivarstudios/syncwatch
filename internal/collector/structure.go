@@ -52,7 +52,8 @@ type folderRef struct {
 
 // scan lists every share's top level and searches project folders for
 // nested project folders: folders not in Syncthing on every scan, synced
-// folders only on a baseline scan (events cover them in between).
+// folders only on a baseline scan (events cover them in between) except in
+// polled mode, which has no events and therefore walks them every time.
 func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	var sv *model.Server
 	c.hub.View(c.id, func(s *model.Server) { sv = s.Clone() })
@@ -159,7 +160,7 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 						synced = true
 					}
 				}
-				if synced && !baseline {
+				if synced && !baseline && cfg.Collector.Mode != config.ModePolled {
 					continue
 				}
 				sh, d := sh, d
