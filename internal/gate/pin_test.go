@@ -121,14 +121,14 @@ func TestGatePinsCASignedSyncthing(t *testing.T) {
 	if code, _ := get(t, gs, http.MethodGet, "/rest/system/status", token); code != 200 {
 		t.Fatalf("CA-signed first use: %d", code)
 	}
-	if len(pinned) != 1 || pinned[0] != fpOf(leaf1) || !strings.Contains(logs.String(), "pinned Syncthing's CA-signed certificate") {
+	if len(pinned) != 1 || pinned[0] != fpOf(leaf1) || !strings.Contains(logs.String(), "CA-signed Syncthing certificate pinned") {
 		t.Fatalf("CA-signed certificate not pinned: OnPin %v, log %s", pinned, logs.String())
 	}
 
 	current.Store(&self)
 	g.hc.CloseIdleConnections()
 	code, body := get(t, gs, http.MethodGet, "/rest/system/status", token)
-	if code != http.StatusBadGateway || !strings.Contains(body, "certificate changed") {
+	if code != http.StatusBadGateway || !strings.Contains(body, "certificate of Syncthing changed") {
 		t.Fatalf("self-signed certificate after a CA-signed one: %d %s", code, body)
 	}
 	if st.count() != 1 {
@@ -143,7 +143,7 @@ func TestGatePinsCASignedSyncthing(t *testing.T) {
 	if code, body := get(t, gs, http.MethodGet, "/rest/system/status", token); code != 200 {
 		t.Fatalf("renewed CA-signed certificate: %d %s", code, body)
 	}
-	if len(pinned) != 2 || pinned[1] != fpOf(leaf2) || !strings.Contains(logs.String(), "Syncthing's certificate renewed") {
+	if len(pinned) != 2 || pinned[1] != fpOf(leaf2) || !strings.Contains(logs.String(), "Syncthing certificate replaced, new certificate pinned") {
 		t.Fatalf("renewal not pinned: OnPin %v, log %s", pinned, logs.String())
 	}
 

@@ -41,7 +41,7 @@ type GateOptions struct {
 func RunGate(ctx context.Context, o GateOptions) error {
 	log := o.Log
 	if err := os.MkdirAll(o.DataDir, 0o700); err != nil {
-		return fmt.Errorf("creating data directory: %w", err)
+		return fmt.Errorf("cannot make the data directory: %w", err)
 	}
 	key, err := gateSyncthingKey(o)
 	if err != nil {
@@ -52,7 +52,7 @@ func RunGate(ctx context.Context, o GateOptions) error {
 		return err
 	}
 	if made {
-		log.Warn("created the gate token; enter it as this server's API key in syncwatch (Settings → Servers), with the gate's address as the URL",
+		log.Warn("gate token generated: type it as the API key in syncwatch (Settings → Servers), with the gate address as the API URL",
 			"token", tok, "file", filepath.Join(o.DataDir, "gate-token"))
 	}
 	if o.TokenReady != nil {
@@ -65,13 +65,13 @@ func RunGate(ctx context.Context, o GateOptions) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		// Only a missing file means first use. Starting without the pin
 		// would trust whatever answers as Syncthing.
-		return fmt.Errorf("reading Syncthing's certificate pin: %w", err)
+		return fmt.Errorf("cannot read the pinned fingerprint of Syncthing: %w", err)
 	}
 	g, err := gate.New(gate.Options{
 		Syncthing: o.Syncthing, APIKey: key, Token: tok, Pin: pin, BrowseRoots: o.BrowseRoots, Log: log,
 		OnPin: func(fp string) {
 			if err := os.WriteFile(pinFile, []byte(fp+"\n"), 0o600); err != nil {
-				log.Error("saving Syncthing's certificate pin", "err", err)
+				log.Error("cannot save the pinned certificate of Syncthing", "err", err)
 			}
 		},
 	})
@@ -121,7 +121,7 @@ func gateSyncthingKey(o GateOptions) (string, error) {
 	case o.KeyFile != "":
 		b, err := os.ReadFile(o.KeyFile)
 		if err != nil {
-			return "", fmt.Errorf("reading the Syncthing API key: %w", err)
+			return "", fmt.Errorf("cannot read the Syncthing API key: %w", err)
 		}
 		return strings.TrimSpace(string(b)), nil
 	case o.Key != "":
@@ -129,7 +129,7 @@ func gateSyncthingKey(o GateOptions) (string, error) {
 	case o.ConfigXML != "":
 		b, err := os.ReadFile(o.ConfigXML)
 		if err != nil {
-			return "", fmt.Errorf("reading Syncthing's config.xml: %w", err)
+			return "", fmt.Errorf("cannot read the Syncthing config.xml: %w", err)
 		}
 		var c struct {
 			GUI struct {
@@ -137,11 +137,11 @@ func gateSyncthingKey(o GateOptions) (string, error) {
 			} `xml:"gui"`
 		}
 		if err := xml.Unmarshal(b, &c); err != nil || strings.TrimSpace(c.GUI.APIKey) == "" {
-			return "", fmt.Errorf("no API key in %s", o.ConfigXML)
+			return "", fmt.Errorf("cannot find an API key in %s", o.ConfigXML)
 		}
 		return strings.TrimSpace(c.GUI.APIKey), nil
 	}
-	return "", errors.New("the gate needs Syncthing's API key: --syncthing-key-file, SYNCWATCH_GATE_SYNCTHING_KEY or --syncthing-config")
+	return "", errors.New("the gate needs the Syncthing API key: --syncthing-key-file, SYNCWATCH_GATE_SYNCTHING_KEY or --syncthing-config")
 }
 
 // gateToken returns the token syncwatch must present, creating and storing
@@ -164,7 +164,7 @@ func gateToken(o GateOptions) (tok string, made bool, err error) {
 	}
 	tok = "swg_" + base64.RawURLEncoding.EncodeToString(raw)
 	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
-		return "", false, fmt.Errorf("writing %s: %w", path, err)
+		return "", false, fmt.Errorf("cannot write %s: %w", path, err)
 	}
 	return tok, true, nil
 }

@@ -141,10 +141,10 @@ type refusal struct {
 func New(o Options) (*Gate, error) {
 	u, err := url.Parse(strings.TrimRight(o.Syncthing, "/"))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return nil, fmt.Errorf("syncthing URL must be http(s)://host:port")
+		return nil, fmt.Errorf("the Syncthing API URL must be https://address:port or http://address:port")
 	}
 	if o.APIKey == "" {
-		return nil, errors.New("the gate needs Syncthing's API key")
+		return nil, errors.New("the gate needs the Syncthing API key")
 	}
 	if len(o.Token) < 16 {
 		return nil, errors.New("the gate token must be at least 16 characters")
@@ -191,7 +191,7 @@ func (g *Gate) verify(cs tls.ConnectionState) error {
 		return nil
 	}
 	if len(cs.PeerCertificates) == 0 {
-		return errors.New("Syncthing presented no certificate")
+		return errors.New("Syncthing sent no certificate")
 	}
 	leaf := cs.PeerCertificates[0]
 	inter := x509.NewCertPool()
@@ -209,15 +209,15 @@ func (g *Gate) verify(cs tls.ConnectionState) error {
 		return nil
 	case g.pin == "":
 		if caErr == nil {
-			log.Info("pinned Syncthing's CA-signed certificate")
+			log.Info("CA-signed Syncthing certificate pinned")
 		} else {
-			log.Info("trusting Syncthing's self-signed certificate on first use")
+			log.Info("self-signed Syncthing certificate accepted and pinned on first use")
 		}
 	case caErr == nil:
-		log.Info("Syncthing's certificate renewed", "old", stclient.ShortFP(g.pin))
+		log.Info("Syncthing certificate replaced, new certificate pinned", "old", stclient.ShortFP(g.pin))
 	default:
-		return fmt.Errorf("Syncthing's certificate changed (pinned %s, got %s); if that is expected, delete the gate's syncthing.pin and restart it",
-			stclient.ShortFP(g.pin), stclient.ShortFP(fp))
+		return fmt.Errorf("%w (pinned %s, new %s). If the new certificate is correct, delete syncthing.pin in the data directory of the gate. Then restart the gate.",
+			errCertChanged, stclient.ShortFP(g.pin), stclient.ShortFP(fp))
 	}
 	g.pin = fp
 	if g.o.OnPin != nil {
@@ -274,32 +274,32 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// client without it learns nothing, not even which paths exist.
 	tok := r.Header.Get("X-API-Key")
 	if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(g.o.Token)) != 1 {
-		g.deny(w, r, http.StatusForbidden, "wrong or missing token", "")
+		g.deny(w, r, http.StatusForbidden, "gate token missing or not correct", "")
 		return
 	}
 	if r.Method != http.MethodGet {
-		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests pass", "")
+		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests are accepted", "")
 		return
 	}
 	// Exact paths only: no prefixes, no dot segments, no encoded slashes.
 	if !g.allowed[r.URL.Path] || (r.URL.RawPath != "" && r.URL.RawPath != r.URL.Path) {
-		g.deny(w, r, http.StatusNotFound, "endpoint not allowed", "")
+		g.deny(w, r, http.StatusNotFound, "endpoint not permitted", "")
 		return
 	}
 	// Only the parameters syncwatch's client sends, and only what it asks for.
 	q, err := checkQuery(r.URL.Path, r.URL.RawQuery)
 	if err != nil {
-		g.deny(w, r, http.StatusBadRequest, "query not allowed", err.Error())
+		g.deny(w, r, http.StatusBadRequest, "query not permitted", err.Error())
 		return
 	}
 	if r.URL.Path == pathBrowse {
 		dir, ok, err := g.checkBrowse(q.Get("current"))
 		if err != nil {
-			http.Error(w, upstreamError(err, "Syncthing's folder list can't be read"), http.StatusBadGateway)
+			http.Error(w, upstreamError(err, "cannot read the folder list of Syncthing"), http.StatusBadGateway)
 			return
 		}
 		if !ok {
-			g.deny(w, r, http.StatusForbidden, "directory not under a Syncthing folder's parent", "")
+			g.deny(w, r, http.StatusForbidden, "directory not in a permitted browse root", "")
 			return
 		}
 		q.Set("current", dir)
@@ -315,7 +315,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.upstream(r.URL.Path, q.Encode()), nil)
 	if err != nil {
-		http.Error(w, "syncwatch gate: bad request", http.StatusBadRequest)
+		http.Error(w, "syncwatch gate: incorrect request", http.StatusBadRequest)
 		return
 	}
 	if r.URL.Path != pathHealth {
@@ -325,9 +325,9 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := hc.Do(req)
 	if err != nil {
 		if r.Context().Err() == nil {
-			g.o.Log.Warn("reaching Syncthing failed", "path", r.URL.Path, "err", err)
+			g.o.Log.Warn("request to Syncthing failed", "path", r.URL.Path, "err", err)
 		}
-		http.Error(w, upstreamError(err, "Syncthing can't be reached"), http.StatusBadGateway)
+		http.Error(w, upstreamError(err, "Syncthing unreachable"), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -342,14 +342,14 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		http.Error(w, "syncwatch gate: reading Syncthing's answer failed", http.StatusBadGateway)
+		http.Error(w, "syncwatch gate: cannot read the answer of Syncthing", http.StatusBadGateway)
 		return
 	}
 	out, err := clean(body)
 	if err != nil {
 		// An answer that can't be cleaned isn't passed on.
-		g.o.Log.Warn("refusing an answer the gate can't check", "path", r.URL.Path, "err", err)
-		http.Error(w, "syncwatch gate: unexpected answer from Syncthing", http.StatusBadGateway)
+		g.o.Log.Warn("cannot check the answer from Syncthing, answer refused", "path", r.URL.Path, "err", err)
+		http.Error(w, "syncwatch gate: unknown answer format from Syncthing", http.StatusBadGateway)
 		return
 	}
 	w.WriteHeader(resp.StatusCode)
@@ -371,42 +371,42 @@ func (g *Gate) upstream(path, rawQuery string) string {
 func checkQuery(path, raw string) (url.Values, error) {
 	q, err := url.ParseQuery(raw)
 	if err != nil {
-		return nil, errors.New("malformed query")
+		return nil, errors.New("the query is not valid")
 	}
 	for k, vs := range q {
 		if !slices.Contains(queryParams[path], k) {
-			return nil, fmt.Errorf("parameter %.40q not allowed", k)
+			return nil, fmt.Errorf("the gate does not permit the parameter %.40q", k)
 		}
 		if len(vs) != 1 {
-			return nil, fmt.Errorf("parameter %q repeated", k)
+			return nil, fmt.Errorf("the parameter %q appears 2 times", k)
 		}
 	}
 	switch path {
 	case pathBrowse:
 		if cur := q.Get("current"); cur == "" {
-			return nil, errors.New("current is required")
+			return nil, errors.New("the parameter current is necessary")
 		} else if !strings.HasSuffix(cur, "/") && !strings.HasSuffix(cur, `\`) {
-			return nil, errors.New("current must end with a separator")
+			return nil, errors.New("the parameter current must end with a separator")
 		}
 	case pathEvents:
 		if v := q.Get("since"); v != "" {
 			if n, err := strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
-				return nil, errors.New("since must be a non-negative integer")
+				return nil, errors.New("the parameter since must be 0 or a positive integer")
 			}
 		}
 		if v := q.Get("timeout"); v != "" {
 			if n, err := strconv.Atoi(v); err != nil || n < 0 || n > maxEventTimeout {
-				return nil, fmt.Errorf("timeout must be 0-%d seconds", maxEventTimeout)
+				return nil, fmt.Errorf("the parameter timeout must be between 0 and %d seconds", maxEventTimeout)
 			}
 		}
 		if v := q.Get("events"); v != "" && !sameMask(strings.Split(v, ",")) {
-			return nil, errors.New("events must be the collector's event mask")
+			return nil, errors.New("the parameter events must be the event mask of the collector")
 		}
 	case pathFolderErrors:
 		for _, k := range []string{"page", "perpage"} {
 			if v := q.Get(k); v != "" {
 				if n, err := strconv.Atoi(v); err != nil || n < 1 {
-					return nil, fmt.Errorf("%s must be a positive integer", k)
+					return nil, fmt.Errorf("the parameter %s must be a positive integer", k)
 				}
 			}
 		}
@@ -567,7 +567,7 @@ func (g *Gate) refreshRootsLocked(maxAge time.Duration) error {
 	g.tryAt = now
 	roots, windows, err := g.fetchRoots()
 	if g.tryErr = err; err != nil {
-		g.o.Log.Warn("reading Syncthing's folder list failed; browse requests need it", "err", cleanErr(err))
+		g.o.Log.Warn("cannot read the folder list of Syncthing, browse requests need it", "err", cleanErr(err))
 		return err
 	}
 	g.roots, g.windows, g.rootsAt = roots, windows, now
@@ -675,12 +675,15 @@ func cleanFolders(body []byte) ([]byte, error) {
 	return json.Marshal(folders)
 }
 
+// errCertChanged marks the verify error for a changed Syncthing certificate.
+var errCertChanged = errors.New("the certificate of Syncthing changed")
+
 // upstreamError is the body of a 502 for an error reaching Syncthing.
 // syncwatch's client keeps 200 bytes of it, so it stays under 150, and it
 // says what to do in the one case where the operator must act.
 func upstreamError(err error, what string) string {
-	if strings.Contains(err.Error(), "certificate changed") {
-		return "syncwatch gate: Syncthing's certificate changed; delete syncthing.pin in the gate's data dir and restart the gate"
+	if errors.Is(err, errCertChanged) || strings.Contains(err.Error(), errCertChanged.Error()) {
+		return "syncwatch gate: the certificate of Syncthing changed. Delete syncthing.pin in the data directory of the gate. Then restart the gate"
 	}
 	return "syncwatch gate: " + what + ": " + cleanErr(err)
 }
