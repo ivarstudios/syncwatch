@@ -250,3 +250,15 @@ func TestAPITokenFormsAskFirst(t *testing.T) {
 		t.Fatal("Generate API token asks for a confirmation")
 	}
 }
+
+// W-070: Settings → Servers said that only self-signed certificates are
+// pinned; CA-signed certificates are pinned too (r0-a).
+func TestServersTextPinsEachCertificate(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	_, page := e.get("/settings")
+	servers := section(t, page, "servers")
+	if !strings.Contains(servers, "syncwatch pins the certificate of each server on first use, self-signed or CA-signed. A changed certificate opens H3.") ||
+		strings.Contains(servers, "accepts a self-signed certificate on first use") {
+		t.Fatal("the Servers text does not say that each certificate is pinned")
+	}
+}

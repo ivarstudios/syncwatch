@@ -15,7 +15,8 @@
 
 <section class="card" id="servers">
   <h2>Servers</h2>
-  <p class="muted">syncwatch only reads from Syncthing. syncwatch encrypts the API key and does not show it again. syncwatch sends an API key only to the URL that you typed it for. syncwatch accepts a self-signed certificate on first use and pins it. syncwatch sends a settings notice to Discord for each change in this section.</p>
+  <p class="muted">syncwatch only reads from Syncthing. syncwatch encrypts the API key and does not show it again. syncwatch sends an API key only to the URL that you typed it for. syncwatch sends a settings notice to Discord for each change in this section.</p>
+  <p class="muted">syncwatch pins the certificate of each server on first use, self-signed or CA-signed. A changed certificate opens H3. syncwatch accepts a new certificate that a trusted CA issued for the same host name.</p>
   {{range $d.Servers}}
   <details class="server-edit" data-key="srv:{{.ID}}" {{if .CertChange}}open{{end}}>
     <summary><strong>{{.Name}}</strong> <span class="badge st-{{.Status}}">{{.StatusLabel}}</span> <span class="muted">{{.URL}}</span>{{if .Disabled}} <span class="tag">disabled</span>{{end}}</summary>
