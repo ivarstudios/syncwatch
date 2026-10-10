@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -119,15 +120,24 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
+// resolvedMemory is how long a resolved finding is kept: it can still be
+// snoozed or ignored (a re-open stays hidden), and an ignore outlives it
+// by this much.
+const resolvedMemory = 90 * 24 * time.Hour
+
+// errUnknownFinding is returned for snoozes of findings that don't exist.
+var errUnknownFinding = errors.New("No open or recent problem has this ID.")
+
 // Prune removes old history, expired snoozes and sessions.
 func (e *Engine) Prune() {
 	now := e.now()
 	for _, err := range []error{
-		e.st.PruneResolved(now.Add(-90 * 24 * time.Hour)),
+		e.st.PruneResolved(now.Add(-resolvedMemory)),
 		e.st.PruneHistory(now.Add(-400 * 24 * time.Hour)),
 		e.st.PruneConflicts(now.Add(-60 * 24 * time.Hour)),
 		e.st.PruneTraffic(now.Add(-8 * 24 * time.Hour)),
 		e.st.PruneSnoozes(now),
+		e.st.PruneIgnores(now.Add(-resolvedMemory)),
 		e.st.PruneSessions(now),
 	} {
 		if err != nil {
@@ -607,10 +617,23 @@ func (e *Engine) Ignore(id, reason, by string) error {
 func (e *Engine) setSnooze(z store.Snooze) error {
 	z.CreatedAt = e.now()
 	e.mu.Lock()
-	if r := e.open[z.FindingID]; r != nil {
+	r := e.open[z.FindingID]
+	if r != nil {
 		z.Subject = r.Check + " " + r.Subject
 	}
 	e.mu.Unlock()
+	if r == nil {
+		// Only a problem that exists, or did recently, can be hidden. IDs
+		// are predictable, so otherwise a server's future H1/H3 could be
+		// muted in advance without anyone seeing it.
+		seen, err := e.st.FindingSeenSince(z.FindingID, z.CreatedAt.Add(-resolvedMemory))
+		if err != nil {
+			return err
+		}
+		if !seen {
+			return errUnknownFinding
+		}
+	}
 	if err := e.st.SetSnooze(z); err != nil {
 		return err
 	}

@@ -422,3 +422,56 @@ func TestUrgentSinceFollowsUrgency(t *testing.T) {
 		t.Fatalf("an urgent finding counts from its opening: %+v", g)
 	}
 }
+
+// Finding IDs are predictable, so a snooze or ignore of an ID that never
+// showed up would mute a future problem (say a server's H1) without a
+// trace. Only open or recently resolved findings can be hidden, and an
+// ignore outlives its finding by 90 days at most.
+func TestSnoozeOnlyKnownFindings(t *testing.T) {
+	r := newRig(t)
+	id := model.FindingID("H1", "b", "server")
+	if err := r.eng.Ignore(id, "mute in advance", "admin"); err == nil {
+		t.Fatal("ignoring a finding that never existed must be refused")
+	}
+	if err := r.eng.Snooze(id, r.now.Add(24*time.Hour), "", "admin"); err == nil {
+		t.Fatal("snoozing a finding that never existed must be refused")
+	}
+	if _, ok := r.eng.View().Snoozed(id, r.now); ok {
+		t.Fatal("nothing should be snoozed")
+	}
+	// B goes down: H1 opens and can be ignored.
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
+	if find(r.at(0), "H1", "B") == nil {
+		t.Fatal("H1 missing")
+	}
+	if err := r.eng.Ignore(id, "known outage", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	// An ignore on an open finding survives pruning.
+	r.now = r.now.Add(100 * 24 * time.Hour)
+	r.eng.Prune()
+	if _, ok := r.eng.View().Snoozed(id, r.now); !ok {
+		t.Fatal("the ignore of an open finding was pruned")
+	}
+	// B is back: H1 resolves, and it can still be hidden for a while
+	// (a re-open stays hidden), but not forever.
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	if find(r.at(time.Minute), "H1", "B") != nil {
+		t.Fatal("H1 should resolve")
+	}
+	if err := r.eng.Unsnooze(id); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(10 * 24 * time.Hour)
+	if err := r.eng.Ignore(id, "still remembered", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(100 * 24 * time.Hour)
+	r.eng.Prune()
+	if _, ok := r.eng.View().Snoozed(id, r.now); ok {
+		t.Fatal("an ignore of a finding resolved 110 days ago should be pruned")
+	}
+	if err := r.eng.Ignore(id, "too late", "admin"); err == nil {
+		t.Fatal("a finding resolved 110 days ago can't be ignored any more")
+	}
+}

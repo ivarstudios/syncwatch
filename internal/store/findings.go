@@ -129,6 +129,25 @@ func (s *Store) queryRecords(q string, args ...any) ([]*Record, error) {
 	return out, rows.Err()
 }
 
+// FindingSeenSince reports whether a finding is open, or was resolved at or
+// after t, according to the findings table or the history.
+func (s *Store) FindingSeenSince(id string, t time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM findings WHERE id=? AND (resolved_at=0 OR resolved_at>=?))
+		OR EXISTS(SELECT 1 FROM history WHERE finding_id=? AND (resolved_at=0 OR resolved_at>=?))`, id, ms(t), id, ms(t)).Scan(&n)
+	return n == 1, err
+}
+
+// PruneIgnores deletes ignores of findings that are neither open nor were
+// resolved at or after t.
+func (s *Store) PruneIgnores(t time.Time) error {
+	_, err := s.db.Exec(`DELETE FROM snoozes WHERE kind=?
+		AND NOT EXISTS(SELECT 1 FROM findings WHERE id=snoozes.finding_id AND (resolved_at=0 OR resolved_at>=?))
+		AND NOT EXISTS(SELECT 1 FROM history WHERE finding_id=snoozes.finding_id AND (resolved_at=0 OR resolved_at>=?))`,
+		IgnoreKind, ms(t), ms(t))
+	return err
+}
+
 // PruneResolved deletes resolved findings older than t that need no notification.
 func (s *Store) PruneResolved(t time.Time) error {
 	_, err := s.db.Exec(`DELETE FROM findings WHERE resolved_at<>0 AND resolved_at<? AND (pinged_at=0 OR resolved_notified_at<>0)`, ms(t))
