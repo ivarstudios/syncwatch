@@ -87,6 +87,23 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 		return c.client.Browse(ctx, dir, st.Sep)
 	}
 
+	// The previous results. A share that can't be listed now keeps its last
+	// directory list, marked stale by the error and the old ScannedAt, so
+	// that S4–S7 don't resolve and re-open around every outage or slow listing.
+	var prevShares []*model.Share
+	c.hub.View(c.id, func(s *model.Server) {
+		if s.Structure != nil {
+			prevShares = s.Structure.Clone().Shares
+		}
+	})
+	stale := func(sh *model.Share) {
+		for _, old := range prevShares {
+			if st.Equal(old.Path, sh.Path) {
+				sh.Dirs, sh.ScannedAt = old.Dirs, old.ScannedAt
+			}
+		}
+	}
+
 	now := time.Now()
 	shares := make([]*model.Share, len(refs))
 	var wg sync.WaitGroup
@@ -100,10 +117,12 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 			entries, err := browse(r.Path)
 			if err != nil {
 				sh.Error = shortErr(err)
+				stale(sh)
 				return
 			}
 			if len(entries) == 0 && !c.exists(browse, st, r.Path) {
 				sh.Error = "not found on the server (is it mounted in the Syncthing container?)"
+				stale(sh)
 				return
 			}
 			for _, p := range entries {
