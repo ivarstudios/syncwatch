@@ -344,6 +344,37 @@ func TestDevicesAndVersions(t *testing.T) {
 	mustFind(t, fs, "H9", "LIVE-OFFER")
 }
 
+// With one server per version the reference is the newest one, compared
+// numerically: 2.1.10 is newer than 2.1.9.
+func TestVersionTieBreakIsNumeric(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	akka.Version, sol.Version = "v2.1.10", "v2.1.9"
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true, ClientVersion: "v2.1.10", Type: "tcp-server"}
+	akka.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS", LastSeen: now}
+	akka.Connections[pc2ID] = &model.Connection{Connected: true, ClientVersion: "v2.1.9", Type: "tcp-server"}
+	fs := run(t, c, akka, sol)
+	mustNot(t, fs, "H8", "MORTIS runs")
+	mustFind(t, fs, "H8", "VENUS runs Syncthing v2.1.9; the servers run v2.1.10")
+	for _, c := range []struct {
+		a, b string
+		less bool
+	}{
+		{"2.1.9", "2.1.10", true},
+		{"2.1.10", "2.1.9", false},
+		{"2.1.10", "2.1.10", false},
+		{"1.29.7", "2.0.0", true},
+		{"2.1", "2.1.0", true},
+		{"2.1.x", "2.1.9", false},
+	} {
+		if got := versionLess(c.a, c.b); got != c.less {
+			t.Errorf("versionLess(%q, %q) = %v, want %v", c.a, c.b, got, c.less)
+		}
+	}
+}
+
 func TestCrossServer(t *testing.T) {
 	c := ivarConfig(t)
 	akka := server("akka", "AKKA", akkaID)

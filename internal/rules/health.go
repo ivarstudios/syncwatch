@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -324,6 +325,24 @@ func NormVersion(v string) string {
 	return v
 }
 
+// versionLess reports whether version a is older than b, comparing the parts
+// of major.minor.patch as numbers (2.1.9 < 2.1.10). Parts that aren't
+// numbers compare as strings, and a missing part counts as older.
+func versionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		x, errX := strconv.Atoi(as[i])
+		y, errY := strconv.Atoi(bs[i])
+		switch {
+		case errX == nil && errY == nil && x != y:
+			return x < y
+		case (errX != nil || errY != nil) && as[i] != bs[i]:
+			return as[i] < bs[i]
+		}
+	}
+	return len(as) < len(bs)
+}
+
 // H8
 func (e *evaluator) versions() {
 	count := map[string]int{}
@@ -339,10 +358,10 @@ func (e *evaluator) versions() {
 	if len(count) == 0 {
 		return
 	}
-	// The reference version is the most common one, ties broken by the highest.
+	// The reference version is the most common one, ties broken by the newest.
 	ref := ""
-	for v, n := range count {
-		if ref == "" || n > count[ref] || (n == count[ref] && v > ref) {
+	for _, v := range sortedKeys(count) {
+		if n := count[v]; ref == "" || n > count[ref] || (n == count[ref] && versionLess(ref, v)) {
 			ref = v
 		}
 	}
