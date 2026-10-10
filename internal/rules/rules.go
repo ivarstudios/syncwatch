@@ -5,7 +5,6 @@ package rules
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
@@ -155,11 +154,4 @@ func Ago(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%d seconds", int(d.Seconds()))
 	}
-}
-
-func joinMax(items []string, max int) string {
-	if len(items) <= max {
-		return strings.Join(items, ", ")
-	}
-	return strings.Join(items[:max], ", ") + fmt.Sprintf(" and %d more", len(items)-max)
 }
