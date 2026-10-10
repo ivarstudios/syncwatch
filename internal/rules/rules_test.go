@@ -360,6 +360,24 @@ func TestCrossServer(t *testing.T) {
 	mustNot(t, fs, "X2", "LIVE-FINE")
 }
 
+// X1's subject must not depend on map iteration order, or the record is
+// rewritten on every evaluation.
+func TestX1SubjectStable(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("a", "A", akkaID)
+	b := server("b", "B", solID)
+	a.Folders["x1"] = folder("x1", "Proj", "/s/A-LIVE-1SOURCE/Proj")
+	a.Folders["x2"] = folder("x2", "PROJ", "/s/A-LIVE-1SOURCE/PROJ")
+	b.Folders["x3"] = folder("x3", "proj", "/s/B-LIVE-1SOURCE/proj")
+	subjects := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		subjects[mustFind(t, run(t, c, a, b), "X1", "").Subject] = true
+	}
+	if len(subjects) != 1 || !subjects["PROJ"] {
+		t.Fatalf("X1 subject changes between runs or isn't the first folder by name: %v", subjects)
+	}
+}
+
 func TestCleanup(t *testing.T) {
 	c := ivarConfig(t)
 	akka := server("akka", "AKKA", akkaID)

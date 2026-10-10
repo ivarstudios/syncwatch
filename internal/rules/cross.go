@@ -23,7 +23,8 @@ func (e *evaluator) sameLabelDifferentIDs() {
 		if !sv.Loaded {
 			continue
 		}
-		for _, f := range sv.Folders {
+		for _, id := range sortedFolderIDs(sv) {
+			f := sv.Folders[id]
 			if f.Label == "" {
 				continue
 			}
