@@ -148,11 +148,15 @@ func TestDebounceBatchResolve(t *testing.T) {
 	}
 	r.setDown("SOL", false)
 	r.at(local(2026, 10, 6, 10, 20))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("resolved sent before it settled: %v", m[0].Title)
+	}
+	r.at(local(2026, 10, 6, 10, 25))
 	msgs = r.sender.take()
 	if len(msgs) != 1 || msgs[0].Kind != KindResolved || msgs[0].Mention || !strings.Contains(msgs[0].Title, "SOL") {
 		t.Fatalf("resolved: %+v", msgs)
 	}
-	r.at(local(2026, 10, 6, 10, 21))
+	r.at(local(2026, 10, 6, 10, 26))
 	if len(r.sender.take()) != 0 {
 		t.Fatal("resolved sent twice")
 	}
@@ -411,7 +415,7 @@ func TestWeeklyReport(t *testing.T) {
 	if weekly == nil {
 		t.Fatal("no weekly report")
 	}
-	if !strings.Contains(weekly.Summary, `1/2 servers OK \(SOL down\)`) || !strings.Contains(weekly.Summary, "1 errors") {
+	if !strings.Contains(weekly.Summary, `1/2 servers OK \(SOL down\)`) || !strings.Contains(weekly.Summary, "1 error,") {
 		t.Fatalf("health line: %s", weekly.Summary)
 	}
 	if len(weekly.Sections[2].Lines) != 1 {
@@ -850,5 +854,295 @@ func TestStaleFailureDoesNotUndoChannelChange(t *testing.T) {
 	r.at(r.now.Add(30 * time.Second))
 	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
 		t.Fatalf("new webhook not tried at once: %+v", m)
+	}
+}
+
+// An urgent finding that opens just before quiet hours, becomes due inside
+// them and resolves before they end was never pinged: the overnight summary
+// must list it.
+func TestOvernightListsDueBeforeQuietResolvedDuring(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 21, 58), "AKKA")
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 21, 59))
+	r.at(local(2026, 10, 6, 22, 10)) // due at 22:03, inside quiet hours
+	r.setDown("AKKA", false)
+	r.at(local(2026, 10, 6, 23, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent during quiet hours: %s", m[0].Title)
+	}
+	r.at(local(2026, 10, 7, 7, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindOvernight || msgs[0].Mention {
+		t.Fatalf("overnight summary: %+v", msgs)
+	}
+	lines := msgs[0].Sections[2].Lines
+	if len(lines) != 1 || !strings.Contains(lines[0], "AKKA") || !strings.Contains(lines[0], "(21:58–23:00)") {
+		t.Fatalf("opened-and-resolved section: %+v", msgs[0].Sections)
+	}
+	r.at(local(2026, 10, 7, 8, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("follow-up for a resolved finding: %s", m[0].Title)
+	}
+}
+
+// A link that drops for 6 minutes every 10 minutes is one incident: one ping
+// and no "resolved" until it has stayed up for min(debounce, 5 min).
+func TestResolveHysteresisDuringFlapping(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	counts := map[string]int{}
+	for m := 0; m < 120; m++ {
+		r.now = start.Add(time.Duration(m) * time.Minute)
+		r.setDown("AKKA", m%10 < 6)
+		r.at(r.now)
+		for _, msg := range r.sender.take() {
+			counts[msg.Kind]++
+		}
+	}
+	if counts[KindUrgent] != 1 || counts[KindResolved] != 0 {
+		t.Fatalf("2 h of flapping: %v, want one urgent ping and no resolved message", counts)
+	}
+	// Up since 11:56; "resolved" goes out once it has stayed up for 5 minutes.
+	r.at(local(2026, 10, 6, 12, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("resolved sent after 4 minutes up: %s", m[0].Title)
+	}
+	r.at(local(2026, 10, 6, 12, 1))
+	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Kind != KindResolved {
+		t.Fatalf("resolved after staying up for 5 minutes: %+v", msgs)
+	}
+	// An outage after that is a new problem and gets a new ping.
+	r.now = local(2026, 10, 6, 12, 10)
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 12, 15))
+	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
+		t.Fatalf("new outage after a settled resolution: %+v", msgs)
+	}
+}
+
+// The health line reads correctly with one of something.
+func TestHealthLineWording(t *testing.T) {
+	now := local(2026, 10, 6, 10, 0)
+	r := newRig(t, now, "AKKA")
+	r.at(now)
+	want := "1 server OK · 0 PCs, 0 offline > 7 days · 0 errors, 0 warnings, 0 suggestions · 0 snoozed"
+	if got := HealthLine(r.n.cfg.Get(), r.eng.View(), now); got != want {
+		t.Fatalf("health line:\n got %s\nwant %s", got, want)
+	}
+	r = newRig(t, now, "AKKA", "SOL")
+	r.hub.Update("akka", func(s *model.Server) {
+		s.Devices = map[string]*model.Device{"PC1": {ID: "PC1", Name: "pc1", LastSeen: now.Add(-10 * 24 * time.Hour)}}
+	})
+	r.setDown("SOL", true)
+	r.at(now)
+	// The PC that has been away for 10 days is also a warning finding.
+	want = "1/2 servers OK (SOL down) · 1 PC, 1 offline > 7 days · 1 error, 1 warning, 0 suggestions · 0 snoozed"
+	if got := HealthLine(r.n.cfg.Get(), r.eng.View(), now); got != want {
+		t.Fatalf("health line:\n got %s\nwant %s", got, want)
+	}
+}
+
+// Scheduled messages wait for every enabled server's first result, or 5
+// minutes after start, so a report sent at startup doesn't call servers
+// down that simply haven't been contacted yet.
+func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
+	start := local(2026, 10, 5, 10, 0) // Monday, inside the weekly window
+	r := newRig(t, start, "AKKA", "SOL")
+	unknown := func(id string) {
+		r.hub.Update(id, func(s *model.Server) { s.Status, s.Loaded = model.StatusUnknown, false })
+	}
+	unknown("akka")
+	unknown("sol")
+	// A disabled server never reports and must not hold the report back.
+	c := r.n.cfg.Get().Clone()
+	c.Servers = append(c.Servers, config.Server{ID: "old", Name: "OLD", URL: "https://old:8384", Disabled: true})
+	if err := r.n.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	r.at(start)
+	r.hub.Update("akka", func(s *model.Server) { s.Status, s.Loaded = model.StatusUp, true })
+	r.at(start.Add(time.Minute))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent before SOL had a result: %s | %s", m[0].Title, m[0].Summary)
+	}
+	r.setDown("SOL", true)
+	r.at(start.Add(2 * time.Minute))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `1/2 servers OK \(SOL down\)`) { // parentheses escaped for Discord
+		t.Fatalf("weekly report once every server reported: %+v", msgs)
+	}
+
+	// Servers that never answer: the report goes out 5 minutes after start,
+	// and says they haven't been checked rather than that they are down.
+	r = newRig(t, start, "AKKA", "SOL")
+	unknown("akka")
+	unknown("sol")
+	r.at(start)
+	r.at(start.Add(4 * time.Minute))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent before the start-up grace: %s | %s", m[0].Title, m[0].Summary)
+	}
+	r.at(start.Add(5 * time.Minute))
+	msgs = r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, `0/2 servers OK \(AKKA, SOL not yet checked\)`) || strings.Contains(msgs[0].Summary, "down") {
+		t.Fatalf("weekly report after the grace period: %+v", msgs)
+	}
+}
+
+// A reminder time inside quiet hours that could never be sent is rejected:
+// the evening part of a window that crosses midnight (the reminder is only
+// looked for until 12 hours after its time). A time the notifier can send
+// at quiet end is still accepted.
+func TestReminderInsideQuietHoursRejected(t *testing.T) {
+	const inside = "reminder_time must be outside quiet_hours"
+	for _, tc := range []struct {
+		quiet, reminder string
+		want            string // "" means accepted
+	}{
+		{"22:00-07:00", "08:00", ""},
+		{"22:00-07:00", "23:00", inside}, // quiet until the next day
+		{"22:00-07:00", "22:00", inside},
+		{"22:00-07:00", "00:30", ""}, // sent at 07:00
+		{"22:00-07:00", "07:00", ""},
+		{"09:00-17:00", "12:00", ""},     // sent at 17:00
+		{"20:00-14:00", "01:00", inside}, // 14:00 is more than 12 hours later
+		{"off", "23:00", ""},
+		// Equal ends used to mean off; since the config validation of r0-g
+		// they are refused as such, before the reminder is looked at.
+		{"07:00-07:00", "23:00", "start and end are the same, use off to disable"},
+	} {
+		c := config.Default()
+		c.Notify.QuietHours, c.Notify.ReminderTime = tc.quiet, tc.reminder
+		err := c.Validate()
+		if tc.want == "" && err != nil {
+			t.Errorf("quiet %s, reminder %s: unexpected error %v", tc.quiet, tc.reminder, err)
+		}
+		if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+			t.Errorf("quiet %s, reminder %s: want %q, got %v", tc.quiet, tc.reminder, tc.want, err)
+		}
+	}
+}
+
+// Findings that are ignored or snoozed don't show up in the overnight
+// "opened and resolved" list.
+func TestOvernightSkipsIgnoredAndSnoozed(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 23, 0), "AKKA", "SOL", "SIRIUS")
+	r.at(r.now)
+	r.now = local(2026, 10, 7, 1, 0)
+	for _, s := range []string{"AKKA", "SOL", "SIRIUS"} {
+		r.setDown(s, true)
+	}
+	r.at(r.now)
+	for _, rec := range r.eng.View().Open {
+		var err error
+		switch rec.Server {
+		case "akka":
+			err = r.eng.Ignore(rec.ID, "known flaky", "admin")
+		case "sol":
+			err = r.eng.Snooze(rec.ID, local(2026, 10, 8, 1, 0), "maintenance", "admin")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.at(local(2026, 10, 7, 1, 30))
+	for _, s := range []string{"AKKA", "SOL", "SIRIUS"} {
+		r.setDown(s, false)
+	}
+	r.at(local(2026, 10, 7, 2, 0))
+	r.at(local(2026, 10, 7, 7, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindOvernight {
+		t.Fatalf("overnight summary: %+v", msgs)
+	}
+	if lines := msgs[0].Sections[2].Lines; len(lines) != 1 || !strings.Contains(lines[0], "SIRIUS") {
+		t.Fatalf("opened-and-resolved section should list only SIRIUS: %+v", lines)
+	}
+}
+
+// The daily reminder doesn't repeat what was announced less than an hour
+// before its time: an urgent ping at 07:59, or the overnight summary at
+// 07:00.
+func TestReminderSkipsRecentlyAnnounced(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 7, 54), "AKKA", "SOL") // Tuesday
+	c := r.n.cfg.Get().Clone()
+	c.Notify.WeeklyDay = "off" // Monday's report would still be caught up
+	if err := r.n.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 6, 7, 59))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
+		t.Fatalf("ping at 07:59: %+v", m)
+	}
+	r.at(local(2026, 10, 6, 8, 0))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("reminder a minute after the ping: %s", m[0].Title)
+	}
+	// Next morning: AKKA (pinged yesterday) is reminded; SOL, announced by
+	// the overnight summary at 07:00, isn't.
+	r.now = local(2026, 10, 6, 23, 0)
+	r.setDown("SOL", true)
+	r.at(r.now)
+	r.at(local(2026, 10, 7, 7, 0).Add(20 * time.Second))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindOvernight || !strings.Contains(messageText(m[0]), "SOL") {
+		t.Fatalf("overnight summary: %+v", m)
+	}
+	r.at(local(2026, 10, 7, 8, 0))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindReminder {
+		t.Fatalf("reminder: %+v", msgs)
+	}
+	if text := messageText(msgs[0]); !strings.Contains(text, "AKKA") || strings.Contains(text, "SOL") {
+		t.Fatalf("reminder should list AKKA only:\n%s", text)
+	}
+}
+
+// An overnight summary that goes out late (the channel was failing at quiet
+// end) labels findings by when they became due: during the night, or since
+// quiet hours ended. A finding due during the night and resolved before the
+// late summary is still listed.
+func TestLateOvernightLabelsDaytimeFindings(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 23, 0), "AKKA", "SOL", "SIRIUS")
+	r.setDown("AKKA", true)
+	r.at(r.now)
+	r.now = local(2026, 10, 7, 1, 0)
+	r.setDown("SIRIUS", true)
+	r.at(r.now)
+	r.sender.fail(errors.New("discord: HTTP 502"))
+	r.at(local(2026, 10, 7, 7, 0))
+	r.now = local(2026, 10, 7, 7, 30)
+	r.setDown("SIRIUS", false) // resolved after quiet end, never pinged
+	r.at(r.now)
+	r.now = local(2026, 10, 7, 8, 0)
+	r.setDown("SOL", true) // due at 08:05, after quiet end
+	r.at(r.now)
+	r.at(local(2026, 10, 7, 8, 30))
+	if n := len(r.sender.take()); n != 0 {
+		t.Fatalf("%d messages got through a failing channel", n)
+	}
+	r.sender.fail(nil)
+	r.n.ChannelsChanged()
+	r.at(local(2026, 10, 7, 10, 1))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindOvernight || !msgs[0].Mention {
+		t.Fatalf("late overnight summary: %+v", msgs)
+	}
+	m := msgs[0]
+	if lines := m.Sections[0].Lines; len(lines) != 1 || !strings.Contains(lines[0], "AKKA") {
+		t.Fatalf("new and still open: %+v", m.Sections[0])
+	}
+	if lines := m.Sections[2].Lines; len(lines) != 1 || !strings.Contains(lines[0], "SIRIUS") || !strings.Contains(lines[0], "(01:00–07:30)") {
+		t.Fatalf("opened and resolved: %+v", m.Sections[2])
+	}
+	if len(m.Sections) != 4 || !strings.Contains(m.Sections[3].Title, "since quiet hours ended") || len(m.Sections[3].Lines) != 1 || !strings.Contains(m.Sections[3].Lines[0], "SOL") {
+		t.Fatalf("since quiet hours ended: %+v", m.Sections)
+	}
+	r.at(local(2026, 10, 7, 10, 2))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("pinged again after the summary: %s", m[0].Title)
 	}
 }

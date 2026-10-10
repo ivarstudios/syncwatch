@@ -147,7 +147,7 @@ func TestHostileNamesAreNeutralised(t *testing.T) {
 			"urgent":    UrgentMessage(cfg, []*store.Record{rec}),
 			"resolved":  ResolvedMessage(cfg, []*store.Record{&res}),
 			"reminder":  ReminderMessage(cfg, []*store.Record{rec}, now),
-			"overnight": OvernightMessage(cfg, []*store.Record{rec}, []*store.Record{&res}, []store.HistoryEntry{h}),
+			"overnight": OvernightMessage(cfg, []*store.Record{rec}, []*store.Record{&res}, []store.HistoryEntry{h}, []*store.Record{rec}),
 			"weekly":    WeeklyMessage(cfg, v, []store.HistoryEntry{h}, now),
 		}
 		for kind, m := range msgs {

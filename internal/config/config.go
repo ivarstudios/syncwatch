@@ -407,8 +407,17 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.Notify.ReminderTime != "" && c.Notify.ReminderTime != "off" {
-		if _, err := ParseClock(c.Notify.ReminderTime); err != nil {
+		t, err := ParseClock(c.Notify.ReminderTime)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("notifications.reminder_time: %v", err))
+		} else if qs, qe, qerr := ParseRange(c.Notify.QuietHours); qerr == nil && qs != qe {
+			// The reminder goes out at the first tick after its time that
+			// isn't quiet, up to 12 hours later: a time inside quiet hours
+			// only works when the window ends later the same day.
+			quiet := (qs < qe && t >= qs && t < qe) || (qs > qe && (t >= qs || t < qe))
+			if quiet && (t >= qe || qe-t > 12*60) {
+				errs = append(errs, fmt.Errorf("notifications.reminder_time must be outside quiet_hours: a reminder at %s would never be sent with quiet hours %s", c.Notify.ReminderTime, c.Notify.QuietHours))
+			}
 		}
 	}
 	if c.Notify.WeeklyDay != "" && c.Notify.WeeklyDay != "off" {

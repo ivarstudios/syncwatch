@@ -40,6 +40,7 @@ type Notifier struct {
 	senders func() []Sender
 	now     func() time.Time
 	wake    chan struct{}
+	started time.Time // first tick, for the start-up grace
 
 	mu        sync.Mutex
 	httpProxy *http.Client
@@ -189,6 +190,9 @@ func (n *Notifier) Run(ctx context.Context) {
 func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.started.IsZero() {
+		n.started = now
+	}
 	n.dmu.Lock()
 	wait, gen := now.Before(n.retryAt), n.gen
 	n.dmu.Unlock()
@@ -291,6 +295,23 @@ func dueRecords(cfg *config.Config, v *engine.View, now time.Time) []*store.Reco
 	return out
 }
 
+// A problem must stay resolved for this long (or its debounce, if shorter)
+// before "resolved" goes out. A re-open inside that window carries on as
+// the same incident (the engine keeps its PingedAt), so a flapping link
+// gets one ping, not one per cycle.
+const resolveSettle = 5 * time.Minute
+
+// settled keeps the resolved findings whose resolution has lasted.
+func settled(cfg *config.Config, rs []*store.Record, now time.Time) []*store.Record {
+	var out []*store.Record
+	for _, r := range rs {
+		if now.Sub(r.ResolvedAt) >= min(debounce(cfg, r), resolveSettle) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func ids(rs []*store.Record) []string {
 	out := make([]string, len(rs))
 	for i, r := range rs {
@@ -315,8 +336,12 @@ func (n *Notifier) urgent(ctx context.Context, cfg *config.Config, v *engine.Vie
 
 func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Time) error {
 	pend, err := n.st.PendingResolved()
-	if err != nil || len(pend) == 0 {
+	if err != nil {
 		return err
+	}
+	pend = settled(cfg, pend, now)
+	if len(pend) == 0 {
+		return nil
 	}
 	engine.SortRecords(pend)
 	m := ResolvedMessage(cfg, pend)
@@ -338,43 +363,72 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		return nil
 	}
 	start := q.startBefore(end)
-	due := dueRecords(cfg, v, now)
+	// Findings that became due before quiet hours ended are the night's;
+	// later ones (a summary held back by a failing channel) are labelled.
+	var due, day []*store.Record
+	for _, r := range dueRecords(cfg, v, now) {
+		if r.OpenedAt.Add(debounce(cfg, r)).Before(end) {
+			due = append(due, r)
+		} else {
+			day = append(day, r)
+		}
+	}
 	pend, err := n.st.PendingResolved()
 	if err != nil {
 		return err
 	}
+	pend = settled(cfg, pend, now)
 	engine.SortRecords(pend)
-	hist, err := n.st.HistoryBetween(start, end)
+	// Resolved findings that were due (open for their debounce) at some
+	// moment of the night and were never announced: also ones that opened
+	// before quiet hours, and ones that resolved after them but before this
+	// summary went out.
+	hist, err := n.st.HistoryBetween(start, now.Add(time.Second))
 	if err != nil {
 		return err
 	}
-	pendIDs := map[string]bool{}
-	for _, r := range pend {
-		pendIDs[r.ID] = true
-	}
 	var blips []store.HistoryEntry
 	for _, h := range hist {
-		if !h.Urgent || h.ResolvedAt.IsZero() || pendIDs[h.FindingID] {
+		if !h.Urgent || h.ResolvedAt.IsZero() {
 			continue
 		}
-		if h.OpenedAt.Before(start) || !h.ResolvedAt.Before(end.Add(time.Second)) {
+		dueAt := h.OpenedAt.Add(cfg.Debounce(h.Check))
+		if !dueAt.Before(end) || h.ResolvedAt.Before(dueAt) {
 			continue
 		}
-		if h.ResolvedAt.Sub(h.OpenedAt) < cfg.Debounce(h.Check) {
+		if n.announced(h) {
+			continue
+		}
+		// Not when it is ignored or snoozed, now or when it resolved.
+		if _, z := v.Snoozed(h.FindingID, now); z {
+			continue
+		}
+		if _, z := v.Snoozed(h.FindingID, h.ResolvedAt); z {
 			continue
 		}
 		blips = append(blips, h)
 	}
-	if len(due) > 0 || len(pend) > 0 || len(blips) > 0 {
-		m := OvernightMessage(cfg, due, pend, blips)
+	if len(due) > 0 || len(day) > 0 || len(pend) > 0 || len(blips) > 0 {
+		m := OvernightMessage(cfg, due, pend, blips, day)
 		m.Key = "overnight:" + marker
 		if err := n.send(ctx, now, m); err != nil {
 			return err
 		}
-		n.src.MarkPinged(ids(due), now)
+		n.src.MarkPinged(append(ids(due), ids(day)...), now)
 		n.src.MarkResolvedNotified(ids(pend), now)
 	}
 	return n.st.SetSetting(keyOvernight, marker)
+}
+
+// announced reports whether an occurrence of a finding was pinged: its
+// record was pinged before the occurrence resolved. A re-open that carried
+// PingedAt over counts as the same, already announced problem.
+func (n *Notifier) announced(h store.HistoryEntry) bool {
+	r, err := n.st.Record(h.FindingID)
+	if err != nil || r == nil || r.PingedAt.IsZero() {
+		return false
+	}
+	return !r.PingedAt.After(h.ResolvedAt)
 }
 
 func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.View, local, now time.Time) error {
@@ -393,11 +447,15 @@ func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.V
 	if last, _ := n.st.Setting(keyReminder); last == day {
 		return nil
 	}
+	if !n.checked(cfg, v, now) {
+		return nil
+	}
 	var open []*store.Record
 	for _, r := range v.Open {
-		// Only findings announced before the reminder time; one pinged just
-		// now (e.g. after quiet hours or a snooze) doesn't need a reminder.
-		if !r.Urgent || r.PingedAt.IsZero() || !r.PingedAt.Before(at) {
+		// Only findings announced more than an hour before the reminder
+		// time; one pinged just now (after a snooze, say) or listed in the
+		// overnight summary at quiet end doesn't need a reminder yet.
+		if !r.Urgent || r.PingedAt.IsZero() || r.PingedAt.After(at.Add(-time.Hour)) {
 			continue
 		}
 		if _, snoozed := v.Snoozed(r.ID, now); snoozed {
@@ -440,6 +498,9 @@ func (n *Notifier) weekly(ctx context.Context, cfg *config.Config, v *engine.Vie
 	if last, _ := n.st.Setting(keyWeekly); last >= marker {
 		return nil
 	}
+	if !n.checked(cfg, v, now) {
+		return nil
+	}
 	hist, err := n.st.HistoryBetween(now.Add(-7*24*time.Hour), now.Add(time.Second))
 	if err != nil {
 		return err
@@ -450,6 +511,30 @@ func (n *Notifier) weekly(ctx context.Context, cfg *config.Config, v *engine.Vie
 		return err
 	}
 	return n.st.SetSetting(keyWeekly, marker)
+}
+
+// Scheduled messages wait this long after start for every server's first
+// result, so a report doesn't call servers down before they were contacted.
+const startupGrace = 5 * time.Minute
+
+// checked reports whether every enabled server has had a first result, or
+// the start-up grace is over.
+func (n *Notifier) checked(cfg *config.Config, v *engine.View, now time.Time) bool {
+	if now.Sub(n.started) >= startupGrace {
+		return true
+	}
+	if v.Snapshot == nil {
+		return false
+	}
+	for _, s := range cfg.Servers {
+		if s.Disabled {
+			continue
+		}
+		if sv := v.Snapshot.Server(s.ID); sv == nil || sv.Status == model.StatusUnknown {
+			return false
+		}
+	}
+	return true
 }
 
 // SendTest sends a test message to every configured channel.
@@ -773,9 +858,10 @@ func ReminderMessage(cfg *config.Config, rs []*store.Record, now time.Time) Mess
 		Sections: []Section{{Title: "Still open", Lines: limitLines(lines, 25)}}}
 }
 
-// OvernightMessage is the batch sent when quiet hours end.
-func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips []store.HistoryEntry) Message {
-	var openL, resL, blipL []string
+// OvernightMessage is the batch sent when quiet hours end. day holds the
+// findings that became due after they ended (a summary that went out late).
+func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips []store.HistoryEntry, day []*store.Record) Message {
+	var openL, resL, blipL, dayL []string
 	for _, r := range open {
 		openL = append(openL, findingLine(r, dashboard(cfg)))
 	}
@@ -785,15 +871,22 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 	for _, h := range blips {
 		blipL = append(blipL, historyLine(h, true)+fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04")))
 	}
-	color := ColorResolved
-	if len(open) > 0 {
-		color = colorFor(open)
+	for _, r := range day {
+		dayL = append(dayL, findingLine(r, dashboard(cfg)))
 	}
-	return Message{Kind: KindOvernight, Mention: len(open) > 0, Title: "🌅 Overnight summary", Color: color, URL: dashboard(cfg),
+	var all []*store.Record
+	all = append(all, open...)
+	all = append(all, day...)
+	color := ColorResolved
+	if len(all) > 0 {
+		color = colorFor(all)
+	}
+	return Message{Kind: KindOvernight, Mention: len(all) > 0, Title: "🌅 Overnight summary", Color: color, URL: dashboard(cfg),
 		Sections: []Section{
 			{Title: fmt.Sprintf("New and still open (%d)", len(open)), Lines: limitLines(openL, 20)},
 			{Title: fmt.Sprintf("Resolved during the night (%d)", len(resolved)), Lines: limitLines(resL, 20)},
 			{Title: fmt.Sprintf("Opened and resolved during the night (%d)", len(blips)), Lines: limitLines(blipL, 20)},
+			{Title: fmt.Sprintf("New since quiet hours ended (%d)", len(day)), Lines: limitLines(dayL, 20)},
 		}}
 }
 
@@ -803,19 +896,29 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 	snap := v.Snapshot
 	if snap != nil {
 		up, total := 0, 0
-		var down []string
+		var down, unknown []string
 		for _, sv := range snap.Servers {
 			total++
-			if sv.Status == model.StatusUp {
+			switch sv.Status {
+			case model.StatusUp:
 				up++
-			} else {
+			case model.StatusUnknown:
+				unknown = append(unknown, sv.Name)
+			default:
 				down = append(down, sv.Name)
 			}
 		}
 		if up == total {
-			parts = append(parts, fmt.Sprintf("%d servers OK", total))
+			parts = append(parts, plural(total, "server")+" OK")
 		} else {
-			parts = append(parts, fmt.Sprintf("%d/%d servers OK (%s down)", up, total, strings.Join(down, ", ")))
+			var why []string
+			if len(down) > 0 {
+				why = append(why, strings.Join(down, ", ")+" down")
+			}
+			if len(unknown) > 0 {
+				why = append(why, strings.Join(unknown, ", ")+" not yet checked")
+			}
+			parts = append(parts, fmt.Sprintf("%d/%d servers OK (%s)", up, total, strings.Join(why, "; ")))
 		}
 		pcs, offline := 0, 0
 		for _, d := range snap.Devices() {
@@ -827,7 +930,7 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 				offline++
 			}
 		}
-		parts = append(parts, fmt.Sprintf("%d PCs, %d offline > %s", pcs, offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
+		parts = append(parts, fmt.Sprintf("%s, %d offline > %s", plural(pcs, "PC"), offline, rules.Ago(cfg.Thresholds.PCOffline.D())))
 	}
 	var errs, warns, infos, snoozed int
 	for _, r := range v.Open {
@@ -844,9 +947,17 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 			infos++
 		}
 	}
-	parts = append(parts, fmt.Sprintf("%d errors, %d warnings, %d suggestions", errs, warns, infos))
+	parts = append(parts, plural(errs, "error")+", "+plural(warns, "warning")+", "+plural(infos, "suggestion"))
 	parts = append(parts, fmt.Sprintf("%d snoozed", snoozed))
 	return strings.Join(parts, " · ")
+}
+
+// plural writes a count with its noun: "1 server", "2 servers".
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 // WeeklyMessage is the weekly report.
