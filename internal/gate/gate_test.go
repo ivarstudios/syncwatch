@@ -146,13 +146,39 @@ func TestGateToken(t *testing.T) {
 	if k := st.last().Header.Get("X-API-Key"); k != realKey {
 		t.Fatalf("Syncthing got key %q", k)
 	}
-	// Health needs no token and gets no key.
-	if code, _ := get(t, gs, http.MethodGet, "/rest/noauth/health", ""); code != 200 || st.last().Header.Get("X-API-Key") != "" {
+	// Syncthing's health needs the token too, but Syncthing gets no key for it.
+	if code, _ := get(t, gs, http.MethodGet, "/rest/noauth/health", token); code != 200 || st.last().Header.Get("X-API-Key") != "" {
 		t.Fatalf("health: %d, key sent %q", code, st.last().Header.Get("X-API-Key"))
 	}
 	// The gate's own health answer, for the container healthcheck.
 	if code, _ := get(t, gs, http.MethodGet, "/healthz", ""); code != 200 {
 		t.Fatalf("gate healthz: %d", code)
+	}
+}
+
+// Without the token every answer is the same 403, so the allowlist, the
+// methods and Syncthing's health can't be probed; only /healthz is open.
+func TestGateTokenBeforePath(t *testing.T) {
+	st, _, gs := setup(t)
+	for _, c := range []struct{ method, path, tok string }{
+		{http.MethodGet, "/rest/system/status", ""},
+		{http.MethodGet, "/rest/config", ""},
+		{http.MethodGet, "/nothing", ""},
+		{http.MethodPost, "/rest/system/status", ""},
+		{http.MethodPost, "/healthz", ""},
+		{http.MethodGet, "/rest/noauth/health", ""},
+		{http.MethodGet, "/rest/noauth/health", "wrong"},
+		{http.MethodGet, "/rest/system/status?x=1", realKey},
+	} {
+		if code, _ := get(t, gs, c.method, c.path, c.tok); code != http.StatusForbidden {
+			t.Errorf("%s %s token %q: %d, want 403", c.method, c.path, c.tok, code)
+		}
+	}
+	if st.count() != 0 {
+		t.Fatal("a request without the gate token reached Syncthing")
+	}
+	if code, body := get(t, gs, http.MethodGet, "/healthz", ""); code != 200 || body != "ok\n" {
+		t.Fatalf("healthz: %d %q", code, body)
 	}
 }
 
@@ -196,9 +222,6 @@ func TestClientThroughGate(t *testing.T) {
 	evs, err := cl.Events(ctx, 0, time.Second, stclient.EventMask)
 	if err != nil || len(evs) != 2 {
 		t.Fatalf("events: %v %v", evs, err)
-	}
-	if err := cl.Health(ctx); err != nil {
-		t.Fatal(err)
 	}
 	if cl.LastCert().Fingerprint == "" {
 		t.Fatal("the client didn't see the gate's certificate")

@@ -148,6 +148,13 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok\n")) // the gate itself, for the container healthcheck
 		return
 	}
+	// The token first, for everything (Syncthing's noauth health too): a
+	// client without it learns nothing, not even which paths exist.
+	tok := r.Header.Get("X-API-Key")
+	if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(g.o.Token)) != 1 {
+		g.deny(w, r, http.StatusForbidden, "wrong or missing token")
+		return
+	}
 	if r.Method != http.MethodGet {
 		g.deny(w, r, http.StatusMethodNotAllowed, "only GET requests pass")
 		return
@@ -156,13 +163,6 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.allowed[r.URL.Path] || (r.URL.RawPath != "" && r.URL.RawPath != r.URL.Path) {
 		g.deny(w, r, http.StatusNotFound, "endpoint not allowed")
 		return
-	}
-	if r.URL.Path != pathHealth {
-		tok := r.Header.Get("X-API-Key")
-		if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(g.o.Token)) != 1 {
-			g.deny(w, r, http.StatusForbidden, "wrong or missing token")
-			return
-		}
 	}
 
 	up := *g.base
