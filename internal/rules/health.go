@@ -41,8 +41,8 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			Message: msg,
 			Since:   sv.DownSince,
 			Details: []model.Detail{
-				detail("API URL", sv.URL),
-				timeDetail("Down from", sv.DownSince),
+				detail("URL", sv.URL),
+				timeDetail("Down since", sv.DownSince),
 				timeDetail("Last contact", sv.LastContact),
 				detail("Error", sv.LastError),
 			},
@@ -123,7 +123,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				Severity:    model.Warn,
 				Message:     fmt.Sprintf("The file watcher of folder %s on %s failed. Syncthing finds changes only with its periodic scans (%s)", name, sv.Name, f.WatchError),
 				MinDuration: watcherGrace,
-				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("File watcher error", f.WatchError)},
+				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("Watch error", f.WatchError)},
 			})
 			e.soft[id] = true
 		}
@@ -154,8 +154,8 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				Paths:       paths,
 				Details: []model.Detail{
 					detail("Folder ID", f.ID), detail("Path", f.Path), detail("State", f.State),
-					detail("Error", f.Error), detail("File watcher error", f.WatchError),
-					detail("Failed items", fmt.Sprint(nErr)),
+					detail("Error", f.Error), detail("Watch error", f.WatchError),
+					detail("Failing items", fmt.Sprint(nErr)),
 				},
 			})
 		} else if busyStates[f.State] || f.NeedItems > 0 {
@@ -165,7 +165,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				MinDuration: e.Config.Thresholds.StuckSync.D(),
 				Details: []model.Detail{
 					detail("Folder ID", f.ID), detail("State", f.State),
-					detail("Remaining items", fmt.Sprint(f.NeedItems)), detail("Remaining bytes", fmt.Sprint(f.NeedBytes)),
+					detail("Items left", fmt.Sprint(f.NeedItems)), detail("Bytes left", fmt.Sprint(f.NeedBytes)),
 				},
 			})
 		}
@@ -194,7 +194,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 					MinDuration: e.Config.Thresholds.StuckSync.D(),
 					Details: []model.Detail{
 						detail("Folder ID", f.ID), detail("Device ID", dev),
-						detail("Completion", fmt.Sprintf("%.1f%%", c.Percent)), detail("Remaining items", fmt.Sprint(c.NeedItems)),
+						detail("Completion", fmt.Sprintf("%.1f%%", c.Percent)), detail("Items left", fmt.Sprint(c.NeedItems)),
 					},
 				})
 			}
@@ -282,7 +282,7 @@ func (e *evaluator) relays(sv *model.Server) {
 		e.add("H11", sv.ID, "relay:"+id, model.Finding{
 			Subject: fmt.Sprintf("%s ↔ %s", sv.Name, dn),
 			Message: fmt.Sprintf("Device %s is connected to %s through a relay, which is slow", dn, sv.Name),
-			Details: []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Connection type", c.Type)},
+			Details: []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Type", c.Type)},
 		})
 	}
 }
