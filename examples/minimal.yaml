@@ -1,6 +1,7 @@
-# Minimal configuration: one or more servers and a Discord webhook. Every
-# check that needs no naming rules works out of the box (health, overlaps,
-# share roots as folders, duplicates, folders not in Syncthing, cleanup).
+# Minimal configuration: one or more servers and a Discord webhook. Each
+# check that needs no structure rules works without more configuration.
+# These are: health, Syncthing folders inside others, share roots as
+# Syncthing folders, duplicate names, project folders not in Syncthing, cleanup.
 public_url: https://monitor.lan:8080
 timezone: Europe/Berlin
 servers:

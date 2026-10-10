@@ -1,24 +1,26 @@
 # syncwatch on a NAS (example: AKKA, QNAP Container Station).
 #
-# A syncwatch on AKKA can't report AKKA going down: if AKKA loses power or
-# hangs, its "server unreachable" ping never goes out. Prefer a host it
-# doesn't monitor; if it stays on a monitored NAS, point an outside check
-# (Uptime Kuma, healthchecks.io, the router) at https://<nas>:8080/healthz.
-# See "Where to run it" in the README.
+# A syncwatch on AKKA cannot report a failure of AKKA. If AKKA loses power or
+# stops, syncwatch does not send the H1 urgent message. Use a host that
+# syncwatch does not monitor. If syncwatch remains on a monitored NAS, set an
+# outside check (Uptime Kuma, healthchecks.io, the router) to
+# https://<nas>:8080/healthz. See "Where to run syncwatch" in the README.
 #
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch/data
 #    chown 65534:65534 /share/CACHEDEV1_DATA/Containers/syncwatch/data
-#    Keep this folder out of any share other people can read: secret.key in
-#    it decrypts the stored Syncthing API keys.
-# 2. Optionally copy examples/ivar.yaml to data/syncwatch.yaml (imported once;
-#    any secrets in it are then removed from the file).
-# 3. docker compose up -d, then open https://<nas>:8080 (the browser asks once
-#    to trust the self-signed certificate; its fingerprint is in the log) and
-#    enter the setup token printed by `docker logs syncwatch` to choose the
-#    admin password.
+#    chmod 700 /share/CACHEDEV1_DATA/Containers/syncwatch/data
+#    Caution: keep this directory private. secret.key in it decrypts the
+#    stored Syncthing API keys.
+# 2. If necessary, copy examples/ivar.yaml to data/syncwatch.yaml. syncwatch
+#    imports it one time and removes the secrets from the file.
+# 3. docker compose up -d
+#    Open https://<nas>:8080. The browser asks one time to accept the
+#    self-signed certificate. The fingerprint is in the log.
+# 4. Type the setup token from `docker logs syncwatch`. Then type the
+#    administrator password.
 services:
   syncwatch:
-    # Pin the digest as well (see "Updating" in the README):
+    # Also use the digest (see "Updates" in the README):
     # docker buildx imagetools inspect ghcr.io/ivarstudios/syncwatch:1.0.0
     image: ghcr.io/ivarstudios/syncwatch:1.0.0
     container_name: syncwatch
@@ -30,11 +32,12 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       - TZ=Europe/Stockholm
-      # The image serves HTTPS with a self-signed certificate. This puts the
-      # NAS's LAN address in it (the container only sees :8080).
+      # The image serves HTTPS with a self-signed certificate. This line puts
+      # the LAN address of the NAS in the certificate (the container only sees
+      # :8080). The dashboard also answers only to these names and to IP addresses.
       - SYNCWATCH_TLS_HOSTS=192.168.1.10
     ports:
-      - "192.168.1.10:8080:8080"     # LAN only; never expose to the internet
+      - "192.168.1.10:8080:8080"     # LAN only. Never connect the port to the internet
     volumes:
       - /share/CACHEDEV1_DATA/Containers/syncwatch/data:/data
     labels:

@@ -1,24 +1,27 @@
-# Home Assistant sensors from syncwatch, for three servers (AKKA, SOL and
+# Home Assistant sensors from syncwatch, for 3 servers (AKKA, SOL and
 # SIRIUS, as in examples/ivar.yaml).
-# Paste into configuration.yaml (or a package) and put the token in
-# secrets.yaml:
+# Paste this block into configuration.yaml (or a package). Write the API
+# token in secrets.yaml:
 #
 #   syncwatch_auth: "Bearer swt_…"     # Settings → API in syncwatch
 #
-# One request a minute reads every server from syncwatch's /api/v1/ha. The
-# keys under value_json.servers are syncwatch's server IDs (Settings →
-# Servers). Always write them as servers['<id>']: an ID can contain hyphens
-# (a server named "NAS 1" gets the ID nas-1), and servers.nas-1 would be a
-# subtraction in a Jinja template. Per server you get: running (binary sensor), status, data moved
-# in the last 24 hours and 7 days (received and sent as attributes), and the
-# current download and upload speed. Remove the sensors of a server you
-# don't have: a missing key logs a template error every minute. Home
-# Assistant never gets a Syncthing API key; syncwatch's token is read-only.
+# One request each minute reads each server from /api/v1/ha of syncwatch.
+# The keys under value_json.servers are the server IDs of syncwatch
+# (Settings → Servers). Always write them as servers['<id>']. An ID can have
+# a hyphen (a server named "NAS 1" gets the ID nas-1), and servers.nas-1 is a
+# subtraction in a Jinja template. For each server you get 6 entities: a
+# binary sensor (the server answers) and the status. Also the data moved in
+# the last 24 hours and in 7 days, and the download and upload speed. The
+# data sensors have the attributes received and sent. Remove the
+# sensors of a server that you do not have: a missing key logs a template
+# error each minute. Home Assistant never gets a Syncthing API key. The API
+# token of syncwatch is read-only. The request goes to an IP address. A
+# request by a host name needs that name in SYNCWATCH_TLS_HOSTS of syncwatch.
 rest:
   - resource: https://192.168.1.10:8080/api/v1/ha
     headers:
       Authorization: !secret syncwatch_auth
-    verify_ssl: false          # syncwatch's self-signed certificate
+    verify_ssl: false          # the self-signed certificate of syncwatch
     scan_interval: 60
     timeout: 20
     binary_sensor:
@@ -41,7 +44,7 @@ rest:
         icon: mdi:sync
         value_template: "{{ value_json.servers['akka'].status }}"
         json_attributes_path: "$.servers['akka']"
-        json_attributes: [folders, folders_syncing, folders_error, folders_paused]
+        json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
       - name: AKKA data moved 24 h
         unique_id: syncwatch_akka_moved_24h
         device_class: data_size
@@ -76,7 +79,7 @@ rest:
         icon: mdi:sync
         value_template: "{{ value_json.servers['sol'].status }}"
         json_attributes_path: "$.servers['sol']"
-        json_attributes: [folders, folders_syncing, folders_error, folders_paused]
+        json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
       - name: SOL data moved 24 h
         unique_id: syncwatch_sol_moved_24h
         device_class: data_size
@@ -111,7 +114,7 @@ rest:
         icon: mdi:sync
         value_template: "{{ value_json.servers['sirius'].status }}"
         json_attributes_path: "$.servers['sirius']"
-        json_attributes: [folders, folders_syncing, folders_error, folders_paused]
+        json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
       - name: SIRIUS data moved 24 h
         unique_id: syncwatch_sirius_moved_24h
         device_class: data_size

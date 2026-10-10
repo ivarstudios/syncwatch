@@ -27,8 +27,8 @@ jobs:
       - run: go vet -tags integration,compose,loadsim ./test/...
       - run: go mod tidy -diff
       - name: govulncheck
-        # Known vulnerabilities reachable from the code, including in the
-        # standard library of the Go version go.mod selects.
+        # Known vulnerabilities that the code can reach, also in the
+        # standard library of the Go version that go.mod selects.
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: go test -race ./...
       - name: Cross-compile
@@ -48,8 +48,8 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Download Syncthing
-        # Checked against the release's sha256sum.txt.asc (the checksums
-        # only; the signature on that file is not verified here).
+        # CI compares the download with the sha256sum.txt.asc of the release
+        # (the checksums only, not the signature of that file).
         shell: bash
         run: |
           base="https://github.com/syncthing/syncthing/releases/download/${SYNCTHING_VERSION}"
@@ -63,7 +63,7 @@ jobs:
 
   compose:
     # The Docker image with real Syncthing containers (2 servers, 1 PC) and a
-    # fake Discord webhook, driven by Docker Compose.
+    # fake Discord webhook, started by Docker Compose.
     runs-on: ubuntu-latest
     needs: test
     steps:
@@ -75,7 +75,7 @@ jobs:
           go-version-file: go.mod
       - run: go test -tags compose -v -count=1 -timeout 30m ./test/compose
         env:
-          KEEP_COMPOSE: "1" # leave the stack up for the log step below
+          KEEP_COMPOSE: "1" # keeps the stack for the log step below
       - name: Logs on failure
         if: failure()
         run: docker compose -f test/compose/docker-compose.yml logs --no-color --timestamps --tail 400
