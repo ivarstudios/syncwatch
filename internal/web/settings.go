@@ -1,7 +1,10 @@
 package web
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -53,6 +56,7 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 		"Log":           log,
 		"Weekdays":      []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "off"},
 		"Now":           s.fmtTime(s.now()),
+		"Rev":           configRev(cfg),
 	}
 	for k, val := range extra {
 		data[k] = val
@@ -67,6 +71,24 @@ func (s *Server) setting(key string) (string, bool) {
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	s.render(w, r, http.StatusOK, "settings", info, s.settingsData(info, nil))
+}
+
+// configRev identifies the configuration a settings page was rendered from.
+func configRev(c *config.Config) string {
+	b, _ := json.Marshal(c)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:6])
+}
+
+// stale refuses a form from a page that was loaded before the configuration
+// last changed, so one admin's save doesn't silently undo another's. Forms
+// without a revision (scripts) are taken as they are.
+func (s *Server) stale(w http.ResponseWriter, r *http.Request, old *config.Config, section string) bool {
+	if rev := r.FormValue("rev"); rev == "" || rev == configRev(old) {
+		return false
+	}
+	s.redirect(w, r, "/settings#"+section, "Not saved: the settings changed since this page was loaded; reload the page and make the change again.", true)
+	return true
 }
 
 // save applies a configuration change, announces what changed and redirects
@@ -145,6 +167,9 @@ func (s *Server) limitedCheck(r *http.Request, check func() bool) (ok, limited b
 
 func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	cur := s.cfg.Get()
+	if s.stale(w, r, cur, "servers") {
+		return
+	}
 	c := cur.Clone()
 	orig := r.FormValue("orig_id")
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -243,7 +268,11 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 
 func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	id := r.PathValue("id")
-	c := s.cfg.Get().Clone()
+	old := s.cfg.Get()
+	if s.stale(w, r, old, "servers") {
+		return
+	}
+	c := old.Clone()
 	var keep []config.Server
 	name := ""
 	for _, x := range c.Servers {
@@ -289,6 +318,9 @@ func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info r
 
 func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	old := s.cfg.Get()
+	if s.stale(w, r, old, "notifications") {
+		return
+	}
 	c := old.Clone()
 	n := &c.Notify
 	n.DiscordRoleID = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(r.FormValue("discord_role_id")), "<@&"), ">"), "@"))
@@ -537,6 +569,9 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request, info r
 
 func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	old := s.cfg.Get()
+	if s.stale(w, r, old, "checks") {
+		return
+	}
 	c := old.Clone()
 	c.Checks = map[string]config.Check{}
 	var errs []string
@@ -590,6 +625,9 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 		return
 	}
 	old := s.cfg.Get()
+	if s.stale(w, r, old, "structure") {
+		return
+	}
 	c := old.Clone()
 	c.Structure, c.Shares = doc.Structure, doc.Shares
 	if c.Structure.IgnoreDirs == nil {
@@ -602,6 +640,9 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 
 func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	old := s.cfg.Get()
+	if s.stale(w, r, old, "collector") {
+		return
+	}
 	c := old.Clone()
 	col := &c.Collector
 	col.Mode = r.FormValue("mode")
@@ -632,6 +673,9 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 
 func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	old := s.cfg.Get()
+	if s.stale(w, r, old, "access") {
+		return
+	}
 	c := old.Clone()
 	mode := r.FormValue("mode")
 	if mode == config.AccessProxy && c.Access.Mode != config.AccessProxy && r.FormValue("confirm_proxy") != "on" {
@@ -802,6 +846,9 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
 		s.redirect(w, r, "/settings#import", "Choose a YAML file or paste one.", true)
+		return
+	}
+	if s.stale(w, r, s.cfg.Get(), "import") {
 		return
 	}
 	c, err := config.ParseYAML(data)

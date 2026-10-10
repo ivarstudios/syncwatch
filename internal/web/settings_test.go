@@ -3,6 +3,7 @@ package web
 import (
 	"html"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -293,5 +294,56 @@ func TestStructureFormKeepsIgnoreDirs(t *testing.T) {
 	}
 	if _, body := e.get("/settings"); !strings.Contains(body, "ignore_dirs: []") {
 		t.Fatal("the form doesn't show the current ignore_dirs")
+	}
+}
+
+var revRe = regexp.MustCompile(`name="rev" value="([^"]+)"`)
+
+// Two admins (or two tabs) saving different sections must not overwrite
+// each other: a form from a page loaded before another save is refused,
+// before anything (a secret included) is written. Forms without a revision
+// (scripts) are taken as they are.
+func TestStaleSettingsPageRefused(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	_, page := e.get("/settings")
+	csrf, rev := csrfRe.FindStringSubmatch(page)[1], revRe.FindStringSubmatch(page)[1]
+	if n := len(revRe.FindAllString(page, -1)); n < 9 {
+		t.Fatalf("%d forms carry the revision, want the 9 that change the configuration", n)
+	}
+	collector := func(rev, mode string) (string, bool) {
+		return flash(e.post("/settings/collector", url.Values{"csrf": {csrf}, "rev": {rev}, "mode": {mode}, "event_timeout": {"50s"}, "full_check_interval": {"4h"},
+			"poll_interval": {"15m"}, "structure_interval": {"1h"}, "baseline_interval": {"7d"}, "request_timeout": {"30s"}, "concurrency": {"3"}, "down_after_failures": {"2"}}))
+	}
+	// Tab B saves the collector from a fresh page.
+	if msg, isErr := collector(rev, "polled"); isErr {
+		t.Fatalf("fresh save: %s", msg)
+	}
+	// Tab A, loaded before that, saves the structure and a server with a new key.
+	msg, isErr := flash(e.post("/settings/structure", url.Values{"csrf": {csrf}, "rev": {rev}, "yaml": {"structure: {project_pattern: '^LIVE-'}"}}))
+	if !isErr || !strings.Contains(msg, "reload") {
+		t.Fatalf("stale structure save: %q %v", msg, isErr)
+	}
+	if e.cfg.Get().Structure.ProjectPattern != "" || e.cfg.Get().Collector.Mode != "polled" {
+		t.Fatalf("stale save applied: %+v", e.cfg.Get().Structure)
+	}
+	if _, isErr := flash(e.post("/settings/servers", url.Values{"csrf": {csrf}, "rev": {rev}, "orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "api_key": {"stale-key"}})); !isErr {
+		t.Fatal("stale server save accepted")
+	}
+	if key, _, _ := e.st.ServerKey("akka"); key != "secret-key-akka" {
+		t.Fatalf("stale save wrote the key: %q", key)
+	}
+	if _, isErr := flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "rev": {rev}, "yaml": {"servers: [{name: AKKA, url: 'https://a:1', api_key: stale-key}]"}})); !isErr {
+		t.Fatal("stale import accepted")
+	}
+	if key, _, _ := e.st.ServerKey("akka"); key != "secret-key-akka" || len(e.cfg.Get().Servers) != 2 {
+		t.Fatal("stale import applied")
+	}
+	// After a reload the save goes through; a form without a revision does too.
+	_, page = e.get("/settings")
+	if msg, isErr := flash(e.post("/settings/structure", url.Values{"csrf": {csrf}, "rev": {revRe.FindStringSubmatch(page)[1]}, "yaml": {"structure: {project_pattern: '^LIVE-'}"}})); isErr {
+		t.Fatalf("save after reload: %s", msg)
+	}
+	if msg, isErr := collector("", "events"); isErr || e.cfg.Get().Collector.Mode != "events" {
+		t.Fatalf("save without a revision: %q %v", msg, isErr)
 	}
 }
