@@ -55,7 +55,9 @@ The image runs as the non-root user 65532 with a read-only root file system. A n
 
 The image writes only to `/data`: an SQLite database, `secret.key` and, with self-signed HTTPS, its certificate. The image makes `/data` with mode 0700. A bind mount keeps the mode of the host directory. syncwatch sets the database files to mode 0600 at each start. Make a backup of `/data` (see [Backup and restore](#backup-and-restore)).
 
-If you lose `secret.key`, or change `SYNCWATCH_SECRET_KEY`, syncwatch cannot decrypt the stored API keys and the webhook. The dashboard then shows an H1 finding for each server with the reason that the API key is not readable. The notification banner reports that the webhook is not readable. Type the API keys and the webhook again.
+If you lose `secret.key`, or change `SYNCWATCH_SECRET_KEY`, syncwatch cannot decrypt the stored API keys and the webhook. The dashboard then shows an H1 finding for each server with the reason that the API key is not readable. The notification banner reports that the webhook is not readable. Settings shows the webhook and the API token as set, but not readable. Type the API keys, the webhook and the API token again, or restore the old secret key.
+
+The log reports the secret key at the start. If syncwatch makes a new `secret.key` while the database contains secrets, the log shows an error: the old secret key is missing or replaced. If `SYNCWATCH_SECRET_KEY` is set and `/data/secret.key` also exists, the log shows a warning, because syncwatch uses only the variable.
 
 The binary `syncwatch` also runs without Docker, also on Windows: `syncwatch serve --data ./data`. See the [releases](https://github.com/ivarstudios/syncwatch/releases). The binary listens on `127.0.0.1:8080`. To listen on a LAN address, give `--listen 192.168.1.10:8080` or set `SYNCWATCH_LISTEN`. The image listens on `:8080` in the container. Thus the address in `ports:` decides who can reach the dashboard. Always give that address: a `-p 8080:8080` without an address opens the port on each interface of the host.
 
@@ -94,7 +96,7 @@ Entries in the form `[fd00::1]` or `nas:8080` are accepted: syncwatch removes th
 
 The dashboard serves HTTP/2. Cookies have the `Secure` flag over HTTPS. `syncwatch healthcheck` gets the address and the protocol from `SYNCWATCH_LISTEN`, `SYNCWATCH_TLS_SELF_SIGNED` and `SYNCWATCH_TLS_CERT`. The image sets the first 2. For the binary, give the healthcheck the same variables as `serve`, or set `SYNCWATCH_HEALTHCHECK_URL`. Without them, the healthcheck sends HTTP to an HTTPS server and reports "HTTP 400".
 
-**Host check.** syncwatch answers only to known host names: IP addresses, `localhost`, the host of `public_url`, the listen host and the names in `SYNCWATCH_TLS_HOSTS`. A request with a different `Host` header gets the answer `421 Misdirected Request` and a message that shows what to set. syncwatch ignores the port and a final dot and compares the names without regard to case. The check applies to each request, also to requests with an API token. syncwatch logs each refused request with the host name and the client address.
+**Host check.** syncwatch answers only to known host names: IP addresses, `localhost`, the host of `public_url`, the listen host and the names in `SYNCWATCH_TLS_HOSTS`. A request with a different `Host` header gets the answer `421 Misdirected Request` and a message that shows what to set. syncwatch ignores the port and a final dot and compares the names without regard to case. The check applies to each request, also to requests with an API token. syncwatch logs the refused requests with the host name and the client address. It writes at most one line each minute for each client address, with a count. The log shows at most 100 characters of the host name.
 
 ### Updates
 
@@ -142,7 +144,7 @@ A restored backup has the findings and the notifications of its time. syncwatch 
 1. Open `https://<host>:8080` (`http://` if [HTTPS](#https) is off). Accept the self-signed certificate one time.
 2. The dashboard shows the **First start** page while no administrator password is set. Type the **setup token** from the log (`docker logs syncwatch`). Then type a new administrator password. The setup token shows that you can read the log of the host. Thus the first visitor on the LAN cannot take the administrator account. If the log level hides warnings, syncwatch also prints the setup token on stderr. Or set `SYNCWATCH_ADMIN_PASSWORD` for the first start.
 3. Open **Settings → Servers**. Add each server that syncwatch must poll. Type a name, the API URL (for example `https://192.168.1.10:8384`) and its API key. The API key is in Syncthing under Actions → Settings → API Key. syncwatch pins the certificate of the server on first use, self-signed or CA-signed. syncwatch sends an API key only to the URL that you typed it for. When you change the URL of a server, type its API key again.
-4. Open **Settings → Notifications**. Paste a Discord webhook URL (Channel → Integrations → Webhooks) and the numeric ID of the role to mention in urgent messages. Select **Send test message** to check it.
+4. Open **Settings → Notifications**. Paste a Discord webhook URL (Channel → Integrations → Webhooks) and the numeric ID of the role to mention in urgent messages. Select **Send test message** to check it. The test message mentions the role, the same as an urgent message. If your phone shows no notification, check the role ID and make sure that you have the role.
 5. If necessary, paste structure rules under **Settings → Structure** (see [examples/ivar.yaml](examples/ivar.yaml)).
 
 The host of syncwatch must reach the API URL of each server. The PCs do not need to be reachable: syncwatch sees them through the servers.
@@ -157,7 +159,7 @@ syncwatch also rewrites a file behind a symlink and a single-file bind mount. If
 
 A bootstrap file with an error stops the start of syncwatch. Examples are an unknown key, a value outside its range, or a webhook that is not a Discord URL. The log (`docker logs syncwatch`) names the line or the key. Correct the file or remove it. Until then, a container with `restart: unless-stopped` starts and stops again and again.
 
-Later changes: use the dashboard, or **Settings → Export and import**, or `syncwatch import-config FILE`. A syncwatch that runs applies the imported file in less than 10 seconds. Delete the file after the import if it had secrets. Exports never contain secrets.
+Later changes: use the dashboard, or **Settings → Export and import**, or `syncwatch import-config FILE`. A syncwatch that runs applies the imported file in less than 10 seconds and sends a settings notice with the changed sections. Delete the file after the import if it had secrets. Exports never contain secrets.
 
 The maintenance commands (`import-config`, `export-config`, `reset-admin-password`) need the data directory of the installation and its secret key. The data directory is `--data`, `SYNCWATCH_DATA`, or `/data` in the image. A path without `syncwatch.db` is an error: the commands make no new data directory, no database and no secret key.
 
@@ -225,11 +227,11 @@ shares:
 | `collector.baseline_interval` | 1h to 90d | 7d |
 | `collector.request_timeout` | 1s to 10m | 30s |
 | `collector.concurrency` | 1 to 16 | 3 |
-| `collector.down_after_failures` | 1 to 20 (the form: 1 to 10) | 2 |
+| `collector.down_after_failures` | 1 to 20 | 2 |
 | `checks.<ID>.debounce` | 0 to 30d | 5m (H2: 15m) |
 | `thresholds.*` | 10s to 3650d | see the example |
 | `structure.nested_scan_depth` | 1 to 10 | 3 |
-| `notifications.weekly_top` | 1 to 50 (the form: 1 to 25) | 10 |
+| `notifications.weekly_top` | 1 to 50 | 10 |
 | `access.session_ttl` | 1h to 365d | 30d |
 
 **Parallel requests.** `collector.concurrency` limits each activity separately: the full check and the structure scan. The 2 can run at the same time, together with the event long-poll and the traffic sample of each minute. Thus up to 2 times `concurrency` plus 2 requests can reach one server at the same time.
@@ -275,16 +277,16 @@ The severity is ERROR, WARNING or INFO. An *urgent* check sends an urgent messag
 
 | ID | Check | Description | Severity | Urgent |
 |---|---|---|---|---|
-| H1 | Server unreachable | syncwatch cannot reach the API of the server, or the API key is not valid (HTTP 401 or 403). | ERROR | yes (5 minutes) |
-| H2 | Servers not connected | 2 polled servers have no connection to each other. | ERROR | yes (15 minutes) |
+| H1 | Server unreachable | syncwatch cannot reach the API of the server, or the server refuses the API key or the gate token (HTTP 401 or 403). The message names the cause, and a detail row tells what to do. | ERROR | yes (5 minutes) |
+| H2 | Servers not connected | 2 polled servers have no connection to each other. After a start of syncwatch or of a server, H2 waits 2 minutes for the connection. | ERROR | yes (15 minutes) |
 | H3 | Server certificate changed | The server sent a different TLS certificate. H3 replaces H1. Accept the certificate in Settings. | ERROR | yes |
 | H4 | Folder sync stopped | A folder error, no free space, a request error for the folder, or failed items for more than 1 hour. A file watcher error is a separate WARNING finding after 1 hour. | ERROR | yes |
-| H5 | Stuck sync | A folder is not idle, or has remaining items, for 24 hours. Or a connected device is stuck below 100 percent. | WARNING | |
+| H5 | Stuck sync | A folder is not idle, or has remaining items, for 24 hours. Or a device is stuck below 100 percent for 24 hours of connected time. The finding of a device stays open (stale) while the device is off. | WARNING | |
 | H6 | Paused for a long time | A folder or a device is paused for more than 3 days, on a server or on a PC. | WARNING | |
 | H7 | PC offline | A PC that was online before is offline for more than 7 days. | WARNING | |
 | H8 | Version mismatch | The servers run different versions, or a connected PC runs a different version. | WARNING | |
 | H9 | Pending device or folder | A device or a folder offer waits for acceptance. | WARNING | |
-| H10 | New sync conflicts | New sync conflicts in the last 7 days. | WARNING | |
+| H10 | New sync conflicts | New sync conflicts in the last 7 days: conflict copies that the server makes, and in events mode also the conflict copies from other devices. | WARNING | |
 | H11 | Connected through a relay | A device is connected through a relay. | WARNING | |
 | X1 | Same label, different folder IDs | 2 servers have a folder with the same label but different folder IDs. | WARNING | |
 | X2 | Folder in different share types | The same folder ID is in shares of different types. | WARNING | |
@@ -306,15 +308,18 @@ Structure findings have one row for each directory with all its reasons (for exa
 - after a start, until syncwatch contacted the server (H1 and H3 included);
 - structure findings, until the first structure scan after a start;
 - findings in a share whose listing failed (the share keeps its last directory list);
-- cross-server findings (H7, C2, H8, X1, X2, C1), only when syncwatch can reach none of their servers.
+- H7 and C2, while syncwatch cannot reach one of their servers. Only a server that is up can show that a PC is offline. No new H7 or C2 opens in that time.
+- the other cross-server findings (H8, X1, X2, C1), only when syncwatch can reach none of their servers.
 
-When you disable or remove a server, syncwatch closes its findings without Discord messages. The history shows the reason. H6 and C3 keep the last known state of a device through a disconnect, until the device reports again. A device that never connected gets only C2 after `old_device`: no H7 and no C3.
+When you disable or remove a server, syncwatch closes its findings without Discord messages. The history shows the reason. A disabled server stays a server: its device is not a PC and gets no H7, C2 or C3. The health line and `/api/v1/status` show it as disabled.
+
+H5, H6 and C3 keep the last known state of a device through a disconnect, until the device reports again. H5 counts only the time while the device is connected. A device that never connected gets only C2 after `old_device`: no H7 and no C3.
 
 **How syncwatch collects the data** (events mode):
 
 - One long-poll event stream for each server: state changes, completion, errors, connections and new directories.
 - A full check on start, after a reconnect and every `full_check_interval` (default 4 hours): `db/status` and `db/completion` for each folder. Syncthing documents `db/status` as slow, thus syncwatch calls it only then.
-- `/metrics` for the conflict counters, at each full check and each reconnect.
+- `/metrics` for the conflict counters, at each full check and each reconnect. These count the conflict copies that the server makes. The event stream also reports the conflict copies that other devices send to the server. syncwatch counts each such copy one time. In polled mode, syncwatch sees only the copies that the server makes.
 - A structure scan of the top level of each share every `structure_interval` (default 1 hour). The scan goes 3 levels deep into project folders that are not in a Syncthing folder. A baseline scan of each project folder every `baseline_interval` (default 7 days). Between baseline scans, the events report the changes in the Syncthing folders.
 - Missed events: syncwatch scans the affected folders again 30 seconds after the last gap. It does a full check immediately for the first gap, then at most one full check every 10 minutes.
 - An HTTP error for one folder marks that folder (state `unknown`, with the error), not the server. Only an unreachable server or a refused API key (401, 403) marks the server.
@@ -325,15 +330,16 @@ In polled mode there is no event stream. syncwatch reads all data every `poll_in
 
 syncwatch sends all notifications to Discord: a webhook, embeds colored by severity, a dashboard link on each message. The webhook must be a Discord webhook URL (`https://discord.com/api/webhooks/…`). syncwatch checks the URL when you save it and again at each send, and it does not follow redirects. syncwatch removes spaces and invisible characters around a pasted URL. The role ID must have 17 to 20 digits (Discord → Server Settings → Roles → Copy Role ID).
 
-- **Urgent message**: when an urgent finding stayed open for its debounce time. The debounce counts from the time the finding became urgent. Findings that open in the same cycle go into one message. The message mentions the configured role. A finding that resolves and opens again in less than 5 minutes is the same incident: no new urgent message.
+- **Urgent message**: when an urgent finding stayed open for its debounce time. The debounce counts from the time the finding became urgent. Findings that open in the same cycle go into one message. The title of that message names the servers and the checks, for example `🚨 2 new urgent findings on AKKA, SOL: S3`. Findings with the same check and subject on 2 servers have one line. The message mentions the configured role. A finding that resolves and opens again in less than 5 minutes is the same incident: no new urgent message.
 - **Resolved message**: for each finding that had an urgent message, after it stayed resolved for 5 minutes (or the debounce of the check, if shorter). No mention. Exception: findings of a removed or disabled server.
 - **Daily reminder** (08:00): urgent findings that are still open. It skips findings with an urgent message in the last hour. No mention.
 - **Quiet hours** (22:00–07:00): syncwatch sends no notifications. At 07:00 one overnight summary lists 3 groups. The groups are: new and still open findings, resolved findings, and findings that opened and resolved during the night. The summary includes each urgent finding that became due during the quiet hours. A summary that syncwatch sends late has a section for the findings that became due after the end of the quiet hours.
-- **Weekly report** (Monday 08:00): a health line (`3 servers up · 14 PCs, 2 offline more than 7 days · ERROR 2 · WARNING 5 · INFO 3 · 3 snoozed`), new and resolved findings of the week, the most important open findings and a dashboard link. After a start, syncwatch waits for the first results of the servers (at most 5 minutes) before it sends a missed weekly report or reminder. The health line marks a server without a result as not contacted.
-- **Settings notice**: one settings notice for each save that changed a setting, with the old and new values (at most 40 lines). Other causes: a new or replaced API key, an accepted or removed pinned certificate, a changed administrator password, an import. Also an API token that is added, replaced or revoked, and a snooze or ignore of an urgent finding. Each settings notice includes the client address. syncwatch sends it immediately, also during quiet hours, to the webhook that was configured before the change. Thus a replaced or removed webhook also gets the settings notice. If the send fails, syncwatch tries again with the next notifications for up to 1 day and adds the time of the change. If Discord refuses a settings notice (HTTP 400, 401, 403, 404), syncwatch logs one warning and discards it. A kept settings notice never delays an urgent message. No mention.
+- **Weekly report** (Monday 08:00): a health line (`3 servers up · 14 PCs, 2 offline more than 7 days · ERROR 2 · WARNING 5 · INFO 3 · 3 snoozed`), new and resolved findings of the week, the most important open findings and a dashboard link. After a start, syncwatch waits for the first results of the servers (at most 5 minutes) before it sends a missed weekly report or reminder. The health line marks a server without a result as not contacted. It marks a server with a changed certificate as certificate changed, and a disabled server as disabled. The health line shows a PC as offline only when each server that knows the PC is up. Else the PC is unknown. Ignored findings have their own count after the snoozed findings. The list of new findings marks snoozed and ignored findings. The count of new findings is the count of the lines, and a long list ends with "…and N more".
+- **Settings notice**: one settings notice for each save that changed a setting, with the old and new values (at most 40 lines). Other causes: a new or replaced API key, an accepted or removed pinned certificate, a changed administrator password, an import. This includes `syncwatch import-config` and `syncwatch reset-admin-password` on the command line. Also an API token that is added, replaced or revoked, and a snooze or ignore of an urgent finding. Each settings notice includes the client address. syncwatch sends it immediately, also during quiet hours, to the webhook that was configured before the change. Thus a replaced or removed webhook also gets the settings notice. If the send fails, syncwatch tries again with the next notifications for up to 1 day and adds the time of the change. If Discord refuses a settings notice (HTTP 400, 401, 403, 404), syncwatch logs one warning and discards it. A kept settings notice never delays an urgent message. No mention.
 - **Snoozed and ignored findings** never send urgent messages and are not in the overnight summary. You can snooze a finding for 1 day, 1 week or until the end of a day that you select, with an optional reason. You can snooze or ignore only an open finding, or a finding that resolved in the last 90 days. An ignore ends 90 days after the finding resolved. The Findings page lists the snoozed and ignored findings at the end, with a button to remove the snooze or the ignore.
 - **No webhook**: without a webhook, syncwatch marks no notification as sent. When you add the webhook, the due urgent findings go into one message.
-- **A webhook that fails** (for example deleted in Discord): syncwatch tries again after 1, 2, 4 … minutes and then every 30 minutes. Each page shows a banner until a message arrives. `/api/v1/status` reports it under `notifications`. A test message or a new webhook starts a new try immediately, also while an old send is in progress. If syncwatch cannot decrypt the webhook (a changed secret key), the banner and the test button report it. Save the webhook again to correct it.
+- **A webhook that fails**: if Discord has an outage, syncwatch tries again after 1, 2 and 4 minutes, then every 5 minutes. An outage is HTTP 5xx or 429, a timeout or a network error. If Discord refuses the webhook (HTTP 400, 401, 403 or 404), syncwatch tries again after 1, 2, 4 … minutes, up to every 30 minutes. An example is a webhook that a person deleted in Discord. Each page shows a banner until a message arrives. `/api/v1/status` reports it under `notifications`. A test message or a new webhook starts a new try immediately, also while an old send is in progress. If syncwatch cannot decrypt the webhook (a changed secret key), the banner and the test button report it. Save the webhook again to correct it.
+- **Findings during a failure**: the first message after a failure also lists the urgent findings of the failure time. These are the findings that became due for an urgent message and resolved while the notifications failed. syncwatch lists them without a mention. Its section is "Opened and resolved while notifications failed".
 
 Names from Syncthing cannot format, link, mention or reorder text in Discord messages: syncwatch escapes titles, summaries and lines.
 
@@ -350,7 +356,7 @@ Names from Syncthing cannot format, link, mention or reorder text in Discord mes
 - **Settings forms.** Each form has the revision of the configuration. If a different administrator saved after you opened the page, syncwatch refuses your save and asks you to reload the page. A section of the dashboard stops the automatic refresh while you type in a form in it.
 - **Network.** One listen port (loopback only for the binary if you give no address), optional HTTPS, no UPnP. syncwatch connects only to the configured API URLs and to Discord.
 - **Proxy mode** (`access.mode: proxy`) sets built-in login to off: each person who can reach syncwatch is an administrator. Use it only behind a reverse proxy or a VPN that authenticates users. Configure the proxy as described in [Behind a reverse proxy](#behind-a-reverse-proxy).
-- **Lost administrator password.** Run `docker exec -i syncwatch syncwatch reset-admin-password`. The command reads the new password from stdin. It needs the data directory and the secret key of the installation.
+- **Lost administrator password.** Run `docker exec -i syncwatch syncwatch reset-admin-password`. The command reads the new password from stdin. It needs the data directory and the secret key of the installation. syncwatch logs out all sessions and sends a settings notice. If syncwatch does not run, it sends the settings notice at the next start.
 
 ### Read-only gate
 
@@ -389,7 +395,7 @@ location / {
 }
 ```
 
-The automatic refresh uses server-sent events. syncwatch sends `X-Accel-Buffering: no`, thus nginx does not buffer them.
+The automatic refresh uses server-sent events. syncwatch sends `X-Accel-Buffering: no`, thus nginx does not buffer them. If the connection stops, the page shows a banner with the time of the last data and connects again.
 
 ### Security reports
 
@@ -458,10 +464,13 @@ To replace the API token:
 Before you depend on syncwatch, examine how the API of your servers behaves. The probe is also read-only. It takes the API key from the environment and does not store it:
 
 ```sh
+mkdir -p docs && sudo chown 65532 docs          # the image runs as user 65532
 docker run --rm -e SYNCWATCH_PROBE_API_KEY=… -v "$PWD/docs:/docs" ghcr.io/ivarstudios/syncwatch:1.0.0 \
   probe --name SIRIUS --url https://192.168.3.10:8384 --out /docs/api-findings.md --event-wait 5m \
   --project-pattern '^(ME-)?LIVE-[A-Za-z0-9]'
 ```
+
+If the probe cannot write the `--out` file, it writes the report to the standard output and stops with an error. If the connection fails, the probe writes what it has and exits with code 1.
 
 The probe checks these items: the browse answers (hidden directories, spaces, å/ä/ö, brackets), the browse time, a long-poll over your network path, the event mask. Also `remoteState` in `FolderCompletion`, the duration of a full check, `/metrics`, `lastFile.at`, TLS and the counts. Monitor the CPU of the NAS during the full check. If the load is large, use the polled mode.
 
