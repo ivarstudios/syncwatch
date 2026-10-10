@@ -221,6 +221,8 @@ type handler func(w http.ResponseWriter, r *http.Request, info requestInfo)
 // page wraps a GET (or login/setup POST) handler with role checks.
 func (s *Server) page(need string, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Login and setup parse a form before anyone is logged in.
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		info := s.resolve(r)
 		s.ensureCSRF(w, r, &info)
 		if !roleAtLeast(info.Role, need) {

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -587,5 +588,48 @@ func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(b), "Unknown Webhook") {
 		t.Fatal("proxy mode (everyone is admin): no error text")
+	}
+}
+
+// An anonymous POST to /login or /setup is read only up to 64 KiB before the
+// CSRF check, so nobody can make the server read (and spool to disk) a
+// large upload without logging in.
+func TestLoginBodyIsLimited(t *testing.T) {
+	e := newEnv(t, twoServers)
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	for _, path := range []string{"/login", "/setup"} {
+		pr, pw := io.Pipe()
+		var sent atomic.Int64
+		go func() {
+			defer pw.Close()
+			fmt.Fprintf(pw, "--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+			chunk := make([]byte, 64<<10)
+			for i := 0; i < 256; i++ { // 16 MiB
+				n, err := pw.Write(chunk)
+				sent.Add(int64(n))
+				if err != nil {
+					return
+				}
+			}
+			fmt.Fprintf(pw, "\r\n--b--\r\n")
+		}()
+		req, _ := http.NewRequest(http.MethodPost, e.srv.URL+path, pr)
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusSeeOther {
+				t.Fatalf("%s: %d for a body without a CSRF token", path, resp.StatusCode)
+			}
+		}
+		if n := sent.Load(); n > 4<<20 {
+			t.Fatalf("%s: the server read %d MiB of an anonymous upload", path, n>>20)
+		}
+	}
+	// A normal login still works.
+	csrf := e.csrf("/login")
+	if r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}}); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login: %d", r.StatusCode)
 	}
 }
