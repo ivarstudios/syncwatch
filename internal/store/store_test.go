@@ -276,7 +276,7 @@ func TestKeyFileReadWhileBeingWritten(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "secret.key"), []byte("not base64!\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadKey(dir, ""); err == nil || !strings.Contains(err.Error(), "not a valid key") {
+	if _, err := LoadKey(dir, ""); err == nil || !strings.Contains(err.Error(), "not a valid secret key") {
 		t.Fatalf("corrupt key file accepted: %v", err)
 	}
 }

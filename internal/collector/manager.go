@@ -116,11 +116,11 @@ func (m *Manager) Sync() {
 		}
 		key, bound, err := m.st.ServerKey(id)
 		if err != nil {
-			m.log.Error("reading API key; trying again in "+keyRetry.String(), "server", s.Name, "err", err)
+			m.log.Error("cannot read the API key; trying again in "+keyRetry.String(), "server", s.Name, "err", err)
 			m.keyErr = true
 			m.hub.Update(id, func(sv *model.Server) {
 				sv.Status = model.StatusDown
-				sv.LastError = "API key can't be read (secret key changed?)"
+				sv.LastError = "cannot read the API key (check the secret key)"
 			})
 			continue
 		}
@@ -134,16 +134,16 @@ func (m *Manager) Sync() {
 		// A key is only ever sent to the URL it was entered for, so changing
 		// a server's URL (in the settings or by an import) can't redirect it.
 		if !config.SameEndpoint(bound, s.URL) {
-			m.log.Warn("not connecting: the API key was entered for a different URL; enter it again", "server", s.Name, "url", s.URL)
+			m.log.Warn("cannot connect, the API key is for a different API URL: type the API key again", "server", s.Name, "url", s.URL)
 			m.hub.Update(id, func(sv *model.Server) {
 				sv.Status = model.StatusDown
-				sv.LastError = "the API URL changed after the API key was entered; enter the API key again in Settings"
+				sv.LastError = "the API URL changed: type the API key again in Settings → Servers"
 			})
 			continue
 		}
 		c, err := newCollector(s, key, m.hub, m.st, m.cfg, m.log)
 		if err != nil {
-			m.log.Error("starting collector", "server", s.Name, "err", err)
+			m.log.Error("cannot start the collector", "server", s.Name, "err", err)
 			m.hub.Update(id, func(sv *model.Server) {
 				sv.Status = model.StatusDown
 				sv.LastError = err.Error()
@@ -172,10 +172,10 @@ func (m *Manager) AcceptCert(serverID, fp string) error {
 		}
 	})
 	if current == nil {
-		return errors.New("this server has no changed certificate to accept")
+		return errors.New("This server has no new certificate to accept.")
 	}
 	if current.New != fp {
-		return errors.New("the certificate changed again; reload the page and check the new fingerprint")
+		return errors.New("The certificate changed again. Reload the page. Then check the new fingerprint.")
 	}
 	if err := m.st.SetPin(serverID, fp); err != nil {
 		return err
@@ -204,7 +204,7 @@ func (m *Manager) ResetPin(serverID string) error {
 		r.c.client.SetPin("")
 		r.c.Wake()
 	}
-	m.log.Info("pinned certificate forgotten", "server", serverID)
+	m.log.Info("pinned certificate removed", "server", serverID)
 	return nil
 }
 

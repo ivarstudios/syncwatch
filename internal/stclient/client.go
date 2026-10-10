@@ -113,7 +113,7 @@ type CertChangedError struct {
 }
 
 func (e *CertChangedError) Error() string {
-	return fmt.Sprintf("%s: TLS certificate changed (pinned %s, got %s)", e.Server, ShortFP(e.Old), ShortFP(e.New))
+	return fmt.Sprintf("%s: the TLS certificate changed (pinned %s, new %s)", e.Server, ShortFP(e.Old), ShortFP(e.New))
 }
 
 // StatusError is a non-2xx response.
@@ -146,13 +146,13 @@ type Client struct {
 func New(o Options) (*Client, error) {
 	u, err := url.Parse(strings.TrimRight(o.URL, "/"))
 	if err != nil {
-		return nil, fmt.Errorf("server URL: %w", err)
+		return nil, fmt.Errorf("API URL: %w", err)
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, fmt.Errorf("server URL must start with https:// or http://")
+		return nil, fmt.Errorf("the API URL must start with https:// or http://")
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("server URL has no host")
+		return nil, fmt.Errorf("the API URL has no address, for example https://192.168.1.10:8384")
 	}
 	if o.Timeout <= 0 {
 		o.Timeout = 30 * time.Second
@@ -251,7 +251,7 @@ func NormalizePin(s string) (string, error) {
 		return "", nil
 	}
 	if b, err := hex.DecodeString(s); err != nil || len(b) != sha256.Size {
-		return "", errors.New("not a SHA-256 fingerprint (64 hex characters)")
+		return "", errors.New("the value is not a SHA-256 fingerprint (64 hex characters)")
 	}
 	return s, nil
 }
@@ -282,7 +282,7 @@ func ShortFP(fp string) string {
 // renewal). Anything else aborts the handshake with a CertChangedError.
 func (c *Client) verify(cs tls.ConnectionState) error {
 	if len(cs.PeerCertificates) == 0 {
-		return errors.New("server presented no certificate")
+		return errors.New("the server sent no certificate")
 	}
 	leaf := cs.PeerCertificates[0]
 	fp := Fingerprint(leaf)
@@ -306,12 +306,12 @@ func (c *Client) verify(cs tls.ConnectionState) error {
 		return nil
 	case c.pin == "":
 		if caSigned {
-			log.Info("pinned CA-signed certificate")
+			log.Info("CA-signed certificate pinned")
 		} else {
-			log.Info("trusting self-signed certificate on first use")
+			log.Info("self-signed certificate accepted and pinned on first use")
 		}
 	case caSigned:
-		log.Info("certificate renewed", "old", ShortFP(c.pin))
+		log.Info("certificate replaced, new certificate pinned", "old", ShortFP(c.pin))
 	default:
 		return &CertChangedError{Server: c.opts.Name, Old: c.pin, New: fp, NotAfter: leaf.NotAfter}
 	}
@@ -393,7 +393,7 @@ func (c *Client) fetchOnce(ctx context.Context, ep endpoint, q url.Values, timeo
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return nil, fmt.Errorf("%s: reading response: %w", ep, err)
+		return nil, fmt.Errorf("%s: cannot read the answer: %w", ep, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg := strings.TrimSpace(string(body))
@@ -424,7 +424,7 @@ func (c *Client) getJSON(ctx context.Context, ep endpoint, q url.Values, out any
 		return err
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("%s: decoding response: %w", ep, err)
+		return fmt.Errorf("%s: the answer is not valid JSON: %w", ep, err)
 	}
 	return nil
 }
@@ -575,7 +575,7 @@ func (c *Client) Events(ctx context.Context, since int64, timeout time.Duration,
 	}
 	var evs []Event
 	if err := json.Unmarshal(body, &evs); err != nil {
-		return nil, fmt.Errorf("%s: decoding response: %w", epEvents, err)
+		return nil, fmt.Errorf("%s: the answer is not valid JSON: %w", epEvents, err)
 	}
 	for i := range evs {
 		if evs[i].Type == "ConfigSaved" {

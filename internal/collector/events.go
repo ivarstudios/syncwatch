@@ -192,11 +192,11 @@ func (c *Collector) missedEvents(ctx context.Context, from, to int64, evs []stcl
 
 	if now.Sub(g.lastFull) >= gapFullEvery {
 		g.lastFull = now
-		c.log.Info("missed events; running a full re-check", "from", from, "to", to)
+		c.log.Info("events missed, full check started", "from", from, "to", to)
 		c.FullCheckNow()
 		return
 	}
-	c.log.Info("missed events; a full re-check ran recently, deferring the next", "from", from, "to", to)
+	c.log.Info("events missed, the next full check waits because one ran recently", "from", from, "to", to)
 	if !g.fullPending {
 		g.fullPending = true
 		time.AfterFunc(g.lastFull.Add(gapFullEvery).Sub(now), func() {
@@ -334,7 +334,7 @@ func (c *Collector) diskChange(d stclient.DiskChangeData, at time.Time) {
 			return
 		}
 		s.Structure.Nested[key] = &model.NestedDir{Path: full, Parent: top, Share: share.Path, FolderID: folderID, Source: "event", FoundAt: at}
-		c.log.Info("nested project folder created", "path", full)
+		c.log.Info("new nested project folder found", "path", full)
 	})
 }
 

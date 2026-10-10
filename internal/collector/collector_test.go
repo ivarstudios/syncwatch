@@ -621,7 +621,7 @@ func TestKeyOnlySentToItsURL(t *testing.T) {
 	defer cancel()
 	go m.Run(ctx)
 	sv := waitFor(t, hub, "refusal", func(s *model.Server) bool { return s.LastError != "" })
-	if sv.Status != model.StatusDown || !strings.Contains(sv.LastError, "enter the API key again") {
+	if sv.Status != model.StatusDown || !strings.Contains(sv.LastError, "type the API key again") {
 		t.Fatalf("%+v", sv)
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -786,7 +786,7 @@ func TestUnreadableAPIKeyMarksServerDownAndRetries(t *testing.T) {
 		st.Close()
 	}()
 	sv := waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
-	if !strings.Contains(sv.LastError, "API key can't be read") {
+	if !strings.Contains(sv.LastError, "cannot read the API key") {
 		t.Fatalf("LastError %q", sv.LastError)
 	}
 	// The key is entered again (now encrypted with the new secret key): the
@@ -906,7 +906,7 @@ func TestCertChangedBacksOffAndWarnsOnce(t *testing.T) {
 		t.Fatal("no CertChange recorded")
 	}
 	time.Sleep(time.Second)
-	const line = "certificate changed; not connecting until it is accepted"
+	const line = "certificate changed, syncwatch does not connect until an administrator accepts it"
 	n, warns := logs.count(line), logs.count("level=WARN msg=\""+line)
 	t.Logf("%d attempts in about 1 s, %d at WARN", n, warns)
 	// Attempts at 0, 50, 150, 300, 500, 750 ms with the growing backoff;
@@ -1025,14 +1025,14 @@ func TestShortErr(t *testing.T) {
 	}{
 		{&stclient.StatusError{Endpoint: "/rest/system/status", Code: 500, Body: "boom"}, "/rest/system/status: HTTP 500 boom"},
 		{fmt.Errorf("db/status x: %w", &stclient.StatusError{Endpoint: "/rest/db/status", Code: 401}), "/rest/db/status: HTTP 401 (check the API key)"},
-		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "timed out"},
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "timeout"},
 		{errors.New(": EOF"), "connection closed early"},
 		{errors.New("/rest/events: reading response: unexpected EOF"), "connection closed early"},
 		{errors.New(": dial tcp 127.0.0.1:1: connect: connection refused"), "connection refused"},
 		{errors.New(": dial tcp 127.0.0.1:1: connectex: No connection could be made because the target machine actively refused it."), "connection refused"},
 		{errors.New(": dial tcp 10.0.0.9:8384: connect: no route to host"), "no route to host"},
-		{errors.New(": dial tcp 10.0.0.9:8384: i/o timeout"), "timed out"},
-		{errors.New(": net/http: TLS handshake timeout"), "timed out"},
+		{errors.New(": dial tcp 10.0.0.9:8384: i/o timeout"), "timeout"},
+		{errors.New(": net/http: TLS handshake timeout"), "timeout"},
 		{errors.New(": read tcp 10.0.0.1:5->10.0.0.9:8384: read: connection reset by peer"), "connection reset"},
 		{errors.New(": read tcp 10.0.0.1:5->10.0.0.9:8384: wsarecv: An existing connection was forcibly closed by the remote host."), "connection reset"},
 		{errors.New(": dial tcp: lookup nas.invalid on 127.0.0.11:53: no such host"), "host name not found"},
@@ -1165,7 +1165,7 @@ func TestEventBatchRefreshesOnce(t *testing.T) {
 	mu.Lock()
 	pendingFail = true
 	mu.Unlock()
-	const line = "re-reading pending devices and folders"
+	const line = "cannot read the pending devices and folders again"
 	for i := 0; i < 2; i++ {
 		n := fake.count("/rest/cluster/pending/devices")
 		fake.push("PendingDevicesChanged", map[string]any{})

@@ -21,7 +21,7 @@ func Load(st *store.Store) (*config.Config, error) {
 	}
 	var c config.Config
 	if err := json.Unmarshal([]byte(raw), &c); err != nil {
-		return nil, fmt.Errorf("stored configuration is corrupt: %w", err)
+		return nil, fmt.Errorf("cannot read the stored configuration: %w", err)
 	}
 	c.ApplyDefaults()
 	return &c, nil

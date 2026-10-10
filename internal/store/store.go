@@ -97,7 +97,7 @@ var schema = []string{
 // secrets key; see LoadKey.
 func Open(path string, key []byte) (*Store, error) {
 	if len(key) != 32 {
-		return nil, errors.New("store: secrets key must be 32 bytes")
+		return nil, errors.New("store: the secret key must be 32 bytes")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -156,7 +156,7 @@ func (s *Store) migrate() error {
 	var v int
 	_ = s.db.QueryRow(`SELECT value FROM settings WHERE key='schema_version'`).Scan(&v)
 	if v > schemaVersion {
-		return fmt.Errorf("database schema %d is newer than this syncwatch (%d)", v, schemaVersion)
+		return fmt.Errorf("the database schema %d is newer than this syncwatch version (%d)", v, schemaVersion)
 	}
 	_, err := s.db.Exec(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, schemaVersion)
 	return err

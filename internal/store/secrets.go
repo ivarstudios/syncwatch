@@ -68,7 +68,7 @@ func LoadKey(dataDir, envValue string) ([]byte, error) {
 	if envValue = strings.TrimSpace(envValue); envValue != "" {
 		b, err := base64.StdEncoding.DecodeString(envValue)
 		if err != nil || len(b) != 32 {
-			return nil, errors.New("SYNCWATCH_SECRET_KEY must be a base64-encoded 32-byte random key; create one with: openssl rand -base64 32")
+			return nil, errors.New("SYNCWATCH_SECRET_KEY must be 32 random bytes, base64-encoded. Make one with: openssl rand -base64 32")
 		}
 		return b, nil
 	}
@@ -121,7 +121,7 @@ func readKeyFile(path string) ([]byte, error) {
 	}
 	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
 	if err != nil || len(key) != 32 {
-		return nil, fmt.Errorf("%s is not a valid key", path)
+		return nil, fmt.Errorf("%s is not a valid secret key", path)
 	}
 	return key, nil
 }
@@ -184,7 +184,7 @@ func (s *Store) Secret(name string) (string, error) {
 	}
 	pt, err := gcm.Open(nil, nonce, ct, []byte(name))
 	if err != nil {
-		return "", fmt.Errorf("secret %s can't be decrypted (wrong secret key?)", name)
+		return "", fmt.Errorf("cannot decrypt the secret %s: check the secret key", name)
 	}
 	return string(pt), nil
 }
