@@ -9,12 +9,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -300,5 +303,40 @@ func TestNormalizePin(t *testing.T) {
 	}
 	if _, err := New(Options{URL: "https://127.0.0.1:1", Pin: "not-a-fingerprint"}); err == nil {
 		t.Fatal("New accepted a pin that can never match")
+	}
+}
+
+func TestCleanErr(t *testing.T) {
+	ce := &CertChangedError{Server: "s", Old: strings.Repeat("ab", 32), New: strings.Repeat("cd", 32)}
+	wrap := func(err error) error {
+		return &url.Error{Op: "Get", URL: "https://nas.invalid:8384/rest/system/status", Err: err}
+	}
+	for _, c := range []struct {
+		in   error
+		want string
+	}{
+		{wrap(io.EOF), "EOF"},
+		{wrap(errors.New("connection refused")), "connection refused"},
+		{wrap(context.DeadlineExceeded), "context deadline exceeded"},
+		{wrap(ce), ce.Error()},
+		{wrap(fmt.Errorf("tls: %w", ce)), ce.Error()},
+		{errors.New("plain"), "plain"},
+	} {
+		got := cleanErr(c.in)
+		if got.Error() != c.want {
+			t.Errorf("cleanErr(%v) = %q, want %q", c.in, got, c.want)
+		}
+		if strings.Contains(got.Error(), "nas.invalid") || strings.HasPrefix(got.Error(), ":") {
+			t.Errorf("cleanErr(%v) = %q: URL or stray prefix", c.in, got)
+		}
+	}
+	if _, ok := IsCertChanged(cleanErr(wrap(ce))); !ok {
+		t.Fatal("CertChangedError lost")
+	}
+	if _, ok := IsCertChanged(cleanErr(wrap(fmt.Errorf("tls: %w", ce)))); !ok {
+		t.Fatal("wrapped CertChangedError lost")
+	}
+	if !errors.Is(cleanErr(wrap(context.DeadlineExceeded)), context.DeadlineExceeded) {
+		t.Fatal("deadline error lost")
 	}
 }

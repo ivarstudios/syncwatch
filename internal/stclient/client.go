@@ -403,15 +403,15 @@ func (c *Client) fetchOnce(ctx context.Context, ep endpoint, q url.Values, timeo
 	return body, nil
 }
 
-// cleanErr unwraps url.Error so messages don't repeat the URL (which may be long),
-// but keeps the CertChangedError reachable through errors.As.
+// cleanErr unwraps url.Error so messages don't repeat the URL (which may be
+// long) or the method, but keeps the CertChangedError reachable through errors.As.
 func cleanErr(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {
 		if ce, ok := IsCertChanged(ue.Err); ok {
 			return ce
 		}
-		return fmt.Errorf("%s: %w", strings.TrimPrefix(ue.Op, "Get"), ue.Err)
+		return ue.Err
 	}
 	return err
 }
