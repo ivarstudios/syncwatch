@@ -180,6 +180,8 @@ type Folder struct {
 	LastFileName             string
 
 	Completion map[string]*Completion // by remote device ID
+
+	LastLocalChange time.Time // newest LocalChangeDetected seen by the collector
 }
 
 // DisplayName is the label, or the ID when the label is empty.

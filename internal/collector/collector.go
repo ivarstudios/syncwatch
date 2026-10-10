@@ -44,6 +44,8 @@ type Collector struct {
 	lastBase      time.Time
 	scanMu        sync.Mutex
 	scanning      bool
+	scanTimerOn   bool // scanTimer runs (events mode)
+	gaps          gapState
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
@@ -360,8 +362,7 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 			continue
 		}
 		if c.lastEventID > 0 && evs[0].ID > c.lastEventID+1 {
-			c.log.Info("missed events; running a full re-check", "from", c.lastEventID, "to", evs[0].ID)
-			c.FullCheckNow()
+			c.missedEvents(ctx, c.lastEventID, evs[0].ID, evs)
 		}
 		c.applyBatch(ctx, evs)
 		c.update(func(s *model.Server) { s.LastEvent = now })
@@ -657,6 +658,11 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		s.PathSep = status.PathSeparator
 		s.Version = version.Version
 		s.OS = version.OS
+		for id, f := range newFolders {
+			if old := s.Folders[id]; old != nil {
+				f.LastLocalChange = old.LastLocalChange // only events know it
+			}
+		}
 		s.Folders = newFolders
 		s.Devices = newDevices
 		s.Connections = newConns
