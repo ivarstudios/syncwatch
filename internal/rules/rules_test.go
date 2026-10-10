@@ -299,9 +299,11 @@ func TestFolderHealth(t *testing.T) {
 	if h4.MinDuration != time.Hour {
 		t.Fatalf("H4 for failing files only: min duration %v, want 1h", h4.MinDuration)
 	}
-	if h4 := mustFind(t, fs, "H4", "file watcher error"); h4.MinDuration != 0 {
-		t.Fatalf("a watcher error must open H4 at once, not after %v", h4.MinDuration)
+	w := mustFind(t, fs, "H4", "File watcher failed for LIVE-WATCH")
+	if w.MinDuration != time.Hour || w.Severity != model.Warn || w.Urgent {
+		t.Fatalf("a watcher error alone must be a non-urgent warning after 1 h: %+v", w)
 	}
+	mustNot(t, fs, "H4", "Sync stopped for LIVE-WATCH")
 	h5 := mustFind(t, fs, "H5", "LIVE-STUCK on AKKA")
 	if h5.MinDuration != 24*time.Hour {
 		t.Fatal("H5 min duration")
@@ -313,6 +315,55 @@ func TestFolderHealth(t *testing.T) {
 	}
 	mustFind(t, fs, "H6", "MORTIS has paused folder LIVE-REMOTE")
 	mustFind(t, fs, "H10", "2 new sync conflict")
+}
+
+// Syncthing keeps syncing with periodic scans when the file watcher fails,
+// which inotify limits make common on big shares: that is a warning after an
+// hour, never urgent, and it doesn't change how real sync problems are raised.
+func TestWatcherErrorIsNotUrgent(t *testing.T) {
+	c := ivarConfig(t)
+	tr := true
+	c.Checks["H4"] = config.Check{Urgent: &tr}
+	a := server("a", "A", akkaID)
+	f := folder("w", "LIVE-W", "/s/A-LIVE-1SOURCE/LIVE-W")
+	f.WatchError = "failed to set up inotify handler. Please increase inotify limits"
+	a.Folders["w"] = f
+	fs := run(t, c, a)
+	w := mustFind(t, fs, "H4", "LIVE-W")
+	if w.Urgent || w.Severity != model.Warn || w.MinDuration != time.Hour || !strings.Contains(w.Message, "periodic scans") {
+		t.Fatalf("watcher error alone: %+v", w)
+	}
+	n := 0
+	for _, x := range fs {
+		if x.Check == "H4" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want one H4, got:\n%s", dump(fs))
+	}
+	// A folder error next to it is still urgent at once, as its own finding.
+	f.State, f.Error = "error", "folder marker missing"
+	fs = run(t, c, a)
+	stop := mustFind(t, fs, "H4", "Sync stopped for LIVE-W")
+	if !stop.Urgent || stop.Severity != model.Error || stop.MinDuration != 0 || strings.Contains(stop.Message, "watcher") {
+		t.Fatalf("folder error with a watcher error: %+v", stop)
+	}
+	if again := mustFind(t, fs, "H4", "File watcher failed"); again.ID == stop.ID || again.Urgent {
+		t.Fatal("the watcher warning must stay separate and non-urgent")
+	}
+	// Failing files keep their own threshold.
+	f.State, f.Error, f.PullErrors = "idle", "", 2
+	stop = mustFind(t, run(t, c, a), "H4", "Sync stopped for LIVE-W")
+	if stop.MinDuration != time.Hour || stop.Severity != model.Error || !stop.Urgent {
+		t.Fatalf("failing files with a watcher error: %+v", stop)
+	}
+	// A watcher that fails for lack of disk space is a sync problem.
+	f.PullErrors, f.WatchError = 0, "no space left on device"
+	stop = mustFind(t, run(t, c, a), "H4", "out of space")
+	if !stop.Urgent || stop.MinDuration != 0 {
+		t.Fatalf("out of space: %+v", stop)
+	}
 }
 
 func TestDevicesAndVersions(t *testing.T) {

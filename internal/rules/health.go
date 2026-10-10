@@ -71,6 +71,10 @@ var busyStates = map[string]bool{
 	"sync-preparing": true, "cleaning": true, "clean-waiting": true, "starting": true,
 }
 
+// watcherGrace is how long a file watcher error must last before it is
+// reported; the folder keeps syncing through its periodic scans meanwhile.
+const watcherGrace = time.Hour
+
 // H4, H5, H6 (folders), H5 (devices), H6 (remote paused)
 func (e *evaluator) folderHealth(sv *model.Server) {
 	ids := sortedFolderIDs(sv)
@@ -111,7 +115,17 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			reasons = append(reasons, fmt.Sprintf("%d file(s) failing to sync", nErr))
 		}
 		if f.WatchError != "" {
-			reasons = append(reasons, "file watcher error: "+f.WatchError)
+			// Syncthing keeps syncing with its periodic scans when the
+			// watcher fails (inotify limits on a big share, typically), so
+			// this is a warning once it has lasted a while, never urgent.
+			id := e.add("H4", sv.ID, "watcher:"+f.ID, model.Finding{
+				Subject:     subject,
+				Severity:    model.Warn,
+				Message:     fmt.Sprintf("File watcher failed for %s on %s; changes are found by periodic scans only (%s)", name, sv.Name, f.WatchError),
+				MinDuration: watcherGrace,
+				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("Watch error", f.WatchError)},
+			})
+			e.soft[id] = true
 		}
 		if len(reasons) > 0 {
 			var paths []string
