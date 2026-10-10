@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -82,6 +83,89 @@ func TestBootstrapSecretsRemovedAfterImport(t *testing.T) {
 	}
 	if b2, _ := os.ReadFile(path); !bytes.Equal(b2, []byte(bootstrapYAML)) {
 		t.Fatal("a bootstrap file that wasn't imported must not be changed")
+	}
+}
+
+// api_key: null (or ~) is an empty value, not a secret: nothing is imported
+// from it, so it must not be reported as still in the file on every start.
+func TestBootstrapNullIsNotASecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syncwatch.yaml")
+	const yaml = "servers:\n  - name: A\n    url: https://10.0.0.1:8384\n    api_key: null\nnotifications:\n  discord_webhook: ~\napi:\n  token:\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.OpenMemory(make([]byte, 32))
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	for i := 0; i < 2; i++ {
+		if _, err := LoadConfig(st, path, log); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if strings.Contains(logs.String(), "still contains secrets") {
+		t.Fatalf("null values reported as secrets:\n%s", logs.String())
+	}
+	if b, _ := os.ReadFile(path); string(b) != yaml {
+		t.Fatalf("file changed:\n%s", b)
+	}
+}
+
+// A symlinked bootstrap file (Kubernetes-style mounts, hand-made links) is
+// scrubbed where the plaintext lives: in the target, with the link kept.
+func TestBootstrapScrubFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.yaml")
+	link := filepath.Join(dir, "syncwatch.yaml")
+	if err := os.WriteFile(target, []byte(bootstrapYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks not available: %v", err)
+	}
+	st, _ := store.OpenMemory(make([]byte, 32))
+	var logs bytes.Buffer
+	if _, err := LoadConfig(st, link, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "removed the imported secrets") {
+		t.Fatalf("scrub not reported:\n%s", logs.String())
+	}
+	b, _ := os.ReadFile(target)
+	if strings.Contains(string(b), "secret-akka") || !strings.Contains(string(b), scrubbedNote) {
+		t.Fatalf("symlink target still holds the secrets:\n%s", b)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the symlink was replaced by a file")
+	}
+}
+
+// A single-file bind mount can't be replaced by rename; the file is then
+// rewritten in place rather than left with the secrets.
+func TestBootstrapScrubInPlaceWhenRenameFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syncwatch.yaml")
+	if err := os.WriteFile(path, []byte(bootstrapYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	renameFile = func(string, string) error { return errors.New("device or resource busy") }
+	t.Cleanup(func() { renameFile = orig })
+	st, _ := store.OpenMemory(make([]byte, 32))
+	var logs bytes.Buffer
+	if _, err := LoadConfig(st, path, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "removed the imported secrets") {
+		t.Fatalf("scrub not reported:\n%s", logs.String())
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "secret-hook") || !strings.Contains(string(b), "# IVAR bootstrap") {
+		t.Fatalf("file not rewritten in place:\n%s", b)
+	}
+	if _, err := config.ParseYAML(b); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
+		t.Fatalf("temp file left behind: %v", entries)
 	}
 }
 

@@ -111,7 +111,7 @@ func LoadConfig(st *store.Store, bootstrap string, log *slog.Logger) (*config.Co
 				// The secrets are encrypted in the database now; don't leave
 				// them in plaintext next to it.
 				if err := scrubBootstrap(bootstrap); err != nil {
-					log.Warn("could not remove the imported secrets from the bootstrap file; delete it", "file", bootstrap, "err", err)
+					log.Warn("could not remove the imported secrets from the bootstrap file: it still holds them in plaintext; delete it or remove them by hand", "file", bootstrap, "err", err)
 				} else {
 					log.Info("removed the imported secrets from the bootstrap file", "file", bootstrap)
 				}
