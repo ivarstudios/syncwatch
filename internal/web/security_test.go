@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -310,7 +311,7 @@ func TestLimiterSlowsDownInsteadOfLockingOut(t *testing.T) {
 	// Failures spread over a few addresses reach the global threshold.
 	crossed := false
 	for i := 0; i < l.slowAll; i++ {
-		crossed = l.fail(fmt.Sprintf("10.0.0.%d", i/l.maxIP), now) || crossed
+		crossed = l.fail(fmt.Sprintf("10.0.0.%d", i/l.maxIP), now, RoleAdmin) || crossed
 	}
 	if !crossed {
 		t.Fatal("crossing the threshold was not reported")
@@ -326,7 +327,7 @@ func TestLimiterSlowsDownInsteadOfLockingOut(t *testing.T) {
 	}
 	// A flood only raises the delay to its maximum and keeps memory bounded.
 	for i := 0; i < 10000; i++ {
-		l.fail(fmt.Sprintf("10.1.%d.%d", i/250, i%250), now)
+		l.fail(fmt.Sprintf("10.1.%d.%d", i/250, i%250), now, RoleAdmin)
 	}
 	if ok, delay := l.check("10.9.9.9", now); !ok || delay != l.maxDelay {
 		t.Fatalf("after a flood: ok=%v delay=%v", ok, delay)
@@ -360,5 +361,133 @@ func TestSecureCookiesOverHTTPS(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no CSRF cookie")
+	}
+}
+
+// Attempts sent at the same moment must not all pass the per-address limit
+// before the first failure is recorded.
+func TestLimiterReservesAttempts(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	for i := 0; i < l.maxIP; i++ {
+		if ok, _ := l.check("10.0.0.1", now); !ok {
+			t.Fatalf("attempt %d refused with nothing failed yet", i)
+		}
+	}
+	if ok, _ := l.check("10.0.0.1", now); ok {
+		t.Fatal("a sixth attempt passed while five were still being checked")
+	}
+	if ok, _ := l.check("10.0.0.2", now); !ok {
+		t.Fatal("another address was affected")
+	}
+	l.success("10.0.0.2", RoleAdmin)
+	// Attempts that end free their slot; failures keep it taken.
+	l.fail("10.0.0.1", now, RoleAdmin)
+	if ok, _ := l.check("10.0.0.1", now); ok {
+		t.Fatal("attempt passed with four in flight and one failed")
+	}
+	for i := 0; i < l.maxIP-1; i++ {
+		l.success("10.0.0.1", RoleAdmin)
+	}
+	if ok, _ := l.check("10.0.0.1", now); !ok {
+		t.Fatal("attempt refused after the others ended successfully")
+	}
+	l.fail("10.0.0.1", now, RoleAdmin)
+	if _, ok := l.perIP["10.0.0.2"]; ok {
+		t.Fatal("an address with nothing against it is remembered")
+	}
+}
+
+// A successful viewer login clears the viewer failures only: knowing the
+// viewer password buys no extra guesses at the admin password.
+func TestLimiterCountsRolesSeparately(t *testing.T) {
+	l := newLimiter()
+	now := time.Now()
+	for i := 0; i < l.maxIP-1; i++ {
+		l.check("10.0.0.1", now)
+		l.fail("10.0.0.1", now, RoleAdmin, RoleViewer)
+	}
+	l.check("10.0.0.1", now)
+	l.success("10.0.0.1", RoleViewer)
+	l.check("10.0.0.1", now)
+	l.fail("10.0.0.1", now, RoleAdmin, RoleViewer)
+	if ok, _ := l.check("10.0.0.1", now); ok {
+		t.Fatal("five failed admin guesses did not block the address after a viewer login")
+	}
+	// The admin's own success forgets the guesses at the admin password.
+	l2 := newLimiter()
+	for i := 0; i < l2.maxIP-1; i++ {
+		l2.check("10.0.0.1", now)
+		l2.fail("10.0.0.1", now, RoleAdmin)
+	}
+	l2.check("10.0.0.1", now)
+	l2.success("10.0.0.1", RoleAdmin)
+	for i := 0; i < l2.maxIP-1; i++ {
+		if ok, _ := l2.check("10.0.0.1", now); !ok {
+			t.Fatalf("attempt %d after an admin login refused", i)
+		}
+		l2.fail("10.0.0.1", now, RoleAdmin)
+	}
+}
+
+// Forty wrong passwords sent at once from one address: at most five are
+// checked, the rest are refused.
+func TestParallelLoginsAreLimited(t *testing.T) {
+	e := newEnv(t, twoServers)
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	csrf := e.csrf("/login")
+	const n = 40
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	codes := map[int]int{}
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			resp, err := e.http.PostForm(e.srv.URL+"/login", url.Values{"csrf": {csrf}, "password": {fmt.Sprintf("guess %d", i)}})
+			if err != nil {
+				return
+			}
+			resp.Body.Close()
+			mu.Lock()
+			codes[resp.StatusCode]++
+			mu.Unlock()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if codes[http.StatusUnauthorized] > 5 || codes[http.StatusUnauthorized]+codes[http.StatusTooManyRequests] != n {
+		t.Fatalf("status counts after %d parallel wrong logins: %v", n, codes)
+	}
+}
+
+// With a viewer password, guesses at the admin password are still capped at
+// five per address: logging in as viewer in between doesn't reset them.
+func TestViewerLoginKeepsAdminFailures(t *testing.T) {
+	e := newEnv(t, twoServers+"access: {viewer: password}\n")
+	ah, _ := HashPassword("correct horse battery")
+	vh, _ := HashPassword("viewer password 1")
+	_ = e.st.SetSetting(KeyAdminHash, ah)
+	_ = e.st.SetSetting(KeyViewerHash, vh)
+	csrf := e.csrf("/login")
+	login := func(pw string) int {
+		return e.post("/login", url.Values{"csrf": {csrf}, "password": {pw}}).StatusCode
+	}
+	for i := 0; i < 4; i++ {
+		if code := login(fmt.Sprintf("admin guess %d", i)); code != http.StatusUnauthorized {
+			t.Fatalf("guess %d: %d", i, code)
+		}
+	}
+	if code := login("viewer password 1"); code != http.StatusSeeOther {
+		t.Fatalf("viewer login: %d", code)
+	}
+	if code := login("admin guess 4"); code != http.StatusUnauthorized {
+		t.Fatalf("fifth guess: %d", code)
+	}
+	if code := login("correct horse battery"); code != http.StatusTooManyRequests {
+		t.Fatalf("after five wrong guesses and a viewer login: %d, want 429", code)
 	}
 }

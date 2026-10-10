@@ -409,15 +409,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 	wait(r, delay)
 	pw := r.FormValue("password")
 	role := RoleNone
+	tried := []string{RoleAdmin} // a wrong password was a guess at each password it was checked against
 	if h, _ := s.st.Setting(KeyAdminHash); h != "" && CheckPassword(pw, h) {
 		role = RoleAdmin
 	} else if s.cfg.Get().Access.Viewer == config.ViewerPassword {
+		tried = append(tried, RoleViewer)
 		if h, _ := s.st.Setting(KeyViewerHash); h != "" && CheckPassword(pw, h) {
 			role = RoleViewer
 		}
 	}
 	if role == RoleNone {
-		if s.limiter.fail(ip, now) {
+		if s.limiter.fail(ip, now, tried...) {
 			s.log.Warn("many failed logins from different addresses; logins are slowed down for a while")
 		}
 		s.log.Warn("failed login", "ip", ip)
@@ -425,7 +427,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 		s.render(w, r, http.StatusUnauthorized, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "Wrong password."})
 		return
 	}
-	s.limiter.success(ip)
+	s.limiter.success(ip, role)
 	if err := s.startSession(w, r, role); err != nil {
 		http.Error(w, "could not start session", http.StatusInternalServerError)
 		return
@@ -466,10 +468,11 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	want := s.SetupToken()
 	got := strings.TrimSpace(r.FormValue("token"))
 	if want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
-		s.limiter.fail(ip, s.now())
+		s.limiter.fail(ip, s.now(), RoleAdmin)
 		s.render(w, r, http.StatusUnauthorized, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "Wrong setup token. It is printed in the container log."})
 		return
 	}
+	s.limiter.success(ip, RoleAdmin)
 	pw := r.FormValue("password")
 	if err := checkNewPassword(pw); err != nil {
 		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": err.Error(), "Token": got})

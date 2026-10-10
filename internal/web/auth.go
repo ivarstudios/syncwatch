@@ -214,7 +214,7 @@ func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 // so nobody can lock the admin out by failing logins from a few addresses.
 type limiter struct {
 	mu       sync.Mutex
-	perIP    map[string][]time.Time
+	perIP    map[string]*attempts
 	global   []time.Time
 	window   time.Duration
 	maxIP    int
@@ -223,8 +223,15 @@ type limiter struct {
 	maxDelay time.Duration
 }
 
+// attempts is what the limiter holds against one client address: attempts
+// still being checked, and failures by the role whose password was tried.
+type attempts struct {
+	inflight int
+	failed   map[string][]time.Time
+}
+
 func newLimiter() *limiter {
-	return &limiter{perIP: map[string][]time.Time{}, window: 10 * time.Minute, maxIP: 5, slowAll: 30,
+	return &limiter{perIP: map[string]*attempts{}, window: 10 * time.Minute, maxIP: 5, slowAll: 30,
 		step: 200 * time.Millisecond, maxDelay: 5 * time.Second}
 }
 
@@ -236,36 +243,76 @@ func prune(ts []time.Time, cutoff time.Time) []time.Time {
 	return ts[i:]
 }
 
-// check reports whether another attempt from ip may be made now, and how
-// long to wait before checking the password.
+// check reserves an attempt from ip. It reports whether the attempt may be
+// made now, and how long to wait before checking the password. The attempt
+// counts against ip until fail or success ends it, so attempts sent at the
+// same moment can't all pass before the first failure is recorded.
 func (l *limiter) check(ip string, now time.Time) (ok bool, delay time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	cut := now.Add(-l.window)
-	l.perIP[ip] = prune(l.perIP[ip], cut)
 	l.global = prune(l.global, cut)
-	if len(l.perIP[ip]) >= l.maxIP {
+	a := l.attempts(ip)
+	for role, ts := range a.failed {
+		if ts = prune(ts, cut); len(ts) == 0 {
+			delete(a.failed, role)
+			continue
+		}
+		a.failed[role] = ts
+		if len(ts)+a.inflight >= l.maxIP {
+			return false, 0
+		}
+	}
+	if a.inflight >= l.maxIP {
 		return false, 0
 	}
+	a.inflight++
 	if over := len(l.global) - l.slowAll; over >= 0 {
 		delay = min(time.Duration(over+1)*l.step, l.maxDelay)
 	}
 	return true, delay
 }
 
-// fail records a failed attempt. It reports true when failures from
-// everywhere have just reached the point where attempts are slowed down.
-func (l *limiter) fail(ip string, now time.Time) bool {
+func (l *limiter) attempts(ip string) *attempts {
+	a := l.perIP[ip]
+	if a == nil {
+		a = &attempts{failed: map[string][]time.Time{}}
+		l.perIP[ip] = a
+	}
+	return a
+}
+
+// end finishes an attempt from ip, forgetting the address once nothing is
+// held against it.
+func (l *limiter) end(ip string, edit func(*attempts)) {
+	a := l.attempts(ip)
+	if a.inflight > 0 {
+		a.inflight--
+	}
+	edit(a)
+	if a.inflight == 0 && len(a.failed) == 0 {
+		delete(l.perIP, ip)
+	}
+}
+
+// fail ends an attempt that failed, counting it against the roles whose
+// password was tried. It reports true when failures from everywhere have
+// just reached the point where attempts are slowed down.
+func (l *limiter) fail(ip string, now time.Time, roles ...string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.perIP[ip] = append(l.perIP[ip], now)
+	l.end(ip, func(a *attempts) {
+		for _, role := range roles {
+			a.failed[role] = append(a.failed[role], now)
+		}
+	})
 	l.global = append(l.global, now)
 	// Only the count up to the longest delay matters.
 	if limit := l.slowAll + int(l.maxDelay/l.step) + 1; len(l.global) > limit {
 		l.global = l.global[len(l.global)-limit:]
 	}
 	if len(l.perIP) > 10000 {
-		l.perIP = map[string][]time.Time{}
+		l.perIP = map[string]*attempts{}
 	}
 	return len(l.global) == l.slowAll
 }
@@ -281,10 +328,13 @@ func wait(r *http.Request, d time.Duration) {
 	}
 }
 
-func (l *limiter) success(ip string) {
+// success ends an attempt that passed and forgets the failed guesses at that
+// role's password from ip. Guesses at the other role's password stay, so
+// knowing the viewer password buys no extra guesses at the admin password.
+func (l *limiter) success(ip, role string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.perIP, ip)
+	l.end(ip, func(a *attempts) { delete(a.failed, role) })
 }
 
 func clientIP(r *http.Request) string {

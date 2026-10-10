@@ -130,10 +130,10 @@ func (s *Server) limitedCheck(r *http.Request, check func() bool) (ok, limited b
 	}
 	wait(r, delay)
 	if check() {
-		s.limiter.success(ip)
+		s.limiter.success(ip, RoleAdmin)
 		return true, false
 	}
-	s.limiter.fail(ip, s.now())
+	s.limiter.fail(ip, s.now(), RoleAdmin)
 	return false, false
 }
 
