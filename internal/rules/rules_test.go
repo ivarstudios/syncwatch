@@ -366,6 +366,32 @@ func TestWatcherErrorIsNotUrgent(t *testing.T) {
 	}
 }
 
+// H6 (remote paused) and C3 (doesn't share it back) keep holding from the
+// last known remote state while the PC is disconnected and Syncthing reports
+// "unknown"; a new report while connected wins.
+func TestRemoteStateSurvivesDisconnect(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now.Add(-time.Hour)}
+	r := folder("r", "LIVE-REMOTE", "/s/AKKA-LIVE-1SOURCE/LIVE-REMOTE", pcID)
+	r.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "unknown"}
+	akka.Folders["r"] = r
+	d := folder("d", "LIVE-DEAD", "/s/AKKA-LIVE-1SOURCE/LIVE-DEAD", pcID)
+	d.Completion[pcID] = &model.Completion{RemoteState: "unknown"}
+	akka.Folders["d"] = d
+	fs := run(t, c, akka)
+	mustNot(t, fs, "H6", "MORTIS")
+	mustNot(t, fs, "C3", "")
+	akka.RemoteStates = map[string]map[string]string{"r": {pcID: "paused"}, "d": {pcID: "notSharing"}}
+	fs = run(t, c, akka)
+	mustFind(t, fs, "H6", "MORTIS has paused folder LIVE-REMOTE")
+	mustFind(t, fs, "C3", "LIVE-DEAD is shared with MORTIS, which doesn't share it back")
+	r.Completion[pcID].RemoteState, d.Completion[pcID].RemoteState = "valid", "valid"
+	fs = run(t, c, akka)
+	mustNot(t, fs, "H6", "MORTIS")
+	mustNot(t, fs, "C3", "")
+}
+
 func TestDevicesAndVersions(t *testing.T) {
 	c := ivarConfig(t)
 	akka := server("akka", "AKKA", akkaID)

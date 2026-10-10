@@ -31,6 +31,47 @@ func TestHubKeepsSeededDeviceID(t *testing.T) {
 	}
 }
 
+// Syncthing reports remoteState "unknown" for a disconnected device; the hub
+// keeps the last known state per folder and device until it is unshared.
+func TestRemoteStateRemembered(t *testing.T) {
+	h := NewHub(nil)
+	h.SetServers([]*Server{{ID: "a"}})
+	shared := func(state string) *Folder {
+		return &Folder{ID: "f", SharedWith: []string{"PC"}, Completion: map[string]*Completion{"PC": {RemoteState: state}}}
+	}
+	h.Update("a", func(s *Server) { s.Folders["f"] = shared("paused") })
+	// A full check replaces the folders while the PC is disconnected.
+	h.Update("a", func(s *Server) { s.Folders = map[string]*Folder{"f": shared("unknown")} })
+	snap := h.Snapshot()
+	if got := snap.Server("a").RemoteState("f", "PC"); got != "paused" {
+		t.Fatalf("after disconnect: %q", got)
+	}
+	if got := snap.Server("a").RemoteState("f", "OTHER"); got != "" {
+		t.Fatalf("unknown device: %q", got)
+	}
+	// The snapshot is a copy.
+	snap.Server("a").RemoteStates["f"]["PC"] = "valid"
+	if got := h.Snapshot().Server("a").RemoteState("f", "PC"); got != "paused" {
+		t.Fatalf("snapshot shares state with the hub: %q", got)
+	}
+	// Reported again while connected: the live value wins and is remembered.
+	h.Update("a", func(s *Server) { s.Folders["f"].Completion["PC"].RemoteState = "notSharing" })
+	h.Update("a", func(s *Server) { s.Folders["f"].Completion["PC"].RemoteState = "" })
+	if got := h.Snapshot().Server("a").RemoteState("f", "PC"); got != "notSharing" {
+		t.Fatalf("after a new report: %q", got)
+	}
+	// Unshared: forgotten.
+	h.Update("a", func(s *Server) { s.Folders["f"].SharedWith = nil })
+	if got := h.Snapshot().Server("a").RemoteState("f", "PC"); got != "" {
+		t.Fatalf("after unsharing: %q", got)
+	}
+	h.Update("a", func(s *Server) { s.Folders["f"] = shared("valid") })
+	h.Update("a", func(s *Server) { delete(s.Folders, "f") })
+	if n := len(h.Snapshot().Server("a").RemoteStates); n != 0 {
+		t.Fatalf("removed folder still remembered: %d", n)
+	}
+}
+
 func TestSyncStatus(t *testing.T) {
 	up := func(folders ...*Folder) *Server {
 		s := &Server{Status: StatusUp, Loaded: true, Folders: map[string]*Folder{}}

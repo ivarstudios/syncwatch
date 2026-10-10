@@ -180,7 +180,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			conn := sv.Connections[dev]
 			connected := conn != nil && conn.Connected
 			switch {
-			case c.RemoteState == "paused" && !e.Snapshot.IsServerDevice(dev):
+			case sv.RemoteState(f.ID, dev) == "paused" && !e.Snapshot.IsServerDevice(dev):
 				e.add("H6", sv.ID, "remote-paused:"+f.ID+":"+dev, model.Finding{
 					Subject:     fmt.Sprintf("%s on %s", name, dn),
 					Message:     fmt.Sprintf("%s has paused folder %s (seen from %s)", dn, name, sv.Name),

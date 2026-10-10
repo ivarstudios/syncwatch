@@ -129,7 +129,7 @@ func (e *evaluator) deadShares() {
 				}
 				dn := e.devName(dev)
 				var msg string
-				if c := f.Completion[dev]; c != nil && c.RemoteState == "notSharing" {
+				if sv.RemoteState(fid, dev) == "notSharing" {
 					msg = fmt.Sprintf("%s is shared with %s, which doesn't share it back", f.DisplayName(), dn)
 				} else if d.LastSeen.IsZero() && !e.connected(sv, dev) && !e.Snapshot.IsServerDevice(dev) {
 					// A polled server that never connected is H1/H2's business.

@@ -83,6 +83,8 @@ type Server struct {
 	Conflicts      map[string]int64 // raw conflict counter per folder ID
 	Structure      *Structure
 	Rate           Rate // current transfer rate over all connections
+
+	RemoteStates map[string]map[string]string // last known remoteState by folder ID, then device ID; see RemoteState
 }
 
 // Rate is a server's transfer rate between its two latest traffic readings.
@@ -140,6 +142,55 @@ func (s *Server) SyncStatus() string {
 		return SyncPaused
 	}
 	return worst
+}
+
+// knownRemoteState reports whether a remoteState says anything about the
+// device: Syncthing answers "unknown" for every disconnected device.
+func knownRemoteState(s string) bool { return s != "" && s != "unknown" }
+
+// RemoteState is a device's state for a folder (valid, paused or notSharing):
+// the one reported now, or the last known one while Syncthing reports
+// "unknown", which it does as soon as the device disconnects. The checks that
+// wait for a paused or unshared folder (H6, C3) would otherwise start over at
+// every disconnect and never open for a PC that is off every night.
+func (s *Server) RemoteState(folderID, dev string) string {
+	if f := s.Folders[folderID]; f != nil {
+		if c := f.Completion[dev]; c != nil && knownRemoteState(c.RemoteState) {
+			return c.RemoteState
+		}
+	}
+	return s.RemoteStates[folderID][dev]
+}
+
+// RememberRemoteStates records the remote states known now for RemoteState
+// and forgets those of folders and devices that are no longer shared. The
+// hub calls it after every update.
+func (s *Server) RememberRemoteStates() {
+	for id, f := range s.Folders {
+		for dev, c := range f.Completion {
+			if !knownRemoteState(c.RemoteState) || !f.SharedWithDevice(dev) {
+				continue
+			}
+			if s.RemoteStates == nil {
+				s.RemoteStates = map[string]map[string]string{}
+			}
+			if s.RemoteStates[id] == nil {
+				s.RemoteStates[id] = map[string]string{}
+			}
+			s.RemoteStates[id][dev] = c.RemoteState
+		}
+	}
+	for id, devs := range s.RemoteStates {
+		f := s.Folders[id]
+		for dev := range devs {
+			if f == nil || !f.SharedWithDevice(dev) {
+				delete(devs, dev)
+			}
+		}
+		if len(devs) == 0 {
+			delete(s.RemoteStates, id)
+		}
+	}
 }
 
 // CertInfo is the certificate the server presented last.
@@ -336,6 +387,10 @@ func (s *Server) Clone() *Server {
 	for k, cn := range s.Connections {
 		cc := *cn
 		c.Connections[k] = &cc
+	}
+	c.RemoteStates = make(map[string]map[string]string, len(s.RemoteStates))
+	for k, m := range s.RemoteStates {
+		c.RemoteStates[k] = maps.Clone(m)
 	}
 	c.PendingDevices = slices.Clone(s.PendingDevices)
 	c.PendingFolders = slices.Clone(s.PendingFolders)

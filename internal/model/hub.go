@@ -69,6 +69,7 @@ func (h *Hub) Update(id string, fn func(*Server)) bool {
 	if ok {
 		fn(s)
 		ensureMaps(s)
+		s.RememberRemoteStates()
 		h.signal()
 	}
 	h.mu.Unlock()
