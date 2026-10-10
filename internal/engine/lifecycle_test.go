@@ -235,3 +235,36 @@ func TestEvaluateWaitsForServerSet(t *testing.T) {
 		t.Fatal("H4 should resolve once the server is seen healthy")
 	}
 }
+
+// Raising a threshold must not resolve an open finding whose condition
+// still holds: the minimum duration gates the opening only.
+func TestRaisedThresholdKeepsOpenFinding(t *testing.T) {
+	r := newRig(t) // paused: 1h
+	r.hub.Update("a", func(s *model.Server) {
+		s.Folders["p"] = &model.Folder{ID: "p", Label: "LIVE-P", Path: "/s/X/LIVE-P", Paused: true, State: "paused", Completion: map[string]*model.Completion{}}
+	})
+	r.at(0)
+	h6 := find(r.at(2*time.Hour), "H6", "LIVE-P")
+	if h6 == nil {
+		t.Fatal("H6 should be open")
+	}
+	c := r.cfg.Get().Clone()
+	c.Thresholds.Paused = config.Duration(10 * time.Hour)
+	if err := r.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	if g := find(r.at(time.Minute), "H6", "LIVE-P"); g == nil || !g.OpenedAt.Equal(h6.OpenedAt) {
+		t.Fatalf("raising thresholds.paused changed the open H6: %+v", g)
+	}
+	// A new pause after that waits for the full new threshold.
+	r.hub.Update("a", func(s *model.Server) { s.Folders["p"].Paused = false; s.Folders["p"].State = "idle" })
+	r.at(time.Minute)
+	r.hub.Update("a", func(s *model.Server) { s.Folders["p"].Paused = true })
+	r.at(0) // the observation starts here
+	if find(r.at(5*time.Hour), "H6", "LIVE-P") != nil {
+		t.Fatal("a new pause opened before the raised threshold")
+	}
+	if find(r.at(6*time.Hour), "H6", "LIVE-P") == nil {
+		t.Fatal("a new pause should open after the raised threshold")
+	}
+}

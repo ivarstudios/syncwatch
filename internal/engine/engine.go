@@ -299,7 +299,10 @@ func (e *Engine) Evaluate() {
 			e.obs[f.ID] = o
 			obsAdd[f.ID] = o
 		}
-		if now.Sub(o.Since) < f.MinDuration {
+		// The minimum duration gates opening only: a finding that is open
+		// stays open while its condition holds, also after the threshold
+		// was raised.
+		if now.Sub(o.Since) < f.MinDuration && e.open[f.ID] == nil {
 			continue
 		}
 		current[f.ID] = f
