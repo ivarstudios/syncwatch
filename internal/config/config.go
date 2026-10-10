@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -137,9 +138,9 @@ type Shares struct {
 type Notify struct {
 	DiscordWebhook string `yaml:"discord_webhook,omitempty" json:"-"` // import only
 	DiscordRoleID  string `yaml:"discord_role_id" json:"discord_role_id"`
-	QuietHours     string `yaml:"quiet_hours" json:"quiet_hours"`     // "22:00-07:00", "" = off
-	ReminderTime   string `yaml:"reminder_time" json:"reminder_time"` // "08:00", "" = off
-	WeeklyDay      string `yaml:"weekly_day" json:"weekly_day"`       // monday … sunday, "" = off
+	QuietHours     string `yaml:"quiet_hours" json:"quiet_hours"`     // "22:00-07:00" or "off"; "" = default
+	ReminderTime   string `yaml:"reminder_time" json:"reminder_time"` // "08:00" or "off"; "" = default
+	WeeklyDay      string `yaml:"weekly_day" json:"weekly_day"`       // monday … sunday or "off"; "" = default
 	WeeklyTime     string `yaml:"weekly_time" json:"weekly_time"`     // "08:00"
 	WeeklyTop      int    `yaml:"weekly_top" json:"weekly_top"`
 }
@@ -246,6 +247,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Shares.Exclude == nil {
 		c.Shares.Exclude = map[string][]string{}
+	}
+	// "off" is accepted in any case; the notifier compares the lower-case form.
+	for _, f := range []*string{&n.QuietHours, &n.ReminderTime, &n.WeeklyDay} {
+		if strings.EqualFold(strings.TrimSpace(*f), "off") {
+			*f = "off"
+		}
 	}
 	for i := range c.Servers {
 		if c.Servers[i].ID == "" {
@@ -615,16 +622,22 @@ func (c *Config) ExportYAML() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ParseClock parses "HH:MM" into minutes after midnight.
+var clockRe = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
+
+// ParseClock parses "HH:MM" (24-hour clock, leading zero optional) into
+// minutes after midnight.
 func ParseClock(s string) (int, error) {
-	var h, m int
-	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d:%d", &h, &m); err != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+	m := clockRe.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
 		return 0, fmt.Errorf("invalid time %q, want HH:MM", s)
 	}
-	return h*60 + m, nil
+	h, _ := strconv.Atoi(m[1])
+	min, _ := strconv.Atoi(m[2])
+	return h*60 + min, nil
 }
 
-// ParseRange parses "HH:MM-HH:MM".
+// ParseRange parses "HH:MM-HH:MM". The ends must differ: a range with equal
+// ends has no meaning (use "off" to disable).
 func ParseRange(s string) (start, end int, err error) {
 	parts := strings.Split(s, "-")
 	if len(parts) != 2 {
@@ -633,7 +646,12 @@ func ParseRange(s string) (start, end int, err error) {
 	if start, err = ParseClock(parts[0]); err != nil {
 		return
 	}
-	end, err = ParseClock(parts[1])
+	if end, err = ParseClock(parts[1]); err != nil {
+		return
+	}
+	if start == end {
+		return 0, 0, fmt.Errorf("invalid range %q: start and end are the same, use off to disable", s)
+	}
 	return
 }
 

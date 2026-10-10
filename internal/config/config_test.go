@@ -263,6 +263,52 @@ func TestCloneIsDeepAndComplete(t *testing.T) {
 	}
 }
 
+func TestParseClockStrict(t *testing.T) {
+	ok := map[string]int{"08:00": 480, "8:05": 485, "23:59": 23*60 + 59, "0:00": 0, "00:00": 0, " 12:30 ": 750, "19:00": 19 * 60}
+	for in, want := range ok {
+		if got, err := ParseClock(in); err != nil || got != want {
+			t.Errorf("%q: got %d %v, want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"08:00junk", "8:5", "+8:00", "-8:00", "24:00", "8:60", "8", "8:00pm", "", "08:00:00", "8.00", "08-00", "a8:00", "008:00"} {
+		if got, err := ParseClock(in); err == nil {
+			t.Errorf("%q accepted as %d", in, got)
+		}
+	}
+	if s, e, err := ParseRange("22:00-07:00"); err != nil || s != 22*60 || e != 7*60 {
+		t.Fatalf("range: %d %d %v", s, e, err)
+	}
+	for _, in := range []string{"22:00-22:00", "22:00", "22:00-07:00-1", "22:00-7", "22:00-07:00x", "-"} {
+		if _, _, err := ParseRange(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	for _, in := range []string{
+		"notifications: {quiet_hours: '22:00-22:00'}",
+		"notifications: {quiet_hours: '22:00-07:00junk'}",
+		"notifications: {reminder_time: '8:5'}",
+		"notifications: {reminder_time: '+8:00'}",
+		"notifications: {weekly_time: '08:00pm'}",
+	} {
+		if _, err := ParseYAML([]byte(srv + in + "\n")); err == nil {
+			t.Errorf("%s accepted", in)
+		}
+	}
+	// "off" in any case, and "" means the default (not off).
+	c, err := ParseYAML([]byte(srv + "notifications: {quiet_hours: OFF, reminder_time: Off, weekly_day: ' oFF '}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Notify.QuietHours != "off" || c.Notify.ReminderTime != "off" || c.Notify.WeeklyDay != "off" {
+		t.Fatalf("off not canonical: %+v", c.Notify)
+	}
+	c, err = ParseYAML([]byte(srv + "notifications: {quiet_hours: '', reminder_time: '', weekly_day: ''}\n"))
+	if err != nil || c.Notify.QuietHours != "22:00-07:00" || c.Notify.ReminderTime != "08:00" || c.Notify.WeeklyDay != "monday" {
+		t.Fatalf("empty should mean the default: %+v %v", c.Notify, err)
+	}
+}
+
 func TestStructureHelpers(t *testing.T) {
 	c, _ := ParseYAML([]byte(ivarYAML))
 	cs, err := c.Structure.Compile()
