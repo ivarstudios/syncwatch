@@ -701,3 +701,50 @@ func TestHealthLineWording(t *testing.T) {
 		t.Fatalf("health line:\n got %s\nwant %s", got, want)
 	}
 }
+
+// Scheduled messages wait for every enabled server's first result, or 5
+// minutes after start, so a report sent at startup doesn't call servers
+// down that simply haven't been contacted yet.
+func TestScheduledMessagesWaitForFirstResults(t *testing.T) {
+	start := local(2026, 10, 5, 10, 0) // Monday, inside the weekly window
+	r := newRig(t, start, "AKKA", "SOL")
+	unknown := func(id string) {
+		r.hub.Update(id, func(s *model.Server) { s.Status, s.Loaded = model.StatusUnknown, false })
+	}
+	unknown("akka")
+	unknown("sol")
+	// A disabled server never reports and must not hold the report back.
+	c := r.n.cfg.Get().Clone()
+	c.Servers = append(c.Servers, config.Server{ID: "old", Name: "OLD", URL: "https://old:8384", Disabled: true})
+	if err := r.n.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	r.at(start)
+	r.hub.Update("akka", func(s *model.Server) { s.Status, s.Loaded = model.StatusUp, true })
+	r.at(start.Add(time.Minute))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent before SOL had a result: %s | %s", m[0].Title, m[0].Summary)
+	}
+	r.setDown("SOL", true)
+	r.at(start.Add(2 * time.Minute))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, "1/2 servers OK (SOL down)") {
+		t.Fatalf("weekly report once every server reported: %+v", msgs)
+	}
+
+	// Servers that never answer: the report goes out 5 minutes after start,
+	// and says they haven't been checked rather than that they are down.
+	r = newRig(t, start, "AKKA", "SOL")
+	unknown("akka")
+	unknown("sol")
+	r.at(start)
+	r.at(start.Add(4 * time.Minute))
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent before the start-up grace: %s | %s", m[0].Title, m[0].Summary)
+	}
+	r.at(start.Add(5 * time.Minute))
+	msgs = r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindWeekly || !strings.Contains(msgs[0].Summary, "0/2 servers OK (AKKA, SOL not yet checked)") || strings.Contains(msgs[0].Summary, "down") {
+		t.Fatalf("weekly report after the grace period: %+v", msgs)
+	}
+}

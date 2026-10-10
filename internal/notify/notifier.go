@@ -40,6 +40,7 @@ type Notifier struct {
 	senders func() []Sender
 	now     func() time.Time
 	wake    chan struct{}
+	started time.Time // first tick, for the start-up grace
 
 	mu        sync.Mutex
 	httpProxy *http.Client
@@ -163,6 +164,9 @@ func (n *Notifier) Run(ctx context.Context) {
 func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.started.IsZero() {
+		n.started = now
+	}
 	n.dmu.Lock()
 	wait := now.Before(n.retryAt)
 	n.dmu.Unlock()
@@ -393,6 +397,9 @@ func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.V
 	if last, _ := n.st.Setting(keyReminder); last == day {
 		return nil
 	}
+	if !n.checked(cfg, v, now) {
+		return nil
+	}
 	var open []*store.Record
 	for _, r := range v.Open {
 		// Only findings announced before the reminder time; one pinged just
@@ -440,6 +447,9 @@ func (n *Notifier) weekly(ctx context.Context, cfg *config.Config, v *engine.Vie
 	if last, _ := n.st.Setting(keyWeekly); last >= marker {
 		return nil
 	}
+	if !n.checked(cfg, v, now) {
+		return nil
+	}
 	hist, err := n.st.HistoryBetween(now.Add(-7*24*time.Hour), now.Add(time.Second))
 	if err != nil {
 		return err
@@ -450,6 +460,30 @@ func (n *Notifier) weekly(ctx context.Context, cfg *config.Config, v *engine.Vie
 		return err
 	}
 	return n.st.SetSetting(keyWeekly, marker)
+}
+
+// Scheduled messages wait this long after start for every server's first
+// result, so a report doesn't call servers down before they were contacted.
+const startupGrace = 5 * time.Minute
+
+// checked reports whether every enabled server has had a first result, or
+// the start-up grace is over.
+func (n *Notifier) checked(cfg *config.Config, v *engine.View, now time.Time) bool {
+	if now.Sub(n.started) >= startupGrace {
+		return true
+	}
+	if v.Snapshot == nil {
+		return false
+	}
+	for _, s := range cfg.Servers {
+		if s.Disabled {
+			continue
+		}
+		if sv := v.Snapshot.Server(s.ID); sv == nil || sv.Status == model.StatusUnknown {
+			return false
+		}
+	}
+	return true
 }
 
 // SendTest sends a test message to every configured channel.
@@ -792,19 +826,29 @@ func HealthLine(cfg *config.Config, v *engine.View, now time.Time) string {
 	snap := v.Snapshot
 	if snap != nil {
 		up, total := 0, 0
-		var down []string
+		var down, unknown []string
 		for _, sv := range snap.Servers {
 			total++
-			if sv.Status == model.StatusUp {
+			switch sv.Status {
+			case model.StatusUp:
 				up++
-			} else {
+			case model.StatusUnknown:
+				unknown = append(unknown, sv.Name)
+			default:
 				down = append(down, sv.Name)
 			}
 		}
 		if up == total {
 			parts = append(parts, plural(total, "server")+" OK")
 		} else {
-			parts = append(parts, fmt.Sprintf("%d/%d servers OK (%s down)", up, total, strings.Join(down, ", ")))
+			var why []string
+			if len(down) > 0 {
+				why = append(why, strings.Join(down, ", ")+" down")
+			}
+			if len(unknown) > 0 {
+				why = append(why, strings.Join(unknown, ", ")+" not yet checked")
+			}
+			parts = append(parts, fmt.Sprintf("%d/%d servers OK (%s)", up, total, strings.Join(why, "; ")))
 		}
 		pcs, offline := 0, 0
 		for _, d := range snap.Devices() {
