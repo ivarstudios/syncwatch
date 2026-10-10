@@ -16,6 +16,7 @@ import (
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/pathx"
 	"github.com/ivarstudios/syncwatch/internal/rules"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -140,26 +141,114 @@ func (e *Engine) Prune() {
 	}
 }
 
-func staleServers(snap *model.Snapshot) map[string]bool {
-	out := map[string]bool{}
-	for _, sv := range snap.Servers {
-		if sv.Status != model.StatusUp || !sv.Loaded {
-			out[sv.ID] = true
-		}
-	}
-	return out
+// freezer decides which findings are frozen: kept as they are, neither
+// opening nor resolving, because the data they would be judged on can't be
+// trusted right now.
+type freezer struct {
+	present   map[string]bool // in the snapshot at all (configured and enabled)
+	stale     map[string]bool // not up, or not loaded since the start
+	unknown   map[string]bool // not contacted since the start
+	unscanned map[string]bool // up, but no structure scan has finished since the start
+	failed    map[string]failedShares
 }
 
-func frozen(stale map[string]bool, check, server string, related []string) bool {
-	if check == "H1" || check == "H3" {
+// failedShares are the shares of one server whose last listing failed.
+type failedShares struct {
+	st    pathx.Style
+	paths []string
+}
+
+func newFreezer(snap *model.Snapshot) *freezer {
+	z := &freezer{present: map[string]bool{}, stale: map[string]bool{}, unknown: map[string]bool{}, unscanned: map[string]bool{}, failed: map[string]failedShares{}}
+	for _, sv := range snap.Servers {
+		z.present[sv.ID] = true
+		if sv.Status == model.StatusUnknown {
+			z.unknown[sv.ID] = true
+		}
+		if sv.Status != model.StatusUp || !sv.Loaded {
+			z.stale[sv.ID] = true
+			continue
+		}
+		if sv.Structure == nil || sv.Structure.ScannedAt.IsZero() {
+			z.unscanned[sv.ID] = true
+			continue
+		}
+		var paths []string
+		for _, sh := range sv.Structure.Shares {
+			if sh.Error != "" {
+				paths = append(paths, sh.Path)
+			}
+		}
+		if len(paths) > 0 {
+			z.failed[sv.ID] = failedShares{st: pathx.StyleFor(sv.PathSep), paths: paths}
+		}
+	}
+	return z
+}
+
+// isStale reports whether a server can't vouch for anything right now. A
+// server missing from the snapshot can't either.
+func (z *freezer) isStale(id string) bool { return z.stale[id] || !z.present[id] }
+
+// allStale reports whether every one of the servers is stale (none for an
+// empty list).
+func (z *freezer) allStale(ids []string) bool {
+	if len(ids) == 0 {
 		return false
 	}
-	if server != "" && stale[server] {
+	for _, id := range ids {
+		if !z.isStale(id) {
+			return false
+		}
+	}
+	return true
+}
+
+func (z *freezer) anyStale(ids []string) bool {
+	for _, id := range ids {
+		if z.isStale(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// structureCheck reports whether a check needs the structure scan (S3 and
+// the per-directory checks S4–S7).
+func structureCheck(check string) bool {
+	switch check {
+	case "S3", "S4", "S5", "S6", "S7":
 		return true
 	}
-	for _, r := range related {
-		if stale[r] {
+	return false
+}
+
+// frozen reports whether a finding must keep its current state.
+func (z *freezer) frozen(f model.Finding) bool {
+	if f.Check == "H1" || f.Check == "H3" {
+		// Reachability findings follow the server's status; only "not
+		// contacted yet" (after a start) says nothing about it.
+		return z.unknown[f.Server]
+	}
+	if f.Server == "" {
+		// A cross-server finding is judged on whichever related servers
+		// are reachable; only when none is can nothing be said about it.
+		return z.allStale(f.Related)
+	}
+	if z.isStale(f.Server) || z.anyStale(f.Related) {
+		return true
+	}
+	if structureCheck(f.Check) {
+		if z.unscanned[f.Server] {
 			return true
+		}
+		if fs, ok := z.failed[f.Server]; ok {
+			p := f.DetailValue("Path")
+			for _, sp := range fs.paths {
+				if fs.st.Within(p, sp) {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -189,7 +278,7 @@ func (e *Engine) Evaluate() {
 		e.log.Warn("reading conflict history", "err", err)
 	}
 	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts})
-	stale := staleServers(snap)
+	z := newFreezer(snap)
 
 	e.mu.Lock()
 	produced := map[string]bool{}
@@ -198,7 +287,7 @@ func (e *Engine) Evaluate() {
 	var obsRemove []string
 	for _, f := range fs {
 		produced[f.ID] = true
-		if frozen(stale, f.Check, f.Server, f.Related) {
+		if z.frozen(f) {
 			continue
 		}
 		o, ok := e.obs[f.ID]
@@ -219,7 +308,10 @@ func (e *Engine) Evaluate() {
 		if produced[id] {
 			continue
 		}
-		if frozen(stale, "", "", o.Servers) {
+		// An observation with an open record follows it; one without is
+		// kept while the servers it depends on are all unreachable.
+		rec := e.open[id]
+		if (rec != nil && z.frozen(rec.Finding)) || (rec == nil && z.allStale(o.Servers)) {
 			continue
 		}
 		delete(e.obs, id)
@@ -263,7 +355,7 @@ func (e *Engine) Evaluate() {
 		if _, ok := current[id]; ok {
 			continue
 		}
-		if frozen(stale, rec.Check, rec.Server, rec.Related) {
+		if z.frozen(rec.Finding) {
 			if !rec.Stale {
 				rec.Stale = true
 				e.save(rec)
