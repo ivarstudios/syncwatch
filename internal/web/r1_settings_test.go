@@ -181,3 +181,38 @@ func TestSettingsHelpTexts(t *testing.T) {
 		}
 	}
 }
+
+// W-043: the forms used the old caps (weekly_top 25, down_after_failures
+// 10) and the Notifications form dropped a larger weekly_top silently. The
+// forms now use the ranges of the validation, and a value out of range gets
+// its message.
+func TestFormRangesFollowValidation(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	_, page := e.get("/settings")
+	if !strings.Contains(page, `name="weekly_top" min="1" max="50"`) || !strings.Contains(page, `name="down_after_failures" min="1" max="20"`) {
+		t.Fatal("the forms do not use the ranges of the validation")
+	}
+	f := notifyForm(e.cfg.Get(), csrf)
+	f.Set("weekly_top", "40")
+	if msg, isErr := flash(e.post("/settings/notifications", f)); isErr || e.cfg.Get().Notify.WeeklyTop != 40 {
+		t.Fatalf("weekly_top 40: %q, stored %d", msg, e.cfg.Get().Notify.WeeklyTop)
+	}
+	f.Set("weekly_top", "51")
+	resp, body := e.postPage("/settings/notifications", f)
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "Findings listed in the weekly report (notifications.weekly_top): the value must be between 1 and 50.") ||
+		e.cfg.Get().Notify.WeeklyTop != 40 {
+		t.Fatalf("weekly_top 51: %d, stored %d", resp.StatusCode, e.cfg.Get().Notify.WeeklyTop)
+	}
+	col := url.Values{"csrf": {csrf}, "mode": {"events"}, "event_timeout": {"50s"}, "full_check_interval": {"4h"}, "poll_interval": {"15m"},
+		"structure_interval": {"1h"}, "baseline_interval": {"7d"}, "request_timeout": {"30s"}, "concurrency": {"3"}, "down_after_failures": {"15"}}
+	if msg, isErr := flash(e.post("/settings/collector", col)); isErr || e.cfg.Get().Collector.DownAfter != 15 {
+		t.Fatalf("down_after_failures 15: %q, stored %d", msg, e.cfg.Get().Collector.DownAfter)
+	}
+	col.Set("down_after_failures", "21")
+	resp, body = e.postPage("/settings/collector", col)
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(body, "Mark unreachable after failures (collector.down_after_failures): the value must be between 1 and 20.") ||
+		!strings.Contains(body, `name="down_after_failures" min="1" max="20" value="21" aria-invalid="true"`) {
+		t.Fatalf("down_after_failures 21: %d", resp.StatusCode)
+	}
+}
