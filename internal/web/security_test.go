@@ -76,7 +76,7 @@ func TestServerURLChangeNeedsKey(t *testing.T) {
 	if pin, _ := e.st.Pin("akka"); pin != "" {
 		t.Fatal("old pin kept for the new URL")
 	}
-	if n := e.noticesText(); !strings.Contains(n, "AKKA: API URL changed") || !strings.Contains(n, "https://192.0.2.7:8384") {
+	if n := e.noticesText(); !strings.Contains(n, "API URL of the server AKKA changed") || !strings.Contains(n, "https://192.0.2.7:8384") {
 		t.Fatalf("no notice for the URL change: %q", n)
 	}
 	if _, body := e.get("/settings"); strings.Contains(body, "new-key") {
@@ -122,7 +122,7 @@ func TestPinChangesNeedConfirmation(t *testing.T) {
 		t.Fatalf("accepted %d, reset %d", accepted, resets)
 	}
 	notices := e.noticesText()
-	if !strings.Contains(notices, "new certificate accepted") || !strings.Contains(notices, "Pinned certificate forgotten") {
+	if !strings.Contains(notices, "new certificate accepted") || !strings.Contains(notices, "pinned certificate is removed") {
 		t.Fatalf("notices: %q", notices)
 	}
 }
@@ -137,7 +137,7 @@ func TestPasswordChangeIsRateLimited(t *testing.T) {
 			"password": {"a new long password"}, "password2": {"a new long password"}}))
 	}
 	for i := 0; i < 5; i++ {
-		if msg, isErr := change(fmt.Sprintf("guess %d", i)); !isErr || !strings.Contains(msg, "wrong") {
+		if msg, isErr := change(fmt.Sprintf("guess %d", i)); !isErr || !strings.Contains(msg, "not correct") {
 			t.Fatalf("guess %d: %q %v", i, msg, isErr)
 		}
 	}
@@ -172,11 +172,11 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 	if msg, isErr := notify(url.Values{"discord_webhook": {"https://discord.com/api/webhooks/2/new"}}); isErr {
 		t.Fatalf("Discord webhook refused: %s", msg)
 	}
-	if n := e.noticesText(); !strings.Contains(n, "Discord webhook replaced") || !strings.Contains(n, "no longer mention a role") {
+	if n := e.noticesText(); !strings.Contains(n, "Discord webhook is replaced") || !strings.Contains(n, "do not mention a role now") {
 		t.Fatalf("notices: %q", n)
 	}
 	notify(url.Values{"discord_webhook_clear": {"on"}})
-	if n := e.noticesText(); !strings.Contains(n, "Discord webhook removed") {
+	if n := e.noticesText(); !strings.Contains(n, "Discord webhook is removed") {
 		t.Fatalf("notices: %q", n)
 	}
 
@@ -196,7 +196,7 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 	}
 	e.post("/settings/checks", form)
 	n := e.noticesText()
-	for _, want := range []string{"H1 (Server unreachable) switched off", "H4 (Folder sync stopped) no longer sends urgent pings", "S1 (Overlapping Syncthing folders) waits 30d"} {
+	for _, want := range []string{"The check H1 (Server unreachable) is disabled.", "The check H4 (Folder sync stopped) does not send urgent messages now.", "The check S1 (Syncthing folder inside another) waits 30 days instead of"} {
 		if !strings.Contains(n, want) {
 			t.Errorf("no notice %q in %q", want, n)
 		}
@@ -206,7 +206,7 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 		t.Fatalf("import with an internal webhook: %q", msg)
 	}
 	e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {"servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\nchecks: {H3: {enabled: false}}\n"}})
-	if n := e.noticesText(); !strings.Contains(n, "H3 (Server certificate changed) switched off") {
+	if n := e.noticesText(); !strings.Contains(n, "The check H3 (Server certificate changed) is disabled.") {
 		t.Fatalf("import notice: %q", n)
 	}
 }
@@ -219,14 +219,14 @@ func TestImportCannotRedirectKeys(t *testing.T) {
 		return msg
 	}
 	// AKKA moves to another host without an api_key in the file; SOL is dropped.
-	if msg := imp("servers: [{name: AKKA, url: 'https://evil.example:8384'}]\n"); !strings.Contains(msg, "Enter the API key again for AKKA") {
+	if msg := imp("servers: [{name: AKKA, url: 'https://evil.example:8384'}]\n"); !strings.Contains(msg, "Type the API key again for AKKA") {
 		t.Fatalf("import message: %q", msg)
 	}
 	sv, _ := e.cfg.Get().ServerByKey("akka")
 	if settings.KeyUsable(e.st, sv) {
 		t.Fatal("the stored key is usable for the imported URL")
 	}
-	if n := e.noticesText(); !strings.Contains(n, "AKKA: API URL changed") || !strings.Contains(n, "SOL removed") {
+	if n := e.noticesText(); !strings.Contains(n, "API URL of the server AKKA changed") || !strings.Contains(n, "The server SOL is removed.") {
 		t.Fatalf("notices: %q", n)
 	}
 	// A removed server's key doesn't survive for a later server with the same ID.
@@ -244,7 +244,7 @@ func TestImportCannotRedirectKeys(t *testing.T) {
 	// Switching login off by import is announced too.
 	e.post("/settings/import", url.Values{"csrf": {csrf}, "confirm": {"correct horse battery"},
 		"yaml": {"servers: [{name: AKKA, url: 'https://a:1'}]\naccess: {mode: proxy}\n"}})
-	if !strings.Contains(e.noticesText(), "Built-in login switched off") {
+	if !strings.Contains(e.noticesText(), "Built-in login is off") {
 		t.Fatalf("notices: %q", e.noticesText())
 	}
 }
@@ -261,11 +261,11 @@ func TestWeakeningAccessNeedsAdminPassword(t *testing.T) {
 	viewer := func() string { return e.cfg.Get().Access.Viewer }
 
 	for _, confirm := range []string{"", "wrong password"} {
-		if msg, isErr := access(url.Values{"mode": {"builtin"}, "viewer": {"open"}, "confirm": {confirm}}); !isErr || !strings.Contains(msg, "admin password") {
+		if msg, isErr := access(url.Values{"mode": {"builtin"}, "viewer": {"open"}, "confirm": {confirm}}); !isErr || !strings.Contains(msg, "administrator password") {
 			t.Fatalf("open viewing with confirm %q: %q %v", confirm, msg, isErr)
 		}
 	}
-	if msg, isErr := access(url.Values{"mode": {"proxy"}, "confirm_proxy": {"on"}, "viewer": {"none"}}); !isErr || !strings.Contains(msg, "admin password") {
+	if msg, isErr := access(url.Values{"mode": {"proxy"}, "confirm_proxy": {"on"}, "viewer": {"none"}}); !isErr || !strings.Contains(msg, "administrator password") {
 		t.Fatalf("proxy mode without the password: %q %v", msg, isErr)
 	}
 	if msg, isErr := access(url.Values{"mode": {"builtin"}, "viewer": {"password"}, "viewer_password": {"viewer password 1"}}); !isErr {

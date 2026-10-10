@@ -96,7 +96,7 @@ const MinPasswordLength = 10
 
 func checkNewPassword(pw string) error {
 	if len([]rune(pw)) < MinPasswordLength {
-		return fmt.Errorf("the password must be at least %d characters", MinPasswordLength)
+		return fmt.Errorf("The password must have at least %d characters.", MinPasswordLength)
 	}
 	return nil
 }
@@ -183,7 +183,7 @@ func checkCSRF(r *http.Request, info requestInfo) error {
 		tok = r.FormValue("csrf")
 	}
 	if info.CSRF == "" || tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(info.CSRF)) != 1 {
-		return errors.New("invalid or missing CSRF token; reload the page and try again")
+		return errors.New("CSRF token missing or not valid: reload the page and try again")
 	}
 	return nil
 }

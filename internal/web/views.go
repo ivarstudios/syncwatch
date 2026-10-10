@@ -265,17 +265,17 @@ func serverCell(f *model.Folder) gridCell {
 	case model.SyncError:
 		msg := f.Error
 		if msg == "" {
-			msg = plural(max(f.Errors, f.PullErrors), "failing item", "failing items")
+			msg = plural(max(f.Errors, f.PullErrors), "failed item", "failed items")
 		}
 		return gridCell{Class: "err", Icon: "✖", Text: "error", Title: msg, Problem: true}
 	case model.SyncWatchError:
-		return gridCell{Class: "warn", Icon: "⚠", Text: "watch error", Title: "watcher: " + f.WatchError, Problem: true}
+		return gridCell{Class: "warn", Icon: "⚠", Text: "file watcher error", Title: "file watcher error: " + f.WatchError, Problem: true}
 	case model.SyncScanning:
 		return gridCell{Class: "sync", Icon: "⟳", Text: "scanning", Title: "Scanning"}
 	case model.SyncUpToDate:
 		return gridCell{Class: "ok", Icon: "✔", Text: "100%", Title: "Up to date"}
 	default:
-		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %s left", f.State, plural(int(f.NeedItems), "item", "items"))}
+		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %s", f.State, plural(int(f.NeedItems), "remaining item", "remaining items"))}
 	}
 }
 
@@ -423,13 +423,13 @@ func (s *Server) pcCell(snap *model.Snapshot, on map[string]*model.Folder, d *mo
 		return gridCell{Class: "na", Text: "–", Title: "Not shared with this device"}
 	}
 	if best == nil {
-		return gridCell{Class: "off", Icon: "?", Text: "unknown", Title: "No completion reported yet"}
+		return gridCell{Class: "off", Icon: "?", Text: "unknown", Title: "No completion data for this device"}
 	}
 	switch {
 	case best.RemoteState == "paused":
 		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the device", Problem: true}
 	case best.RemoteState == "notSharing":
-		return gridCell{Class: "warn", Icon: "⊘", Text: "not shared", Title: "Shared by the server, but the device doesn't share it back", Problem: true}
+		return gridCell{Class: "warn", Icon: "⊘", Text: "not shared back", Title: "The server shares the folder, but the device does not share it back", Problem: true}
 	case !d.Connected:
 		title := "Offline"
 		if !d.LastSeen.IsZero() {
@@ -439,7 +439,7 @@ func (s *Server) pcCell(snap *model.Snapshot, on map[string]*model.Folder, d *mo
 	case best.Percent >= 100:
 		return gridCell{Class: "ok", Icon: "✔", Text: "100%", Title: "Up to date"}
 	default:
-		return gridCell{Class: "sync", Icon: "⟳", Text: pct(best.Percent), Title: fmt.Sprintf("%d items left", best.NeedItems)}
+		return gridCell{Class: "sync", Icon: "⟳", Text: pct(best.Percent), Title: plural(int(best.NeedItems), "remaining item", "remaining items")}
 	}
 }
 
