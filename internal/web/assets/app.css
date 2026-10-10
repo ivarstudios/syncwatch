@@ -80,6 +80,7 @@ form.inline { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; m
 .msg, a.plain, .kv td, .tile h2, table.grid th, .group > summary strong, .dlist li > span:first-child { unicode-bidi: isolate; }
 .msg { overflow-wrap: anywhere; }
 /* No connection to syncwatch (app.js): the banner shows, the data is grey. */
+.conn-lost { border-radius: 8px; padding: .6rem .8rem; margin: 0 0 1rem; background: var(--err-bg); color: var(--err); }
 .live-off { display: none; }
 .sw-offline .live-on { display: none; } .sw-offline .live-off { display: inline; }
 .sw-offline .health { color: var(--muted); }

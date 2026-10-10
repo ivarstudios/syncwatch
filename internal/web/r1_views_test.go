@@ -234,7 +234,7 @@ func TestStaleFolderState(t *testing.T) {
 		t.Errorf("sol tile: %+v", s)
 	}
 	_, ov := e.get("/frag/overview")
-	if strings.Contains(ov, "✔ 2 idle") || !strings.Contains(ov, "2 folders · last known 2026-10-10 17:34: 2 idle") {
+	if strings.Contains(ov, "✔ 2 idle") || !strings.Contains(ov, "2 folders · last known <span class=\"nowrap\">2026-10-10 17:34</span>: 2 idle") {
 		t.Error("overview: the tile of the unreachable server shows its folders as current")
 	}
 	if !strings.Contains(ov, "<dt>Folders</dt><dd>—</dd>") {

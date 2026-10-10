@@ -35,7 +35,7 @@
 </header>
 <main>
 {{template "alert" .}}
-{{if .Role}}<div id="sw-conn" class="flash err" role="status" hidden>✖ <strong>No connection to syncwatch</strong> from <span class="sw-conn-since"></span>. The page shows old data.</div>{{end}}
+{{if .Role}}<div id="sw-conn" class="conn-lost" role="status" hidden>✖ <strong>No connection to syncwatch</strong> from <span class="sw-conn-since"></span>. The page shows old data.</div>{{end}}
 {{if .Flash}}<div class="flash ok" role="status">✔ {{.Flash}}</div>{{end}}
 {{if .FlashErr}}<div class="flash err" role="alert">✖ {{.FlashErr}}</div>{{end}}
 {{end}}

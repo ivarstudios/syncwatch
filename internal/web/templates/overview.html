@@ -13,14 +13,14 @@
         <span class="badge st-{{.Status}}">{{.StatusIcon}} {{.StatusLabel}}</span>
       </header>
       {{if .Disabled}}
-      <p class="muted">syncwatch does not poll this server.{{if eq $.Role "admin"}} <a href="/settings#servers">Settings → Servers</a>{{end}}</p>
+      <p class="muted">syncwatch does not poll this server.{{if eq $.Role "admin"}} <a class="nowrap" href="/settings#servers">Settings → Servers</a>{{end}}</p>
       {{else}}
       {{if .LastError}}{{if ne .Status "ok"}}<p class="err-text">{{.LastError}}</p>{{end}}{{end}}
       <dl class="facts">
         <dt>Version</dt><dd>{{if .Version}}{{.Version}}{{else}}—{{end}}</dd>
         <dt>Uptime</dt><dd>{{if .Uptime}}{{.Uptime}}{{else}}—{{end}}</dd>
         {{if .NoContact}}<dt>Folders</dt><dd>—</dd>
-        {{else if .FoldersStale}}<dt>Folders</dt><dd class="muted" title="The server is not up: this is the last known state">{{plural .Folders "folder" "folders"}} · last known {{.LastContact}}: {{.Idle}} idle{{if .Syncing}} · {{.Syncing}} syncing{{end}}{{if .Scanning}} · {{.Scanning}} scanning{{end}}{{if .Errors}} · {{plural .Errors "error" "errors"}}{{end}}{{if .WatchErrors}} · {{plural .WatchErrors "file watcher error" "file watcher errors"}}{{end}}{{if .Paused}} · {{.Paused}} paused{{end}}</dd>
+        {{else if .FoldersStale}}<dt>Folders</dt><dd class="muted" title="The server is not up: this is the last known state">{{plural .Folders "folder" "folders"}} · last known <span class="nowrap">{{.LastContact}}</span>: {{.Idle}} idle{{if .Syncing}} · {{.Syncing}} syncing{{end}}{{if .Scanning}} · {{.Scanning}} scanning{{end}}{{if .Errors}} · {{plural .Errors "error" "errors"}}{{end}}{{if .WatchErrors}} · {{plural .WatchErrors "file watcher error" "file watcher errors"}}{{end}}{{if .Paused}} · {{.Paused}} paused{{end}}</dd>
         {{else}}<dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Scanning}} · <span class="c-sync">⟳ {{.Scanning}} scanning</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{plural .Errors "error" "errors"}}</span>{{end}}{{if .WatchErrors}} · <span class="c-warn">⚠ {{plural .WatchErrors "file watcher error" "file watcher errors"}}</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>{{end}}
         <dt>Findings</dt><dd>{{if .Problems}}<a href="/problems?server={{.ID}}">{{.Problems}} open</a>{{else}}none{{end}}</dd>
         <dt>Certificate</dt><dd>{{if .CertExpires}}<span {{if .CertWarn}}class="c-warn"{{end}}>valid until {{.CertExpires}}</span>{{else}}—{{end}}</dd>
