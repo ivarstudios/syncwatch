@@ -717,13 +717,20 @@ func listChange(key string, was, now []string) string {
 	return changeLabel(key) + ": " + strings.Join(parts, " · ")
 }
 
-// missing returns the entries of a that are not in b.
+// missing returns the entries of a that are not in b. An entry that is in a
+// more times than in b is missing that many times.
 func missing(a, b []string) []string {
+	left := map[string]int{}
+	for _, v := range b {
+		left[v]++
+	}
 	var out []string
 	for _, v := range a {
-		if !slices.Contains(b, v) {
-			out = append(out, v)
+		if left[v] > 0 {
+			left[v]--
+			continue
 		}
+		out = append(out, v)
 	}
 	return out
 }

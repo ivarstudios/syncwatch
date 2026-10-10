@@ -313,6 +313,7 @@ func TestNoticeLinesUseLabels(t *testing.T) {
 			base + "thresholds: {inactive_project: 10m}\nnotifications: {quiet_hours: '21:43-21:48'}\nstructure: {ignore_dirs: ['.*', '@*', '@eaDir']}\n",
 			[]string{"Quiet hours: 22:30-07:00 → 21:43-21:48", "structure.ignore_dirs: added @eaDir · removed #recycle", "C1 no file change for: 180d → 10m"}},
 		{"only the order", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a]}\n", []string{"structure.ignore_dirs: [a, b] → [b, a]"}},
+		{"an entry two times", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a, b]}\n", []string{"structure.ignore_dirs: added b"}},
 		{"viewer access", base + "access: {viewer: password}\n", base + "access: {viewer: open}\n", []string{"Viewer access: viewer password → open (no login)"}},
 		{"plain http", base, "servers: [{name: AKKA, url: 'http://a:1', allow_http: true}]\n",
 			[]string{"The API URL of the server AKKA changed from https://a:1 to http://a:1.", "The server AKKA permits a plain http:// URL now. syncwatch sends the API key unencrypted."}},
