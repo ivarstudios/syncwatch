@@ -34,6 +34,31 @@ func (e *evaluator) health() {
 // gate token: the client keeps "HTTP 401" or "HTTP 403" in its text.
 var refusedKey = regexp.MustCompile(`HTTP 40[13]\b`)
 
+// httpAnswer matches the error of a server that answered with an HTTP
+// status: the network path to it works.
+var httpAnswer = regexp.MustCompile(`HTTP \d{3}\b`)
+
+// netReasons are the texts that the collector gives the failures of a
+// connection (see collector.shortErr).
+var netReasons = []string{"timeout", "connection refused", "no route to host", "network unreachable",
+	"connection reset", "connection closed early", "host name not found", "host name lookup failed"}
+
+// networkFailure reports whether a server is down because syncwatch cannot
+// connect to it, not because of an answer or the configuration. From one
+// site, a server that is off and a network path that is down (the VPN
+// between two sites) look the same.
+func networkFailure(err string) bool {
+	if httpAnswer.MatchString(err) {
+		return false
+	}
+	for _, r := range netReasons {
+		if strings.Contains(err, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // H1, H3
 func (e *evaluator) serverReachability(sv *model.Server) {
 	switch sv.Status {
@@ -49,6 +74,8 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			// The server answers: it is not unreachable.
 			msg = fmt.Sprintf("Server %s refuses the API key or the gate token", sv.Name)
 			details = append(details, detail("What to do", "Type the API key or the gate token again in Settings → Servers."))
+		} else if networkFailure(sv.LastError) {
+			details = append(details, detail("Possible causes", "The server is off or does not answer, or the network path to it (for example the VPN between the sites) is down."))
 		}
 		if sv.LastError != "" {
 			msg += ": " + sv.LastError
@@ -372,6 +399,7 @@ func (e *evaluator) links() {
 				Details: []model.Detail{
 					timeDetail(a.Name+" last saw "+b.Name, da.LastSeen),
 					timeDetail(b.Name+" last saw "+a.Name, db.LastSeen),
+					detail("What to check", "The VPN or network between the servers, and Syncthing on both servers."),
 				},
 			})
 		}

@@ -67,7 +67,8 @@ func TestDetailKeysKeepTheirNames(t *testing.T) {
 		{"H11", "MORTIS", []string{"Device ID", "Address", "Type"}},
 		{"H8", "MORTIS runs", []string{"Device ID", "Version"}},
 		{"H7", "VENUS", []string{"Device ID", "Last seen", "Configured on"}},
-		{"H2", "AKKA ↔ SOL", []string{"AKKA last saw SOL", "SOL last saw AKKA"}},
+		// r1 adds the row "What to check".
+		{"H2", "AKKA ↔ SOL", []string{"AKKA last saw SOL", "SOL last saw AKKA", "What to check"}},
 	} {
 		f := mustFind(t, fs, tc.check, tc.part)
 		if got := detailKeys(f); !slices.Equal(got, tc.keys) {
@@ -77,8 +78,10 @@ func TestDetailKeysKeepTheirNames(t *testing.T) {
 
 	// H1 and H3 come from a server that is down or sent another certificate.
 	sol.Status, sol.LastError, sol.DownSince = model.StatusDown, "timeout", now.Add(-10*time.Minute)
+	// r1 adds a row with the possible causes of a network failure, or with
+	// what to do about a refused API key.
 	h1 := mustFind(t, Evaluate(in), "H1", "SOL")
-	if got, want := detailKeys(h1), []string{"URL", "Down since", "Last contact", "Error"}; !slices.Equal(got, want) {
+	if got, want := detailKeys(h1), []string{"URL", "Down since", "Last contact", "Error", "Possible causes"}; !slices.Equal(got, want) {
 		t.Errorf("H1: detail keys %q, want %q", got, want)
 	}
 	sol.Status, sol.CertChange = model.StatusCertChanged, &model.CertChange{Old: "aa", New: "bb", SeenAt: now}

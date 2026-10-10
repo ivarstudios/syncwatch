@@ -826,3 +826,42 @@ func TestStuckDevicePercentIsNeverRoundedUp(t *testing.T) {
 	f.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "valid"}
 	mustNot(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
 }
+
+// From one site, a server that is off and a VPN that is down look the
+// same: H1 for a network failure, and H2, name both in a detail row and
+// keep their messages.
+func TestTwoSiteFaultsNameTheNetwork(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	akka.Devices[solID] = &model.Device{ID: solID, Name: "SOL", LastSeen: now.Add(-time.Hour)}
+	sol.Devices[akkaID] = &model.Device{ID: akkaID, Name: "AKKA", LastSeen: now.Add(-time.Hour)}
+	h2 := mustFind(t, run(t, c, akka, sol), "H2", "AKKA ↔ SOL")
+	if h2.Message != "Servers AKKA and SOL are not connected to each other" || !strings.Contains(h2.DetailValue("What to check"), "VPN") {
+		t.Fatalf("H2: %q %v", h2.Message, h2.Details)
+	}
+	sol.Status, sol.DownSince = model.StatusDown, now.Add(-10*time.Minute)
+	for _, tc := range []struct {
+		err     string
+		network bool
+	}{
+		{"timeout", true},
+		{"no route to host", true},
+		{"connection refused", true},
+		{"host name not found", true},
+		{"/rest/system/status: HTTP 403 (check the API key)", false},
+		{"/rest/db/status: HTTP 500 timeout waiting for the folder", false},
+		{"no API key configured", false},
+		{"the API URL changed: type the API key again in Settings → Servers", false},
+		{"tls: failed to verify certificate: x509: certificate signed by unknown authority", false},
+	} {
+		sol.LastError = tc.err
+		h1 := mustFind(t, run(t, c, akka, sol), "H1", "SOL")
+		if got := h1.DetailValue("Possible causes") != ""; got != tc.network {
+			t.Errorf("%q: 'Possible causes' row %v, want %v", tc.err, got, tc.network)
+		}
+		if tc.network && h1.Message != "Server SOL is unreachable: "+tc.err {
+			t.Errorf("%q: message %q", tc.err, h1.Message)
+		}
+	}
+}
