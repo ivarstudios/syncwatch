@@ -5,7 +5,6 @@ package rules
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
@@ -25,7 +24,8 @@ type Input struct {
 
 type evaluator struct {
 	Input
-	out []model.Finding
+	out  []model.Finding
+	soft map[string]bool // finding IDs that stay non-urgent whatever the check's setting
 }
 
 // Evaluate runs every enabled check.
@@ -37,7 +37,7 @@ func Evaluate(in Input) []model.Finding {
 		}
 		in.Structure = cs
 	}
-	e := &evaluator{Input: in}
+	e := &evaluator{Input: in, soft: map[string]bool{}}
 	e.health()
 	e.cross()
 	e.structure()
@@ -64,7 +64,7 @@ func Evaluate(in Input) []model.Finding {
 			f.Severity = config.CatalogByID[f.Check].Severity
 		}
 		for _, c := range enabled {
-			if in.Config.Urgent(c) {
+			if in.Config.Urgent(c) && !e.soft[f.ID] {
 				f.Urgent = true
 			}
 		}
@@ -103,12 +103,15 @@ func checkOrder(id string) int {
 	return len(config.Catalog)
 }
 
-// add appends a finding for a single check.
-func (e *evaluator) add(check, server, key string, f model.Finding) {
+// add appends a finding for a single check and returns its ID. The check's
+// catalog severity applies unless the finding sets its own.
+func (e *evaluator) add(check, server, key string, f model.Finding) string {
 	info := config.CatalogByID[check]
 	f.Check = check
 	f.Checks = []string{check}
-	f.Severity = info.Severity
+	if f.Severity == 0 {
+		f.Severity = info.Severity
+	}
 	f.Category = info.Category
 	f.Server = server
 	f.ID = model.FindingID(check, server, key)
@@ -116,6 +119,7 @@ func (e *evaluator) add(check, server, key string, f model.Finding) {
 		f.Link = e.link(server)
 	}
 	e.out = append(e.out, f)
+	return f.ID
 }
 
 func (e *evaluator) link(serverID string) string {
@@ -155,11 +159,4 @@ func Ago(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%d seconds", int(d.Seconds()))
 	}
-}
-
-func joinMax(items []string, max int) string {
-	if len(items) <= max {
-		return strings.Join(items, ", ")
-	}
-	return strings.Join(items[:max], ", ") + fmt.Sprintf(" and %d more", len(items)-max)
 }

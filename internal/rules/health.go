@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,10 @@ var busyStates = map[string]bool{
 	"sync-preparing": true, "cleaning": true, "clean-waiting": true, "starting": true,
 }
 
+// watcherGrace is how long a file watcher error must last before it is
+// reported; the folder keeps syncing through its periodic scans meanwhile.
+const watcherGrace = time.Hour
+
 // H4, H5, H6 (folders), H5 (devices), H6 (remote paused)
 func (e *evaluator) folderHealth(sv *model.Server) {
 	ids := sortedFolderIDs(sv)
@@ -110,7 +115,17 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			reasons = append(reasons, fmt.Sprintf("%d file(s) failing to sync", nErr))
 		}
 		if f.WatchError != "" {
-			reasons = append(reasons, "file watcher error: "+f.WatchError)
+			// Syncthing keeps syncing with its periodic scans when the
+			// watcher fails (inotify limits on a big share, typically), so
+			// this is a warning once it has lasted a while, never urgent.
+			id := e.add("H4", sv.ID, "watcher:"+f.ID, model.Finding{
+				Subject:     subject,
+				Severity:    model.Warn,
+				Message:     fmt.Sprintf("File watcher failed for %s on %s; changes are found by periodic scans only (%s)", name, sv.Name, f.WatchError),
+				MinDuration: watcherGrace,
+				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("Watch error", f.WatchError)},
+			})
+			e.soft[id] = true
 		}
 		if len(reasons) > 0 {
 			var paths []string
@@ -165,7 +180,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			conn := sv.Connections[dev]
 			connected := conn != nil && conn.Connected
 			switch {
-			case c.RemoteState == "paused" && !e.Snapshot.IsServerDevice(dev):
+			case sv.RemoteState(f.ID, dev) == "paused" && !e.Snapshot.IsServerDevice(dev):
 				e.add("H6", sv.ID, "remote-paused:"+f.ID+":"+dev, model.Finding{
 					Subject:     fmt.Sprintf("%s on %s", name, dn),
 					Message:     fmt.Sprintf("%s has paused folder %s (seen from %s)", dn, name, sv.Name),
@@ -324,6 +339,24 @@ func NormVersion(v string) string {
 	return v
 }
 
+// versionLess reports whether version a is older than b, comparing the parts
+// of major.minor.patch as numbers (2.1.9 < 2.1.10). Parts that aren't
+// numbers compare as strings, and a missing part counts as older.
+func versionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		x, errX := strconv.Atoi(as[i])
+		y, errY := strconv.Atoi(bs[i])
+		switch {
+		case errX == nil && errY == nil && x != y:
+			return x < y
+		case (errX != nil || errY != nil) && as[i] != bs[i]:
+			return as[i] < bs[i]
+		}
+	}
+	return len(as) < len(bs)
+}
+
 // H8
 func (e *evaluator) versions() {
 	count := map[string]int{}
@@ -339,10 +372,10 @@ func (e *evaluator) versions() {
 	if len(count) == 0 {
 		return
 	}
-	// The reference version is the most common one, ties broken by the highest.
+	// The reference version is the most common one, ties broken by the newest.
 	ref := ""
-	for v, n := range count {
-		if ref == "" || n > count[ref] || (n == count[ref] && v > ref) {
+	for _, v := range sortedKeys(count) {
+		if n := count[v]; ref == "" || n > count[ref] || (n == count[ref] && versionLess(ref, v)) {
 			ref = v
 		}
 	}
@@ -369,33 +402,28 @@ func (e *evaluator) versions() {
 	}
 }
 
-// H7 (offline 7–90 days); beyond the old-device threshold C2 takes over.
+// H7 (offline 7–90 days); beyond the old-device threshold C2 takes over. A
+// device that never connected at all isn't "offline": only C2 reports it.
 func (e *evaluator) offlinePCs() {
 	th := e.Config.Thresholds
 	for _, dv := range e.Snapshot.Devices() {
-		if dv.IsServer || dv.Connected || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) {
+		if dv.IsServer || dv.Connected || dv.LastSeen.IsZero() || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) {
 			continue
 		}
-		f := model.Finding{
+		off := e.Now.Sub(dv.LastSeen)
+		if off < th.PCOffline.D() {
+			continue
+		}
+		if off >= th.OldDevice.D() && e.Config.CheckEnabled("C2") {
+			continue
+		}
+		e.add("H7", "", "device:"+dv.ID, model.Finding{
 			Subject: dv.Name,
+			Message: fmt.Sprintf("%s has been offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.Format("2006-01-02")),
+			Since:   dv.LastSeen,
 			Related: dv.SeenBy,
 			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
-		}
-		if dv.LastSeen.IsZero() {
-			f.Message = fmt.Sprintf("%s has not connected since syncwatch started watching it", dv.Name)
-			f.MinDuration = th.PCOffline.D()
-		} else {
-			off := e.Now.Sub(dv.LastSeen)
-			if off < th.PCOffline.D() {
-				continue
-			}
-			if off >= th.OldDevice.D() && e.Config.CheckEnabled("C2") {
-				continue
-			}
-			f.Message = fmt.Sprintf("%s has been offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.Format("2006-01-02"))
-			f.Since = dv.LastSeen
-		}
-		e.add("H7", "", "device:"+dv.ID, f)
+		})
 	}
 }
 

@@ -28,6 +28,21 @@ func (s *Store) SetPin(serverID, fp string) error {
 	return err
 }
 
+// ServerDeviceID returns the Syncthing device ID a server had when it was
+// last read, or "".
+func (s *Store) ServerDeviceID(serverID string) (string, error) {
+	return s.Setting("server.device_id." + serverID)
+}
+
+// SetServerDeviceID remembers a server's Syncthing device ID, so that after
+// a restart the server counts as a server before it has been reached.
+func (s *Store) SetServerDeviceID(serverID, id string) error {
+	if id == "" {
+		return s.DeleteSetting("server.device_id." + serverID)
+	}
+	return s.SetSetting("server.device_id."+serverID, id)
+}
+
 // Snooze kinds.
 const (
 	SnoozeKind = "snooze"

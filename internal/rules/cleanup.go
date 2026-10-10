@@ -19,6 +19,7 @@ func (e *evaluator) inactiveProjects() {
 	type agg struct {
 		label   string
 		last    string
+		basis   string
 		servers []string
 		ids     []string
 	}
@@ -36,12 +37,15 @@ func (e *evaluator) inactiveProjects() {
 			}
 			a.servers = append(a.servers, sv.Name)
 			a.ids = append(a.ids, sv.ID)
-			if f.LastFileAt.IsZero() {
-				continue
-			}
+			// Syncthing's lastFile only counts files pulled from other
+			// devices; local edits (over SMB, say) show up as events.
 			if f.LastFileAt.After(lastAt[f.ID]) {
 				lastAt[f.ID] = f.LastFileAt
-				a.last = f.LastFileName
+				a.last, a.basis = f.LastFileName, "the last file pulled from another device"
+			}
+			if f.LastLocalChange.After(lastAt[f.ID]) {
+				lastAt[f.ID] = f.LastLocalChange
+				a.last, a.basis = "", "the last local change seen by syncwatch"
 			}
 		}
 	}
@@ -56,15 +60,17 @@ func (e *evaluator) inactiveProjects() {
 			continue
 		}
 		a := latest[id]
+		details := []model.Detail{detail("Folder ID", id), timeDetail("Last change", last), detail("Based on", a.basis)}
+		if a.last != "" {
+			details = append(details, detail("Last file", a.last))
+		}
+		details = append(details, detail("On servers", strings.Join(a.servers, ", ")))
 		e.add("C1", "", "folder:"+id, model.Finding{
 			Subject: a.label,
-			Message: fmt.Sprintf("No file in %s has changed for %s (last change %s); consider archiving it", a.label, Ago(idle), last.Format("2006-01-02")),
+			Message: fmt.Sprintf("No file in %s has changed for %s (%s was on %s); consider archiving it", a.label, Ago(idle), a.basis, last.Format("2006-01-02")),
 			Since:   last,
 			Related: a.ids,
-			Details: []model.Detail{
-				detail("Folder ID", id), timeDetail("Last change", last), detail("Last file", a.last),
-				detail("On servers", strings.Join(a.servers, ", ")),
-			},
+			Details: details,
 		})
 	}
 }
@@ -82,7 +88,8 @@ func (e *evaluator) oldDevices() {
 			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
 		}
 		if dv.LastSeen.IsZero() {
-			f.Message = fmt.Sprintf("%s has never connected but is still configured on %s; consider removing it", dv.Name, strings.Join(e.names(dv.SeenBy), ", "))
+			// Opens once the device has been watched for the threshold.
+			f.Message = fmt.Sprintf("%s has never connected since syncwatch started watching it, over %s ago, but is still configured on %s; consider removing it", dv.Name, Ago(th), strings.Join(e.names(dv.SeenBy), ", "))
 			f.MinDuration = th
 		} else {
 			off := e.Now.Sub(dv.LastSeen)
@@ -99,6 +106,16 @@ func (e *evaluator) oldDevices() {
 // C3: a folder shared to a device that never connected or doesn't share it back.
 func (e *evaluator) deadShares() {
 	th := e.Config.Thresholds.DeadShare.D()
+	// A device no server has ever seen is C2's business; one C3 per folder
+	// on top of it would only repeat that.
+	neverSeen := map[string]bool{}
+	if e.Config.CheckEnabled("C2") {
+		for _, dv := range e.Snapshot.Devices() {
+			if !dv.IsServer && !dv.Connected && dv.LastSeen.IsZero() {
+				neverSeen[dv.ID] = true
+			}
+		}
+	}
 	for _, sv := range e.Snapshot.Servers {
 		if !sv.Loaded {
 			continue
@@ -107,14 +124,15 @@ func (e *evaluator) deadShares() {
 			f := sv.Folders[fid]
 			for _, dev := range f.SharedWith {
 				d, ok := sv.Devices[dev]
-				if !ok {
+				if !ok || neverSeen[dev] {
 					continue
 				}
 				dn := e.devName(dev)
 				var msg string
-				if c := f.Completion[dev]; c != nil && c.RemoteState == "notSharing" {
+				if sv.RemoteState(fid, dev) == "notSharing" {
 					msg = fmt.Sprintf("%s is shared with %s, which doesn't share it back", f.DisplayName(), dn)
-				} else if d.LastSeen.IsZero() && !e.connected(sv, dev) {
+				} else if d.LastSeen.IsZero() && !e.connected(sv, dev) && !e.Snapshot.IsServerDevice(dev) {
+					// A polled server that never connected is H1/H2's business.
 					msg = fmt.Sprintf("%s is shared with %s, which has never connected to %s", f.DisplayName(), dn, sv.Name)
 				} else {
 					continue

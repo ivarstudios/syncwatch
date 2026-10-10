@@ -18,10 +18,18 @@ func StyleFor(sep string) Style {
 	return Style{Sep: "/"}
 }
 
-// Clean removes trailing separators (keeping a root such as "/" or "C:\").
+// Clean collapses repeated separators (keeping the \\ of a UNC path) and
+// removes trailing ones (keeping a root such as "/", "C:\" or "\\srv\share").
 func (s Style) Clean(p string) string {
 	if s.Sep == `\` {
 		p = strings.ReplaceAll(p, "/", `\`)
+	}
+	unc := s.Sep == `\` && strings.HasPrefix(p, `\\`)
+	for strings.Contains(p, s.Sep+s.Sep) {
+		p = strings.ReplaceAll(p, s.Sep+s.Sep, s.Sep)
+	}
+	if unc {
+		p = `\` + p
 	}
 	for len(p) > 1 && strings.HasSuffix(p, s.Sep) {
 		if s.Sep == `\` && len(p) == 3 && p[1] == ':' {
@@ -30,6 +38,21 @@ func (s Style) Clean(p string) string {
 		p = p[:len(p)-1]
 	}
 	return p
+}
+
+// isRoot reports whether a cleaned path has no parent: "/", "\", a drive
+// root "C:\" or a UNC root "\\srv\share" (or a bare "\\srv").
+func (s Style) isRoot(p string) bool {
+	if p == s.Sep {
+		return true
+	}
+	if s.Sep != `\` {
+		return false
+	}
+	if len(p) == 3 && p[1] == ':' && p[2] == '\\' {
+		return true
+	}
+	return strings.HasPrefix(p, `\\`) && strings.Count(p[2:], `\`) <= 1
 }
 
 // Join joins path elements with the separator.
@@ -59,9 +82,12 @@ func (s Style) Base(p string) string {
 	return p
 }
 
-// Parent returns the parent directory, or "" when there is none.
+// Parent returns the parent directory, or "" when there is none (a root).
 func (s Style) Parent(p string) string {
 	p = s.Clean(p)
+	if s.isRoot(p) {
+		return ""
+	}
 	i := strings.LastIndex(p, s.Sep)
 	if i < 0 {
 		return ""
@@ -113,5 +139,11 @@ func (s Style) Split(rel string) []string {
 	return strings.FieldsFunc(rel, func(r rune) bool { return string(r) == s.Sep || r == '/' })
 }
 
-// Display converts a relative path to use / for display.
-func (s Style) Display(rel string) string { return strings.ReplaceAll(rel, `\`, "/") }
+// Display converts a relative path to use / for display. On a Linux server a
+// backslash is part of the name and is left alone.
+func (s Style) Display(rel string) string {
+	if s.Sep != `\` {
+		return rel
+	}
+	return strings.ReplaceAll(rel, `\`, "/")
+}

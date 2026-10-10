@@ -158,6 +158,15 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	hub := model.NewHub(nil)
+	// A server keeps the device ID it had last time, so that one that can't
+	// be reached at startup still counts as a server rather than as a PC.
+	var known []*model.Server
+	for _, s := range cfg.Servers {
+		if id, _ := st.ServerDeviceID(s.ID); id != "" && !s.Disabled {
+			known = append(known, &model.Server{ID: s.ID, Name: s.Name, URL: s.URL, GUIURL: s.LinkURL(), MyID: id})
+		}
+	}
+	hub.SetServers(known)
 	eng, err := engine.New(st, hub, holder, nil, log)
 	if err != nil {
 		return err
