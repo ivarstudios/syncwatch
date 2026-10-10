@@ -26,7 +26,7 @@ servers:
     url: https://192.168.2.10:8384
 notifications:
   discord_webhook: https://discord.com/api/webhooks/1/secret-hook
-  discord_role_id: "123"
+  discord_role_id: "123456789012345678"
 api:
   token: swt_secret_token
 `

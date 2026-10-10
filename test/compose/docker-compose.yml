@@ -131,7 +131,7 @@ services:
           pc_offline: 40s
         notifications:
           discord_webhook: http://discord.e2e.invalid:8080/api/webhooks/1/compose-token
-          discord_role_id: "555"
+          discord_role_id: "555000000000000000"
           quiet_hours: "off"
           reminder_time: "off"
           weekly_day: "off"

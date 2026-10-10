@@ -14,10 +14,14 @@ import (
 // units and is written back in the largest whole unit.
 type Duration time.Duration
 
+// MaxDuration is the longest duration any setting accepts: 10 years.
+const MaxDuration = 10 * 365 * 24 * time.Hour
+
 // D returns the value as a time.Duration.
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // ParseDuration parses Go durations plus d and w units, e.g. "90d", "1w2d", "36h".
+// Negative values and values above MaxDuration are errors.
 func ParseDuration(s string) (Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "0" {
@@ -39,6 +43,7 @@ func ParseDuration(s string) (Duration, error) {
 		}
 		num, unit := rest[:i], rest[i:j]
 		rest = rest[j:]
+		var d time.Duration
 		switch unit {
 		case "d", "w":
 			n, err := strconv.ParseFloat(num, 64)
@@ -49,14 +54,20 @@ func ParseDuration(s string) (Duration, error) {
 			if unit == "w" {
 				mult *= 7
 			}
-			total += time.Duration(n * float64(mult))
+			if n*float64(mult) > float64(MaxDuration) {
+				return 0, fmt.Errorf("duration %q is longer than 10 years", s)
+			}
+			d = time.Duration(n * float64(mult))
 		default:
-			d, err := time.ParseDuration(num + unit)
-			if err != nil {
+			var err error
+			if d, err = time.ParseDuration(num + unit); err != nil {
 				return 0, fmt.Errorf("invalid duration %q", s)
 			}
-			total += d
 		}
+		if d > MaxDuration-total {
+			return 0, fmt.Errorf("duration %q is longer than 10 years", s)
+		}
+		total += d
 	}
 	return Duration(total), nil
 }

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	role     = "555"
+	role     = "555000000000000000"
 	token    = "swt_compose_token_0123456789"
 	password = "compose-admin-password"
 	swURL    = "https://127.0.0.1:18780" // the image serves HTTPS by default

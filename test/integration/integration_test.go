@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	role     = "777000111"
+	role     = "777000111000000000"
 	token    = "swt_integration_token_abcdef0123"
 	password = "integration-admin-pw"
 )

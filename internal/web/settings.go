@@ -297,7 +297,8 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	}
 	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	if !clearHook && hook != "" {
-		if err := config.CheckDiscordWebhook(hook); err != nil {
+		var err error
+		if hook, err = config.CanonicalDiscordWebhook(hook); err != nil {
 			s.redirect(w, r, "/settings#notifications", "Not saved: "+err.Error()+".", true)
 			return
 		}
@@ -451,9 +452,6 @@ func (s *Server) handleStructureSave(w http.ResponseWriter, r *http.Request, inf
 	}
 	c := s.cfg.Get().Clone()
 	c.Structure, c.Shares = doc.Structure, doc.Shares
-	if c.Structure.IgnoreDirs == nil {
-		c.Structure.IgnoreDirs = []string{}
-	}
 	s.save(w, r, c, "structure", "Structure rules saved. The next structure scan uses them.")
 }
 
