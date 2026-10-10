@@ -192,6 +192,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return err
 	}
+	srvWeb.AllowHosts(o.Listen, o.TLSHosts...)
 	if tok := srvWeb.SetupToken(); tok != "" && holder.Get().Access.Mode == config.AccessBuiltin {
 		log.Warn("no admin password is set yet: open the dashboard and enter this one-time setup token", "setup_token", tok)
 	}

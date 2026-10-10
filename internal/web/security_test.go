@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -489,5 +490,58 @@ func TestViewerLoginKeepsAdminFailures(t *testing.T) {
 	}
 	if code := login("correct horse battery"); code != http.StatusTooManyRequests {
 		t.Fatalf("after five wrong guesses and a viewer login: %d, want 429", code)
+	}
+}
+
+// A page on a host name an attacker controls (DNS rebinding) is same-origin
+// with its own name, so the Origin check alone doesn't stop it. Only
+// addresses, localhost, the host of public_url and the configured names are
+// answered; everything else gets 421 with a hint.
+func TestUnknownHostNameRefused(t *testing.T) {
+	e := newEnv(t, twoServers+"access: {mode: proxy}\npublic_url: https://dash.home.invalid:8080\n")
+	e.web.AllowHosts("nas.lan.invalid:8080", "syncwatch", " Watch.Example.Invalid ")
+	get := func(host, path string) (*http.Response, string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, e.srv.URL+path, nil)
+		req.Host = host
+		resp, err := e.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	for _, host := range []string{"rebind.attacker.invalid", "rebind.attacker.invalid:8080", "localhost.attacker.invalid",
+		"dash.home.invalid.attacker.invalid", "nas.lan.invalid.attacker.invalid", "127.0.0.1.attacker.invalid"} {
+		for _, path := range []string{"/settings", "/healthz", "/api/v1/status", "/assets/app.js"} {
+			resp, body := get(host, path)
+			if resp.StatusCode != http.StatusMisdirectedRequest {
+				t.Errorf("Host %q, %s: %d", host, path, resp.StatusCode)
+			}
+			if !strings.Contains(body, "public_url") || !strings.Contains(body, "SYNCWATCH_TLS_HOSTS") {
+				t.Errorf("Host %q: no hint in %q", host, body)
+			}
+		}
+	}
+	for _, host := range []string{"127.0.0.1:8080", "127.0.0.1", "[::1]:8080", "[::1]", "192.0.2.7:443", "localhost", "LOCALHOST:8080", "localhost.",
+		"dash.home.invalid", "DASH.home.invalid:8080", "nas.lan.invalid", "syncwatch:8080", "watch.example.invalid"} {
+		if resp, _ := get(host, "/settings"); resp.StatusCode != http.StatusOK {
+			t.Errorf("Host %q: %d, want 200", host, resp.StatusCode)
+		}
+	}
+	// A form sent from the rebinding page with its own Origin is refused too.
+	csrf := e.csrf("/settings")
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/settings/api-token", strings.NewReader(url.Values{"csrf": {csrf}, "op": {"generate"}}.Encode()))
+	req.Host = "rebind.attacker.invalid:8080"
+	req.Header.Set("Origin", "http://rebind.attacker.invalid:8080")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := e.http.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if tok, _ := e.st.Secret(store.SecretAPIToken); resp.StatusCode != http.StatusMisdirectedRequest || tok != "swt_test_token" {
+		t.Fatalf("POST from a rebinding page: %d, token %q", resp.StatusCode, tok)
 	}
 }

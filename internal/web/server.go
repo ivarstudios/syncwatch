@@ -11,7 +11,9 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -54,6 +56,7 @@ type Server struct {
 	tmpl    *template.Template
 	limiter *limiter
 	mux     *http.ServeMux
+	hosts   []string // names answered besides addresses, localhost and public_url's host
 
 	setupMu    sync.Mutex
 	setupToken string
@@ -92,6 +95,46 @@ func (s *Server) SetupToken() string {
 func (s *Server) adminConfigured() bool {
 	h, _ := s.st.Setting(KeyAdminHash)
 	return h != ""
+}
+
+// AllowHosts adds names the dashboard answers to: the host of the listen
+// address and extra names (SYNCWATCH_TLS_HOSTS). Addresses, localhost and
+// the host of public_url are always answered. Call it before serving.
+func (s *Server) AllowHosts(listen string, extra ...string) {
+	if h, _, err := net.SplitHostPort(listen); err == nil && h != "" {
+		s.hosts = append(s.hosts, h)
+	}
+	for _, h := range extra {
+		if h = strings.TrimSpace(h); h != "" {
+			s.hosts = append(s.hosts, h)
+		}
+	}
+}
+
+// hostAllowed reports whether the Host header names this server. A page on
+// any other name (DNS rebinding) is refused: it would be same-origin with
+// its own name, so the Origin check alone can't keep it out.
+func (s *Server) hostAllowed(r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if u, err := url.Parse(s.cfg.Get().PublicURL); err == nil && strings.EqualFold(u.Hostname(), host) {
+		return true
+	}
+	for _, h := range s.hosts {
+		if strings.EqualFold(strings.TrimSuffix(h, "."), host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) routes() {
@@ -158,6 +201,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "same-origin")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	if !s.hostAllowed(r) {
+		s.log.Info("request for an unknown host name refused", "host", r.Host, "ip", clientIP(r))
+		http.Error(w, fmt.Sprintf("syncwatch doesn't answer to the host name %q: open it by IP address and set public_url under Settings → Notifications, or set SYNCWATCH_TLS_HOSTS to the names you use", r.Host), http.StatusMisdirectedRequest)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
