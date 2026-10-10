@@ -257,8 +257,10 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
+// setDur fills a zero duration with its default. Negative values are left
+// for Validate to reject.
 func setDur(d *Duration, def time.Duration) {
-	if *d <= 0 {
+	if *d == 0 {
 		*d = Duration(def)
 	}
 }
@@ -277,6 +279,11 @@ func Slug(name string) string {
 // Validate checks the configuration for errors.
 func (c *Config) Validate() error {
 	var errs []error
+	add := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
 	ids := map[string]bool{}
 	for _, s := range c.Servers {
 		if s.ID == "" {
@@ -306,26 +313,36 @@ func (c *Config) Validate() error {
 	if c.Collector.Mode != ModeEvents && c.Collector.Mode != ModePolled {
 		errs = append(errs, fmt.Errorf("collector.mode must be %q or %q", ModeEvents, ModePolled))
 	}
-	if c.Collector.EventTimeout.D() < 5*time.Second || c.Collector.EventTimeout.D() > 10*time.Minute {
-		errs = append(errs, errors.New("collector.event_timeout must be between 5s and 10m"))
-	}
-	if c.Collector.PollInterval.D() < time.Minute {
-		errs = append(errs, errors.New("collector.poll_interval must be at least 1m"))
-	}
-	if c.Collector.FullCheckInterval.D() < 5*time.Minute {
-		errs = append(errs, errors.New("collector.full_check_interval must be at least 5m"))
-	}
-	if c.Collector.StructureInterval.D() < time.Minute {
-		errs = append(errs, errors.New("collector.structure_interval must be at least 1m"))
-	}
-	if c.Collector.Concurrency > 16 {
-		errs = append(errs, errors.New("collector.concurrency must be at most 16"))
-	}
-	for id := range c.Checks {
+	col := &c.Collector
+	add(durRange("collector.event_timeout", col.EventTimeout, 5*time.Second, 10*time.Minute))
+	add(durRange("collector.full_check_interval", col.FullCheckInterval, time.Minute, 7*24*time.Hour))
+	add(durRange("collector.poll_interval", col.PollInterval, time.Minute, 24*time.Hour))
+	add(durRange("collector.structure_interval", col.StructureInterval, time.Minute, 7*24*time.Hour))
+	add(durRange("collector.baseline_interval", col.BaselineInterval, time.Hour, 90*24*time.Hour))
+	add(durRange("collector.request_timeout", col.RequestTimeout, time.Second, 10*time.Minute))
+	add(intRange("collector.concurrency", col.Concurrency, 1, 16))
+	add(intRange("collector.down_after_failures", col.DownAfter, 1, 20))
+	for id, ch := range c.Checks {
 		if _, ok := CatalogByID[id]; !ok {
 			errs = append(errs, fmt.Errorf("checks: unknown check %q", id))
 		}
+		if ch.Debounce != nil {
+			add(durRange("checks."+id+".debounce", *ch.Debounce, 0, 30*24*time.Hour))
+		}
 	}
+	th := &c.Thresholds
+	for _, t := range []struct {
+		name string
+		d    Duration
+	}{
+		{"failing_files", th.FailingFiles}, {"stuck_sync", th.StuckSync}, {"paused", th.Paused}, {"pc_offline", th.PCOffline},
+		{"conflict_window", th.ConflictWindow}, {"inactive_project", th.InactiveProject}, {"old_device", th.OldDevice}, {"dead_share", th.DeadShare},
+	} {
+		add(durRange("thresholds."+t.name, t.d, minThreshold, MaxDuration))
+	}
+	add(intRange("structure.nested_scan_depth", c.Structure.NestedScanDepth, 1, 10))
+	add(intRange("notifications.weekly_top", c.Notify.WeeklyTop, 1, 50))
+	add(durRange("access.session_ttl", c.Access.SessionTTL, time.Hour, 365*24*time.Hour))
 	if _, err := c.Structure.Compile(); err != nil {
 		errs = append(errs, err)
 	}
@@ -372,6 +389,28 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("public_url must be an http(s) URL without a user name or password"))
 	}
 	return errors.Join(errs...)
+}
+
+// minThreshold is the shortest threshold. The engine evaluates every 30 s,
+// so anything shorter means "at once" anyway.
+const minThreshold = 10 * time.Second
+
+// durRange reports a duration outside [lo, hi] as an error naming the field.
+// Zero means "use the default" (ApplyDefaults fills it), so it passes.
+func durRange(name string, d Duration, lo, hi time.Duration) error {
+	if d != 0 && (d.D() < lo || d.D() > hi) {
+		return fmt.Errorf("%s must be between %s and %s", name, Duration(lo), Duration(hi))
+	}
+	return nil
+}
+
+// intRange reports an integer outside [lo, hi] as an error naming the field.
+// Zero means "use the default", so it passes.
+func intRange(name string, n, lo, hi int) error {
+	if n != 0 && (n < lo || n > hi) {
+		return fmt.Errorf("%s must be between %d and %d", name, lo, hi)
+	}
+	return nil
 }
 
 // webURL reports whether s is an absolute http(s) URL without credentials.
@@ -471,14 +510,66 @@ func (c *Config) Debounce(id string) time.Duration {
 	return CatalogByID[id].Debounce
 }
 
-// Clone returns a deep copy (including secrets).
+// Clone returns a deep copy (including secrets). It copies field by field
+// rather than through YAML, so it can't fail or drop sections.
 func (c *Config) Clone() *Config {
-	b, _ := yaml.Marshal(c)
-	var out Config
-	_ = yaml.Unmarshal(b, &out)
-	// yaml round-trip keeps import-only secrets because they are yaml-visible.
+	out := *c
+	out.Servers = append([]Server(nil), c.Servers...)
+	if c.Checks != nil {
+		out.Checks = make(map[string]Check, len(c.Checks))
+		for id, ch := range c.Checks {
+			if ch.Enabled != nil {
+				v := *ch.Enabled
+				ch.Enabled = &v
+			}
+			if ch.Urgent != nil {
+				v := *ch.Urgent
+				ch.Urgent = &v
+			}
+			if ch.Debounce != nil {
+				v := *ch.Debounce
+				ch.Debounce = &v
+			}
+			out.Checks[id] = ch
+		}
+	}
+	out.Structure.TypeTokens = cloneStrings(c.Structure.TypeTokens)
+	out.Structure.IgnoreDirs = cloneStrings(c.Structure.IgnoreDirs)
+	if c.Structure.Placement != nil {
+		out.Structure.Placement = make([]PlacementRule, len(c.Structure.Placement))
+		for i, p := range c.Structure.Placement {
+			if p.ShareMustHave != nil {
+				m := make(map[string]string, len(p.ShareMustHave))
+				for k, v := range p.ShareMustHave {
+					m[k] = v
+				}
+				p.ShareMustHave = m
+			}
+			out.Structure.Placement[i] = p
+		}
+	}
+	out.Shares.Add = cloneLists(c.Shares.Add)
+	out.Shares.Exclude = cloneLists(c.Shares.Exclude)
 	out.ApplyDefaults()
 	return &out
+}
+
+func cloneStrings(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string{}, s...)
+}
+
+func cloneLists(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = cloneStrings(v)
+	}
+	return out
 }
 
 // Redacted returns a copy with every secret removed.

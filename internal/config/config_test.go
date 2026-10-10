@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +17,7 @@ servers:
     url: https://192.168.2.10:8384
 notifications:
   discord_webhook: https://discord.com/api/webhooks/1/abc
-  discord_role_id: "123456"
+  discord_role_id: "123456789012345678"
 structure:
   project_pattern: '^(ME-)?LIVE-[A-Za-z0-9]'
   share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$'
@@ -105,6 +107,159 @@ func TestDuration(t *testing.T) {
 	}
 	if _, err := ParseDuration("abc"); err == nil {
 		t.Fatal("bad duration accepted")
+	}
+}
+
+// Large d/w values used to overflow into a negative duration that passed
+// validation; a check debounce of 1000000w then pinged at once and the stored
+// configuration could not be loaded again.
+func TestDurationOverflowAndLimit(t *testing.T) {
+	for _, s := range []string{"1000000w", "999999999d", "106752d", "2562047h2562047h", "9223372036854775808ns", "3651d", "522w", "87601h", "3650d1s", "-5m", "1e3h"} {
+		d, err := ParseDuration(s)
+		if err == nil || d != 0 {
+			t.Errorf("%s: got %v (%d ns), err %v; want an error", s, d, int64(d), err)
+		}
+	}
+	for s, want := range map[string]time.Duration{"3650d": MaxDuration, "521w": 521 * 7 * 24 * time.Hour, "87600h": MaxDuration, "1.5d": 36 * time.Hour, "3649d23h": MaxDuration - time.Hour} {
+		if d, err := ParseDuration(s); err != nil || d.D() != want {
+			t.Errorf("%s: got %v %v, want %v", s, d, err, want)
+		}
+	}
+	if Duration(MaxDuration).String() != "3650d" {
+		t.Fatalf("format of the maximum: %s", Duration(MaxDuration))
+	}
+	c, err := ParseYAML([]byte("servers: [{name: a, url: 'https://10.0.0.1:8384'}]\nchecks: {H1: {debounce: 1000000w}}\n"))
+	if err == nil {
+		t.Fatalf("overflowed debounce accepted: H1 debounce %v", c.Debounce("H1"))
+	}
+}
+
+// Validate must reject a negative duration wherever one can get in: through a
+// JSON number of nanoseconds (the stored form), a check debounce, or a value
+// set in code. ApplyDefaults only replaces zero, so negatives reach Validate.
+func TestNegativeDurationsRejected(t *testing.T) {
+	for _, js := range []string{
+		`{"collector":{"request_timeout":-1}}`,
+		`{"thresholds":{"paused":-3600000000000}}`,
+		`{"checks":{"H1":{"debounce":-1}}}`,
+		`{"access":{"session_ttl":-1}}`,
+	} {
+		var c Config
+		if err := json.Unmarshal([]byte(js), &c); err != nil {
+			t.Fatal(err)
+		}
+		c.ApplyDefaults()
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must be between") {
+			t.Errorf("%s: negative duration accepted: %v", js, err)
+		}
+	}
+	c := Default()
+	c.Thresholds.PCOffline = Duration(-time.Hour)
+	if err := c.Validate(); err == nil {
+		t.Fatal("negative threshold accepted")
+	}
+}
+
+// Every bound names the field and the allowed range. Zero means the default.
+func TestValidateBounds(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	bad := map[string]string{
+		"collector: {request_timeout: 500ms}":   "collector.request_timeout must be between 1s and 10m",
+		"collector: {request_timeout: 11m}":     "collector.request_timeout must be between 1s and 10m",
+		"collector: {down_after_failures: 21}":  "collector.down_after_failures must be between 1 and 20",
+		"collector: {concurrency: 17}":          "collector.concurrency must be between 1 and 16",
+		"collector: {event_timeout: 4s}":        "collector.event_timeout must be between 5s and 10m",
+		"collector: {event_timeout: 11m}":       "collector.event_timeout must be between 5s and 10m",
+		"collector: {full_check_interval: 59s}": "collector.full_check_interval must be between 1m and 7d",
+		"collector: {full_check_interval: 8d}":  "collector.full_check_interval must be between 1m and 7d",
+		"collector: {poll_interval: 30s}":       "collector.poll_interval must be between 1m and 1d",
+		"collector: {poll_interval: 25h}":       "collector.poll_interval must be between 1m and 1d",
+		"collector: {structure_interval: 10s}":  "collector.structure_interval must be between 1m and 7d",
+		"collector: {structure_interval: 2w}":   "collector.structure_interval must be between 1m and 7d",
+		"collector: {baseline_interval: 59m}":   "collector.baseline_interval must be between 1h and 90d",
+		"collector: {baseline_interval: 91d}":   "collector.baseline_interval must be between 1h and 90d",
+		"structure: {nested_scan_depth: 11}":    "structure.nested_scan_depth must be between 1 and 10",
+		"notifications: {weekly_top: 51}":       "notifications.weekly_top must be between 1 and 50",
+		"access: {session_ttl: 59m}":            "access.session_ttl must be between 1h and 365d",
+		"access: {session_ttl: 366d}":           "access.session_ttl must be between 1h and 365d",
+		"checks: {H1: {debounce: 31d}}":         "checks.H1.debounce must be between 0 and 30d",
+		"thresholds: {paused: 9s}":              "thresholds.paused must be between 10s and 3650d",
+		"thresholds: {failing_files: 5s}":       "thresholds.failing_files must be between 10s and 3650d",
+		"thresholds: {stuck_sync: 1ms}":         "thresholds.stuck_sync must be between 10s and 3650d",
+		"thresholds: {pc_offline: 1s}":          "thresholds.pc_offline must be between 10s and 3650d",
+		"thresholds: {conflict_window: 1s}":     "thresholds.conflict_window must be between 10s and 3650d",
+		"thresholds: {inactive_project: 1s}":    "thresholds.inactive_project must be between 10s and 3650d",
+		"thresholds: {old_device: 1s}":          "thresholds.old_device must be between 10s and 3650d",
+		"thresholds: {dead_share: 1s}":          "thresholds.dead_share must be between 10s and 3650d",
+	}
+	for in, want := range bad {
+		_, err := ParseYAML([]byte(srv + in + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", in, err, want)
+		}
+	}
+	ok := []string{
+		"collector: {request_timeout: 1s, down_after_failures: 20, concurrency: 1, event_timeout: 5s, full_check_interval: 1m, poll_interval: 24h, structure_interval: 7d, baseline_interval: 1h}",
+		"collector: {request_timeout: 10m, down_after_failures: 1, concurrency: 16, full_check_interval: 7d, poll_interval: 1m, baseline_interval: 90d}",
+		"structure: {nested_scan_depth: 10}\nnotifications: {weekly_top: 50}\naccess: {session_ttl: 365d}",
+		"checks: {H1: {debounce: 0}, H2: {debounce: 30d}}",
+		"thresholds: {paused: 10s, pc_offline: 3650d, failing_files: 0}",
+	}
+	for _, in := range ok {
+		if _, err := ParseYAML([]byte(srv + in + "\n")); err != nil {
+			t.Errorf("%s: %v", in, err)
+		}
+	}
+	c, err := ParseYAML([]byte(srv + "thresholds: {failing_files: 0}\ncollector: {concurrency: 0}\n"))
+	if err != nil || c.Thresholds.FailingFiles.D() != time.Hour || c.Collector.Concurrency != 3 {
+		t.Fatalf("zero should mean the default: %v %v", c, err)
+	}
+}
+
+// Clone used to be a YAML round trip with errors ignored: one unreadable
+// value silently reset every later section. Now it is a field-by-field deep
+// copy that shares nothing with the original.
+func TestCloneIsDeepAndComplete(t *testing.T) {
+	c, err := ParseYAML([]byte(ivarYAML + "access: {viewer: open, mode: proxy}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.API.Token = "swt_x"
+	c.Notify.QuietHours, c.Notify.WeeklyTop = "off", 7
+	c.Structure.TypeTokens = nil // nil stays nil, so an export doesn't change
+	cl := c.Clone()
+	if !reflect.DeepEqual(c, cl) {
+		t.Fatalf("clone differs:\n%+v\n%+v", c, cl)
+	}
+	if cl.Servers[0].APIKey != "secret-akka" || cl.API.Token != "swt_x" {
+		t.Fatal("secrets lost")
+	}
+	// Mutate every reference in the clone; the original must not change.
+	cl.Servers[0].Name = "changed"
+	*cl.Checks["H7"].Debounce = Duration(time.Minute)
+	*cl.Checks["H7"].Urgent = false
+	cl.Checks["H1"] = Check{}
+	cl.Structure.IgnoreDirs[0] = "changed"
+	cl.Structure.Placement[0].ShareMustHave["me"] = "changed"
+	cl.Structure.Placement[0].WhenNameMatches = "changed"
+	cl.Shares.Add["SIRIUS"][0] = "changed"
+	cl.Shares.Add["new"] = []string{"x"}
+	if c.Servers[0].Name != "AKKA" || c.Debounce("H7") != time.Hour || !c.Urgent("H7") || len(c.Checks) != 1 ||
+		c.Structure.IgnoreDirs[0] != "@Recycle" || c.Structure.Placement[0].ShareMustHave["me"] != "true" ||
+		c.Structure.Placement[0].WhenNameMatches != "^ME-LIVE-" || c.Shares.Add["SIRIUS"][0] == "changed" || len(c.Shares.Add) != 1 {
+		t.Fatalf("clone shares memory with the original: %+v", c)
+	}
+	// A clone of a config with a bad value keeps every section instead of
+	// resetting the ones after it.
+	bad := Default()
+	bad.Checks["H1"] = Check{Debounce: new(Duration)}
+	*bad.Checks["H1"].Debounce = Duration(-1)
+	bad.Access.Viewer = ViewerOpen
+	bad.Thresholds.PCOffline = Duration(10 * 24 * time.Hour)
+	bad.Structure.ProjectPattern = "^LIVE-"
+	bc := bad.Clone()
+	if bc.Access.Viewer != ViewerOpen || bc.Thresholds.PCOffline != bad.Thresholds.PCOffline || bc.Structure.ProjectPattern != "^LIVE-" || bc.Debounce("H1") != -1 {
+		t.Fatalf("clone reset sections: %+v", bc)
 	}
 }
 
