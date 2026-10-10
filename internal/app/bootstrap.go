@@ -126,7 +126,7 @@ func scrubBootstrap(path string) error {
 	if err := renameFile(tmp.Name(), path); err != nil {
 		// A single-file bind mount can't be replaced; rewrite it in place.
 		if werr := os.WriteFile(path, buf.Bytes(), fi.Mode().Perm()); werr != nil {
-			return err
+			return errors.Join(err, werr)
 		}
 	}
 	if bootstrapHasSecrets(path) {

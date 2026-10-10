@@ -135,9 +135,8 @@ func (c *certSource) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 // certificate when the new files don't load (certbot writes them one after
 // the other); the next change is tried again.
 func (c *certSource) reload(now time.Time) {
-	prev := c.cert
-	if err := c.load(now); err != nil {
-		c.cert, c.stamp = prev, c.fileStamp()
+	if err := c.load(now); err != nil { // load leaves cert as it was
+		c.stamp = c.fileStamp()
 		c.log.Warn("the TLS certificate files changed but can't be loaded; keeping the previous certificate", "certificate", c.certFile, "err", err)
 		return
 	}
