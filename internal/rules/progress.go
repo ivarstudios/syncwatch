@@ -24,7 +24,7 @@ const speedWindow = 10 * time.Minute
 type syncProgress struct {
 	received string // "1.6 of 2.1 GB"
 	speed    string // "2.4 MB each second", or "0 (no data arrived in the last 10 minutes)"
-	left     string // "approximately 4 minutes"; "" when the speed is 0 or not known
+	left     string // "approximately 4 minutes"; "" when the speed is 0 or not known, or the sync does not move
 }
 
 // details gives the rows Received, Speed and Time left that have a value.
@@ -61,45 +61,71 @@ func (e *evaluator) progressOf(samples []model.ProgressSample, need, global int6
 	if global > 0 {
 		p.received = sizeOf(max(global-need, 0), global)
 	}
-	bps, ok := syncSpeed(samples, need, e.Now)
+	bps, still, ok := syncSpeed(samples, need, e.Now)
 	switch {
 	case !ok:
 	case bps <= 0:
 		p.speed = "0 (no data arrived in the last 10 minutes)"
 	default:
 		p.speed = rate(bps)
-		if need > 0 {
-			p.left = timeLeft(float64(need) / bps)
+		// A time left only for a sync that moves: when the need did not go
+		// down for longer than the time left, the estimate is wrong (W-059:
+		// files that a Windows PC cannot store, after the other files
+		// arrived).
+		if left := float64(need) / bps; need > 0 && still.Seconds() <= left {
+			p.left = timeLeft(left)
 		}
 	}
 	return p
 }
 
-// syncSpeed gives the bytes that arrived each second: the decrease of the
-// need between the newest point and the newest sample that is at least 10
-// minutes older. The newest point is the newest sample, or the need now when
+// syncSpeed gives the bytes that arrived each second in the 10 minutes
+// before the newest point, and for how long the need did not go down
+// (until now). The newest point is the newest sample, or the need now when
 // no sample came in the last minute (while a sync waits, Syncthing sends no
-// progress). ok is false when the samples do not go back 10 minutes.
-func syncSpeed(samples []model.ProgressSample, need int64, now time.Time) (bps float64, ok bool) {
+// progress). The bytes that arrived are the decreases of the need from the
+// point at the start of the 10 minutes: a need that rises (new files) does
+// not hide them (W-059). A decrease counts at the time of the point that
+// shows it, thus a sync that stopped more than 10 minutes ago gives 0. When
+// the folder needed nothing at the start, the time counts from the first
+// point that needs something. ok is false when the samples do not go back
+// 10 minutes.
+func syncSpeed(samples []model.ProgressSample, need int64, now time.Time) (bps float64, still time.Duration, ok bool) {
 	if len(samples) == 0 {
-		return 0, false
+		return 0, 0, false
 	}
-	end := samples[len(samples)-1]
-	if now.Sub(end.At) >= time.Minute {
-		end = model.ProgressSample{At: now, NeedBytes: need}
+	points := samples[:len(samples):len(samples)] // an append copies: the samples belong to the snapshot
+	if now.Sub(samples[len(samples)-1].At) >= time.Minute {
+		points = append(points, model.ProgressSample{At: now, NeedBytes: need})
 	}
-	for i := len(samples) - 1; i >= 0; i-- {
-		s := samples[i]
-		d := end.At.Sub(s.At)
-		if d < speedWindow {
-			continue
+	end := points[len(points)-1].At
+	from := end.Add(-speedWindow)
+	first := -1 // the newest point at or before the start of the 10 minutes
+	for i := len(points) - 1; i >= 0; i-- {
+		if !points[i].At.After(from) {
+			first = i
+			break
 		}
-		if s.NeedBytes <= end.NeedBytes {
-			return 0, true
-		}
-		return float64(s.NeedBytes-end.NeedBytes) / d.Seconds(), true
 	}
-	return 0, false
+	if first < 0 {
+		return 0, 0, false
+	}
+	var arrived int64
+	var down time.Time // the newest point that shows a decrease
+	idle := points[first].NeedBytes == 0
+	for i := first + 1; i < len(points); i++ {
+		if idle && points[i].NeedBytes > 0 {
+			from, idle = points[i].At, false
+		}
+		if d := points[i-1].NeedBytes - points[i].NeedBytes; d > 0 {
+			arrived += d
+			down = points[i].At
+		}
+	}
+	if arrived == 0 {
+		return 0, 0, true
+	}
+	return float64(arrived) / end.Sub(from).Seconds(), now.Sub(down), true
 }
 
 // sizeOf writes a part of a size in the unit of the size: "1.6 of 2.1 GB".

@@ -303,7 +303,9 @@ func TestNeedListErrorIsNotAFolderError(t *testing.T) {
 
 // W-059: the full check and the events record progress samples with the
 // need and the size of the folder, for each device and for the server's
-// own copy (device ""), at most 1 each minute for each pair.
+// own copy (device ""). An event less than 1 minute after the sample before
+// the newest one replaces the newest sample: the newest sample has the
+// newest need (model.AddProgress).
 func TestProgressSamples(t *testing.T) {
 	fake, hub, _, _, stop := setup(t)
 	defer stop()
@@ -324,13 +326,18 @@ func TestProgressSamples(t *testing.T) {
 		"summary": map[string]any{"state": "syncing", "globalBytes": 2000, "needBytes": 500, "needTotalItems": 1}})
 	fake.pushAt("FolderCompletion", base.Add(100*time.Second), map[string]any{"folder": "p-alpha", "device": devSol,
 		"completion": 55, "globalBytes": 2000, "needBytes": 900, "needItems": 1, "remoteState": "valid"})
-	sv = waitFor(t, hub, "the events", func(s *model.Server) bool { return s.Folders["p-alpha"].Completion[devSol].NeedBytes == 900 })
+	fake.pushAt("FolderCompletion", base.Add(110*time.Second), map[string]any{"folder": "p-alpha", "device": devSol,
+		"completion": 57, "globalBytes": 2000, "needBytes": 850, "needItems": 1, "remoteState": "valid"})
+	sv = waitFor(t, hub, "the events", func(s *model.Server) bool { return s.Folders["p-alpha"].Completion[devSol].NeedBytes == 850 })
 	own, dev = sv.Progress["p-alpha"][""], sv.Progress["p-alpha"][devSol]
 	if len(own) != 2 || !sameSample(own[1], model.ProgressSample{At: base.Add(90 * time.Second), NeedBytes: 500, GlobalBytes: 2000}) {
 		t.Fatalf("samples of the own copy: %+v", own)
 	}
-	// The event 10 s after the one before is not a sample.
-	if len(dev) != 2 || !sameSample(dev[1], model.ProgressSample{At: base.Add(90 * time.Second), NeedBytes: 1000, GlobalBytes: 2000}) {
+	// The event at 100 s is a sample: it is 100 s after the sample of the
+	// full check. The event at 110 s is 20 s after the sample at 90 s: it
+	// replaces the sample at 100 s.
+	if len(dev) != 3 || !sameSample(dev[1], model.ProgressSample{At: base.Add(90 * time.Second), NeedBytes: 1000, GlobalBytes: 2000}) ||
+		!sameSample(dev[2], model.ProgressSample{At: base.Add(110 * time.Second), NeedBytes: 850, GlobalBytes: 2000}) {
 		t.Fatalf("samples of SOL: %+v", dev)
 	}
 	if c := sv.Folders["p-alpha"].Completion[devSol]; c.GlobalBytes != 2000 {

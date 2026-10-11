@@ -695,3 +695,107 @@ func TestEveryFindingHasAResolvedSentence(t *testing.T) {
 		}
 	}
 }
+
+// W-059 (live re-test of wave 3, P2 a): a Windows PC received its files in
+// 10 seconds after it connected and then stopped with 3 files (57 bytes)
+// that it cannot store. H5 promises no end: no time left. When the 10
+// minutes no longer hold the files that arrived, the speed is 0.
+func TestStuckPCGetsNoTimeLeft(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-K2", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f := folder("g", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 99.98757837067448, NeedItems: 3, NeedBytes: 57, GlobalBytes: 458_877, RemoteState: "valid", UpdatedAt: now.Add(-time.Minute)}
+	akka.Folders["g"] = f
+	// The samples as the collector gives them: the completion events of the
+	// first sync, then a full check.
+	connected := now.Add(-10*time.Minute - 5*time.Second)
+	for _, s := range []model.ProgressSample{
+		{At: connected, NeedBytes: 458_934}, {At: connected.Add(5 * time.Second), NeedBytes: 200_000},
+		{At: connected.Add(10 * time.Second), NeedBytes: 57}, {At: connected.Add(5 * time.Minute), NeedBytes: 57},
+	} {
+		s.GlobalBytes = 458_877
+		akka.AddProgress("g", pcID, s)
+	}
+	at := func(d time.Duration) *model.Finding {
+		t.Helper()
+		fs := Evaluate(Input{Snapshot: &model.Snapshot{At: now.Add(d), Servers: []*model.Server{akka}}, Config: c, Now: now.Add(d)})
+		return mustFind(t, fs, "H5", "on PC-K2")
+	}
+	want := "Device PC-K2 is stuck at 99.9% of folder LIVE-FJORD-4FINALS for more than 24 hours (3 remaining items, seen from AKKA)"
+	// The files arrived 9 minutes 55 seconds ago: a speed, but no time left.
+	h5 := at(0)
+	if h5.Message != want || h5.DetailValue("Speed") != "0.00076 MB each second" || h5.DetailValue("Time left") != "" || h5.DetailValue("Received") != "0.46 of 0.46 MB" {
+		t.Fatalf("10 minutes after the start:\n%s\n%v", h5.Message, h5.Details)
+	}
+	// 10 seconds later the files arrived more than 10 minutes ago.
+	if h5 = at(10 * time.Second); h5.Message != want || h5.DetailValue("Speed") != "0 (no data arrived in the last 10 minutes)" || h5.DetailValue("Time left") != "" {
+		t.Fatalf("10 seconds later:\n%s\n%v", h5.Message, h5.Details)
+	}
+}
+
+// W-059 (live re-test of wave 3, P2 b): a need that rises inside the 10
+// minutes does not hide the data that arrived. A sync that began inside
+// the 10 minutes (the folder needed nothing before) has the speed from its
+// start. New files that come while a sync runs do not stop the count.
+func TestStuckSyncCountsDataAfterTheNeedRose(t *testing.T) {
+	c := ivarConfig(t)
+	const file, kib16 = 20_971_520, 16_384
+	sync := func(ago time.Duration) (*model.Server, *model.Folder) {
+		sol := server("sol", "SOL", solID)
+		f := folder("s", "LIVE-FJORD-1SOURCE", "/s/SOL-LIVE-1SOURCE/LIVE-FJORD-1SOURCE")
+		sol.Folders["s"] = f
+		// SOL needed nothing; a 20 MB file came ago, and since then SOL
+		// receives 16 KiB each second (a sample each minute and one now).
+		sol.AddProgress("s", "", model.ProgressSample{At: now.Add(-12 * time.Minute), GlobalBytes: 655_419})
+		start := now.Add(-ago)
+		for d := time.Duration(0); d < ago; d += time.Minute {
+			sol.AddProgress("s", "", model.ProgressSample{At: start.Add(d), NeedBytes: file - int64(d.Seconds())*kib16, GlobalBytes: 21_626_939})
+		}
+		f.State, f.NeedItems, f.NeedBytes, f.GlobalBytes = "syncing", 1, file-int64(ago.Seconds())*kib16, 21_626_939
+		sol.AddProgress("s", "", model.ProgressSample{At: now, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})
+		return sol, f
+	}
+	// The file came 9 minutes 50 seconds ago (the live re-test: before
+	// the fix, "0 (no data arrived in the last 10 minutes)").
+	sol, _ := sync(9*time.Minute + 50*time.Second)
+	h5 := mustFind(t, run(t, c, sol), "H5", "Folder LIVE-FJORD-1SOURCE on SOL")
+	if want := "Folder LIVE-FJORD-1SOURCE on SOL did not finish the sync in 24 hours (syncing, 1 remaining item, 10 of 22 MB received, approximately 12 minutes remaining)"; h5.Message != want ||
+		h5.DetailValue("Speed") != "0.016 MB each second" || h5.DetailValue("Time left") != "approximately 12 minutes" {
+		t.Fatalf("file of 9 minutes 50 seconds ago:\n%s\n%v", h5.Message, h5.Details)
+	}
+	// The file came 5 minutes ago: the speed of the 5 minutes, not an
+	// average over 10.
+	sol, _ = sync(5 * time.Minute)
+	h5 = mustFind(t, run(t, c, sol), "H5", "Folder LIVE-FJORD-1SOURCE on SOL")
+	if h5.DetailValue("Speed") != "0.016 MB each second" || h5.DetailValue("Time left") != "approximately 16 minutes" {
+		t.Fatalf("file of 5 minutes ago:\n%s\n%v", h5.Message, h5.Details)
+	}
+
+	// A PC receives 1 MB each second; 3 minutes ago a new file of 1 GB
+	// came (the need rose by 1 GB).
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "LAPTOP-DANI", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	g := folder("g", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	akka.Folders["g"] = g
+	need := func(m int) int64 {
+		n := int64(5_000_000_000) - int64(15-m)*60_000_000
+		if m <= 3 {
+			n += 1_000_000_000
+		}
+		return n
+	}
+	for m := 15; m >= 0; m-- {
+		akka.AddProgress("g", pcID, model.ProgressSample{At: now.Add(-time.Duration(m) * time.Minute), NeedBytes: need(m), GlobalBytes: 20_000_000_000})
+	}
+	g.Completion[pcID] = &model.Completion{Percent: 74.5, NeedItems: 2, NeedBytes: need(0), GlobalBytes: 20_000_000_000, RemoteState: "valid"}
+	h5 = mustFind(t, run(t, c, akka), "H5", "on LAPTOP-DANI")
+	// 9 of the 10 minutes show a decrease of 60 MB; the minute with the
+	// new file shows a rise.
+	if h5.DetailValue("Speed") != "0.9 MB each second" || h5.DetailValue("Time left") != "approximately 94 minutes" ||
+		h5.Message != "Device LAPTOP-DANI is stuck at 74.5% of folder LIVE-FJORD-4FINALS for more than 24 hours (2 remaining items, approximately 94 minutes remaining, seen from AKKA)" {
+		t.Fatalf("new file while the PC receives:\n%s\n%v", h5.Message, h5.Details)
+	}
+}

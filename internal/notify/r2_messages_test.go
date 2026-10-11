@@ -235,3 +235,35 @@ func TestAdviceRowsStayWithinDiscordLimits(t *testing.T) {
 		}
 	}
 }
+
+// W-038 (live re-test of wave 3, P1): a finding that an evaluation after
+// the end of a time when syncwatch did not run saw open did not resolve in
+// that time. Its resolved line gives the duration of the fault.
+func TestResolvedLineOfAFaultSeenAfterTheGap(t *testing.T) {
+	cfg := twoNAS()
+	gap := store.Gap{From: local(2026, 10, 11, 23, 38), To: local(2026, 10, 11, 23, 41)}
+	r := &store.Record{Finding: model.Finding{ID: "h4", Check: "H4", Checks: []string{"H4"}, Severity: model.Error, Server: "akka", Urgent: true,
+		Subject: "LIVE-AURORA-1SOURCE on AKKA", Message: "Folder LIVE-AURORA-1SOURCE on AKKA cannot sync: folder error: folder marker missing",
+		ResolvedText: "Folder LIVE-AURORA-1SOURCE on AKKA can sync again."},
+		Since: local(2026, 10, 11, 23, 23), OpenedAt: local(2026, 10, 11, 23, 23), PingedAt: local(2026, 10, 11, 23, 24),
+		LastSeen: gap.To.Add(68 * time.Second), ResolvedAt: gap.To.Add(73 * time.Second)}
+	line := func() string {
+		t.Helper()
+		m := ResolvedMessage(cfg, []*store.Record{r}, []store.Gap{gap})
+		if len(m.Sections) != 1 || len(m.Sections[0].Lines) != 1 {
+			t.Fatalf("resolved message: %+v", m)
+		}
+		return m.Sections[0].Lines[0]
+	}
+	want := "✅ **H4** Folder LIVE-AURORA-1SOURCE on AKKA can sync again (the fault lasted 19 minutes, 23:23–23:42)"
+	if got := line(); got != want {
+		t.Errorf("seen open after the start:\n got %s\nwant %s", got, want)
+	}
+	// The last evaluation that saw it open was before the stop: it resolved
+	// while syncwatch did not run.
+	r.LastSeen = gap.From.Add(-20 * time.Second)
+	want = "✅ **H4** Folder LIVE-AURORA-1SOURCE on AKKA can sync again (the fault started at 23:23 and was resolved while syncwatch did not run, 23:38–23:41)"
+	if got := line(); got != want {
+		t.Errorf("not seen open after the start:\n got %s\nwant %s", got, want)
+	}
+}
