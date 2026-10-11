@@ -1,0 +1,87 @@
+{{define "lobby"}}<!doctype html>
+<html lang="en"{{with .Data.Theme}} class="theme-{{.}}"{{end}}>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
+<title>{{.Title}} · syncwatch</title>
+<link rel="stylesheet" href="/assets/lobby.css">
+<link rel="icon" href="/assets/syncwatch-icon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/syncwatch-icon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/syncwatch-icon-256.png">
+<script src="/assets/htmx.min.js" defer></script>
+<script src="/assets/htmx-ext-sse.js" defer></script>
+<script src="/assets/app.js" defer></script>
+<script src="/assets/lobby.js" defer></script>
+</head>
+<body class="lobby" hx-ext="sse" sse-connect="/events" data-tz-offset="{{.TZOffset}}">
+<main>
+<div id="sw-conn" class="conn-lost" role="status" hidden>✖ <strong>No connection to syncwatch</strong> from <span class="sw-conn-since"></span>. The page shows old data.</div>
+{{template "lobby-body" .}}
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "lobby-body"}}{{$vm := .Data.VM}}
+<div id="lobby-body" class="lobby-body" hx-get="/frag/lobby{{with $vm.Query}}?{{.}}{{end}}" hx-trigger="every 60s, sse:update" hx-swap="outerHTML">
+  <header class="lobby-top">
+    <h1 class="brand"><img class="logo" src="/assets/syncwatch-icon.svg" alt="" width="21" height="24">syncwatch</h1>
+    <p class="health" aria-label="Health summary">{{$vm.Health}}</p>
+    <p class="changed"><span class="live-on">Real-time view</span><span class="live-off">No connection to syncwatch</span> · last change <span class="nowrap">{{$vm.Changed}}</span></p>
+  </header>
+  {{with $vm.Failing}}<p class="alert" role="alert">✖ <strong>Notifications fail</strong> from {{.}}. syncwatch tries again automatically.</p>{{end}}
+  {{if $vm.NoSite}}
+  <section class="nosite">
+    <p>There is no server with the site "{{$vm.Site}}".</p>
+    <p>{{if $vm.Sites}}The sites are: {{join $vm.Sites ", "}}.{{else}}No server has a site.{{end}}</p>
+  </section>
+  {{else}}
+  {{if $vm.Links}}
+  <ul class="links" aria-label="Connections">
+    {{range $vm.Links}}<li class="link-{{.State}}"><span aria-hidden="true">{{.Icon}}</span> <span class="text">{{.Text}}</span></li>
+    {{end}}
+  </ul>
+  {{end}}
+  <div class="sites">
+    {{range $vm.Groups}}
+    <section class="site">
+      {{if .Name}}<h2>{{.Name}}</h2>{{end}}
+      {{with .PCs}}<p class="pcs">PCs connected now: <strong>{{.}}</strong></p>{{end}}
+      <div class="servers">
+        {{range .Servers}}
+        <article class="srv st-{{.Status}}">
+          <header>
+            <h3>{{.Name}}</h3>
+            <span class="badge st-{{.Status}}">{{.StatusIcon}} {{.StatusLabel}}</span>
+          </header>
+          {{if .Disabled}}<p class="muted">syncwatch does not poll this server.</p>
+          {{else}}
+          <dl class="facts">
+            {{if .NoContact}}<dt>Folders</dt><dd>—</dd>
+            {{else if .Stale}}<dt>Folders</dt><dd class="muted">{{plural .Folders.Total "folder" "folders"}} · last known <span class="nowrap">{{.LastContact}}</span>: {{.Folders.Idle}} idle{{if .Folders.Syncing}} · {{.Folders.Syncing}} syncing{{end}}{{if .Folders.Scanning}} · {{.Folders.Scanning}} scanning{{end}}{{if .Folders.Errors}} · {{plural .Folders.Errors "error" "errors"}}{{end}}{{if .Folders.WatchErrors}} · {{plural .Folders.WatchErrors "file watcher error" "file watcher errors"}}{{end}}{{if .Folders.Paused}} · {{.Folders.Paused}} paused{{end}}</dd>
+            {{else}}<dt>Folders</dt><dd>{{.Folders.Total}}: <span class="c-ok">✔ {{.Folders.Idle}} idle</span>{{if .Folders.Syncing}} · <span class="c-sync">⟳ {{.Folders.Syncing}} syncing</span>{{end}}{{if .Folders.Scanning}} · <span class="c-sync">⟳ {{.Folders.Scanning}} scanning</span>{{end}}{{if .Folders.Errors}} · <span class="c-err">✖ {{plural .Folders.Errors "error" "errors"}}</span>{{end}}{{if .Folders.WatchErrors}} · <span class="c-warn">⚠ {{plural .Folders.WatchErrors "file watcher error" "file watcher errors"}}</span>{{end}}{{if .Folders.Paused}} · <span class="c-paused">⏸ {{.Folders.Paused}} paused</span>{{end}}</dd>{{end}}
+            <dt>Findings</dt><dd><span class="{{if .Errors}}c-err{{else}}muted{{end}}">ERROR {{.Errors}}</span> · <span class="{{if .Warnings}}c-warn{{else}}muted{{end}}">WARNING {{.Warnings}}</span></dd>
+          </dl>
+          {{end}}
+        </article>
+        {{end}}
+      </div>
+    </section>
+    {{else}}
+    <section class="site"><p>There are no servers.</p></section>
+    {{end}}
+  </div>
+  <section class="lobby-findings">
+    <h2>Urgent and ERROR findings</h2>
+    {{if $vm.Findings}}
+    <ul class="flist">
+      {{range $vm.Findings}}<li class="sev-row-{{.Severity}}"><span class="sev sev-{{.Severity}}">{{.Icon}} {{.SeverityLabel}}</span> <span class="chk">{{.Checks}}</span>{{if .Urgent}} <span class="tag urgent">urgent</span>{{end}}{{if .Stale}} <span class="tag stale">stale</span>{{end}} <span class="msg">{{.Message}}</span> <span class="muted nowrap">· open {{.OpenFor}}</span></li>
+      {{end}}
+    </ul>
+    {{with $vm.More}}<p class="muted">…and {{.}} more</p>{{end}}
+    {{else}}<p class="c-ok">✔ There are no open urgent or ERROR findings.</p>{{end}}
+  </section>
+  {{end}}
+</div>
+{{end}}
