@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -26,6 +27,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/settings"
+	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/store"
 	"github.com/ivarstudios/syncwatch/internal/web"
 )
@@ -41,10 +43,25 @@ type Options struct {
 	TLSKey        string
 	TLSSelfSigned bool     // serve HTTPS with a self-signed certificate kept in DataDir
 	TLSHosts      []string // extra names for the self-signed certificate
-	Version       string
-	Log           *slog.Logger
-	OnListen      func(addr string) // for tests
+	// TrustedProxies are the reverse proxies whose X-Forwarded-Proto header
+	// counts (SYNCWATCH_TRUSTED_PROXIES).
+	TrustedProxies []netip.Prefix
+	// NotifyLimit is how long notifications can fail before /healthz
+	// answers 503 (SYNCWATCH_HEALTH_NOTIFY_LIMIT); 0 = this rule is off.
+	NotifyLimit time.Duration
+	// DeadmanURL is the address of an outside monitor service that
+	// syncwatch calls while it is healthy (SYNCWATCH_DEADMAN_URL); "" = off.
+	DeadmanURL string
+	Version    string
+	Log        *slog.Logger
+	OnListen   func(addr string) // for tests
+	// onManager gets the collector manager after Run wired it (for tests).
+	onManager func(*collector.Manager)
 }
+
+// evalLimit is how long syncwatch can be without an evaluation of the checks
+// before /healthz answers 503. The engine evaluates at least every 30 seconds.
+const evalLimit = 5 * time.Minute
 
 // OpenStore opens the database in a data directory.
 func OpenStore(dataDir, secretKey string) (*store.Store, error) {
@@ -178,38 +195,83 @@ func saveConfig(st *store.Store, c *config.Config) (int64, error) {
 	return st.BumpConfigRevision()
 }
 
+// Imported is the result of ImportFile.
+type Imported struct {
+	Config  *config.Config
+	Secrets int      // the secrets that the file had
+	Removed []string // the names of the servers that the file removed, with their API keys and pinned certificates
+}
+
 // ImportFile replaces the stored configuration with a YAML file. A running
 // server applies it within configCheckInterval and sends a settings notice.
-func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
+// The command line asks for no confirmation: a person who can run it can
+// also change the database.
+func ImportFile(st *store.Store, path string) (*Imported, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	c, err := config.ParseYAML(b)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	old, err := settings.Load(st)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
+	removed := removedServers(old, c)
 	changes := importChanges(st, old, c)
+	if line := RemovedLine(removed); line != "" {
+		changes = append(changes, line)
+	}
 	n, err := settings.ImportSecrets(st, c)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	// Recorded before the revision changes: the server that runs sends the
 	// notice to the channels of the configuration that it has, thus a
 	// webhook that the file replaces also gets it.
 	if len(changes) > 0 {
 		if err := recordCLINotice(st, titleCLIImport, append([]string{"syncwatch import-config replaced the configuration."}, changes...)); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 	}
 	if _, err := saveConfig(st, c); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return c, n, settings.DropRemovedServers(st, old, c)
+	return &Imported{Config: c, Secrets: n, Removed: removed}, settings.DropRemovedServers(st, old, c)
+}
+
+// removedServers returns the names of the servers of old that c does not
+// have (settings.DropRemovedServers deletes their API keys and pinned
+// certificates).
+func removedServers(old, c *config.Config) []string {
+	if old == nil {
+		return nil
+	}
+	keep := map[string]bool{}
+	for _, sv := range c.Servers {
+		keep[sv.ID] = true
+	}
+	var out []string
+	for _, sv := range old.Servers {
+		if !keep[sv.ID] {
+			out = append(out, sv.Name)
+		}
+	}
+	return out
+}
+
+// RemovedLine words the servers that an import removed, for the settings
+// notice and the output of import-config.
+func RemovedLine(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return "The import removed the server " + names[0] + " and deleted its API key and pinned certificate."
+	}
+	return "The import removed the servers " + strings.Join(names, ", ") + " and deleted their API keys and pinned certificates."
 }
 
 // importChanges words what an import changes, for its settings notice: the
@@ -238,10 +300,30 @@ func importChanges(st *store.Store, old, c *config.Config) []string {
 	if c.Notify.DiscordWebhook != "" {
 		secret(st.HasSecret(store.SecretDiscordWebhook), "Discord webhook")
 	}
+	if c.Notify.DiscordNoticesWebhook != "" {
+		secret(st.HasSecret(store.SecretNoticesWebhook), "Discord webhook for settings notices")
+	}
 	if c.API.Token != "" {
-		secret(st.HasSecret(store.SecretAPIToken), "API token")
+		// The API token of the file replaces the value of the API token with
+		// the name of the single API token of an older version, or adds it.
+		secret(hasLegacyToken(st), `API token "`+store.LegacyTokenName+`"`)
 	}
 	return out
+}
+
+// hasLegacyToken reports whether an API token has the name of the single API
+// token of an older version (names are unique without regard to case).
+func hasLegacyToken(st *store.Store) bool {
+	tokens, err := st.APITokens()
+	if err != nil {
+		return false
+	}
+	for _, t := range tokens {
+		if strings.EqualFold(t.Name, store.LegacyTokenName) {
+			return true
+		}
+	}
+	return false
 }
 
 // keyCLINotice is the prefix of the settings that keep a settings notice for
@@ -276,6 +358,35 @@ func recordCLINotice(st *store.Store, title string, lines []string) error {
 // command line, for the settings notice that the server sends.
 func RecordPasswordReset(st *store.Store) error {
 	return recordCLINotice(st, titleCLIReset, []string{"The new administrator password is set. syncwatch logged out all sessions."})
+}
+
+// pinNotice words the settings notice for a certificate that the collector
+// pinned without an administrator: at the first contact with the server, or
+// a CA-signed certificate that replaced the pinned one for the same host
+// name (renewal). The URL is the API URL of the configuration.
+func pinNotice(cfg *config.Config, serverID, fingerprint string, renewal bool) notify.Notice {
+	name, where := serverID, "the server"
+	for _, sv := range cfg.Servers {
+		if sv.ID == serverID {
+			name, where = sv.Name, sv.URL
+			break
+		}
+	}
+	fp := stclient.ShortFP(fingerprint)
+	if renewal {
+		return notify.Notice{Title: "Server " + name + ": new CA-signed certificate", Security: true,
+			Summary: "The certificate of " + where + " changed to a certificate from a certificate authority for the same host name. syncwatch pinned it: " + fp + "."}
+	}
+	return notify.Notice{Title: "Server " + name + ": certificate pinned", Security: true,
+		Summary: "syncwatch pinned the certificate " + fp + " of " + where + " at the first contact."}
+}
+
+// pinNotices returns the function for collector.Manager.OnPin: a settings
+// notice through send for each certificate that the collector pins.
+func pinNotices(holder *config.Holder, send func(notify.Notice)) func(serverID, fingerprint string, renewal bool) {
+	return func(serverID, fingerprint string, renewal bool) {
+		send(pinNotice(holder.Get(), serverID, fingerprint, renewal))
+	}
 }
 
 // configCheckInterval is how often a running server looks for a
@@ -353,7 +464,10 @@ func (w *configWatcher) sendCLINotices() {
 			}
 			w.log.Warn("settings changed", "change", n.Title, "detail", summary, "source", "command line")
 			if w.notice != nil {
-				w.notice(notify.Notice{Title: n.Title, Summary: summary})
+				// The commands change the administrator password or import a
+				// configuration: security notices (kept until a channel
+				// accepts them).
+				w.notice(notify.Notice{Title: n.Title, Summary: summary, Security: true})
 			}
 		}
 		if err := w.st.DeleteSetting(key); err != nil {
@@ -410,6 +524,7 @@ func (w *configWatcher) run(ctx context.Context) {
 // Run serves until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
 	log := o.Log
+	started := time.Now()
 	o.DataDir = absPath(o.DataDir)
 	st, err := openServeStore(o.DataDir, o.SecretKey, log)
 	if err != nil {
@@ -424,6 +539,14 @@ func Run(ctx context.Context, o Options) error {
 	holder, err := config.NewHolder(cfg)
 	if err != nil {
 		return fmt.Errorf("the stored configuration is not valid: %w", err)
+	}
+	// The time when syncwatch did not run, before the first heartbeat of
+	// this start replaces the last one.
+	if err := noteGap(st, started, holder.Get().Location(), log); err != nil {
+		log.Warn("cannot record the time when syncwatch did not run", "err", err)
+	}
+	if err := st.SetAliveAt(started); err != nil {
+		log.Warn("cannot record the heartbeat", "err", err)
 	}
 	if o.AdminPassword != "" {
 		if h, _ := st.Setting(web.KeyAdminHash); h == "" {
@@ -458,6 +581,9 @@ func Run(ctx context.Context, o Options) error {
 	ntf := notify.New(eng, st, holder, log)
 	eng.OnEvaluate(ntf.Wake)
 	mgr := collector.NewManager(hub, st, holder, log)
+	// A certificate that the collector pins without an administrator (first
+	// contact, CA-signed renewal) gets a settings notice.
+	mgr.OnPin = pinNotices(holder, ntf.Notice)
 	holder.OnChange(func() {
 		mgr.Sync()
 		eng.Trigger()
@@ -497,7 +623,23 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	srvWeb.AllowHosts(o.Listen, o.TLSHosts...)
+	srvWeb.TrustProxies(o.TrustedProxies)
+	srvWeb.SetHealth(web.HealthOptions{Started: started, NotifyLimit: o.NotifyLimit, EvalLimit: evalLimit})
 	srvWeb.LogSetupToken(os.Stderr)
+	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run, heartbeat(st, log)}
+	deadmanAt := "off"
+	if o.DeadmanURL != "" {
+		dm, err := newDeadman(o.DeadmanURL, srvWeb.Ready, o.Version, log)
+		if err != nil {
+			return err
+		}
+		eng.OnEvaluate(dm.Wake)
+		workerFuncs = append(workerFuncs, dm.run)
+		deadmanAt = dm.target()
+	}
+	if o.onManager != nil {
+		o.onManager(mgr)
+	}
 
 	tc, err := tlsConfig(o, holder.Get(), log)
 	if err != nil {
@@ -524,7 +666,7 @@ func Run(ctx context.Context, o Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers sync.WaitGroup
-	for _, run := range []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run} {
+	for _, run := range workerFuncs {
 		workers.Add(1)
 		go func() { defer workers.Done(); run(ctx) }()
 	}
@@ -533,7 +675,12 @@ func Run(ctx context.Context, o Options) error {
 	if o.OnListen != nil {
 		o.OnListen(ln.Addr().String())
 	}
-	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers))
+	notifyLimit := "off"
+	if o.NotifyLimit > 0 {
+		notifyLimit = config.Duration(o.NotifyLimit).String()
+	}
+	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers),
+		"trusted_proxies", proxyList(o.TrustedProxies), "health_notify_limit", notifyLimit, "deadman", deadmanAt)
 
 	var serveErr error
 	select {
@@ -559,5 +706,21 @@ func Run(ctx context.Context, o Options) error {
 	case <-time.After(10 * time.Second):
 		log.Warn("some workers did not stop in time")
 	}
+	// A clean stop: the next start counts the gap from now.
+	if err := st.SetAliveAt(time.Now()); err != nil {
+		log.Warn("cannot record the heartbeat", "err", err)
+	}
 	return serveErr
+}
+
+// proxyList writes the trusted proxies for the start log line.
+func proxyList(p []netip.Prefix) string {
+	if len(p) == 0 {
+		return "none"
+	}
+	out := make([]string, len(p))
+	for i, x := range p {
+		out[i] = x.String()
+	}
+	return strings.Join(out, ",")
 }

@@ -251,7 +251,7 @@ func TestConfigReloadedAfterExternalImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ImportFile(other, yaml); err != nil {
+	if _, err := ImportFile(other, yaml); err != nil {
 		t.Fatal(err)
 	}
 	other.Close()
@@ -377,7 +377,7 @@ func TestCLIChangesAnnounced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ImportFile(other, yaml); err != nil {
+	if _, err := ImportFile(other, yaml); err != nil {
 		t.Fatal(err)
 	}
 	other.Close()
@@ -428,7 +428,7 @@ func TestCLIChangesAnnounced(t *testing.T) {
 	if err := os.WriteFile(yaml, []byte("servers:\n  - name: A\n    url: https://a.invalid:8384\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := ImportFile(other, yaml); err != nil {
+	if _, err := ImportFile(other, yaml); err != nil {
 		t.Fatal(err)
 	}
 	other.Close()
@@ -450,6 +450,126 @@ func TestCLIChangesAnnounced(t *testing.T) {
 	noMoreNotices(t, got)
 	if left, _ := st.SettingsWithPrefix(keyCLINotice); len(left) != 0 {
 		t.Fatalf("notices left in the store: %v", left)
+	}
+}
+
+// The settings notices of the command line (reset-admin-password,
+// import-config) are security notices: the notifier keeps them until a
+// channel accepts them. The import notice names the API token by the rule of
+// the named API tokens, the webhook for settings notices and the servers that
+// the file removed.
+func TestCLINoticesAreSecurityNotices(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg, err := LoadConfig(st, "", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := config.NewHolder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []notify.Notice
+	w := &configWatcher{st: st, holder: holder, log: log, noticeLater: func() func(notify.Notice) {
+		return func(n notify.Notice) { got = append(got, n) }
+	}}
+	if w.applied, err = st.ConfigRevision(); err != nil {
+		t.Fatal(err)
+	}
+	w.capture()
+	importYAML := func(yaml string) {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "new.yaml")
+		if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ImportFile(st, p); err != nil {
+			t.Fatal(err)
+		}
+		w.check()
+	}
+	last := func() notify.Notice {
+		t.Helper()
+		if len(got) == 0 {
+			t.Fatal("no settings notice")
+		}
+		return got[len(got)-1]
+	}
+
+	importYAML("servers:\n  - name: AKKA\n    url: https://akka.invalid:8384\n  - name: SOL\n    url: https://sol.invalid:8384\napi: {token: swt_cli_token_1}\n" +
+		"notifications: {discord_notices_webhook: \"https://discord.com/api/webhooks/2/notices\"}\n")
+	n := last()
+	if !n.Security || n.Title != titleCLIImport || !strings.Contains(n.Summary, "The API token \"API token\" is added.") ||
+		!strings.Contains(n.Summary, "The Discord webhook for settings notices is added.") {
+		t.Fatalf("first import: %+v", n)
+	}
+	// A token with the name of the single API token of an older version
+	// exists: the import replaces its value.
+	if _, err := st.AddAPIToken(store.LegacyTokenName, store.ScopeFull, "swt_cli_token_2", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	importYAML("servers:\n  - name: SOL\n    url: https://sol.invalid:8384\napi: {token: swt_cli_token_3}\n")
+	n = last()
+	for _, want := range []string{"The API token \"API token\" is replaced.", "The import removed the server AKKA and deleted its API key and pinned certificate."} {
+		if !strings.Contains(n.Summary, want) {
+			t.Errorf("second import: no %q in %q", want, n.Summary)
+		}
+	}
+	if !n.Security {
+		t.Error("the import notice is not a security notice")
+	}
+
+	if err := RecordPasswordReset(st); err != nil {
+		t.Fatal(err)
+	}
+	w.check()
+	if n := last(); n.Title != titleCLIReset || !n.Security {
+		t.Fatalf("reset notice: %+v", n)
+	}
+}
+
+// The settings notice of a certificate that the collector pinned without an
+// administrator: at the first contact, and for a CA-signed renewal. Both are
+// security notices with the API URL of the configuration and the short
+// fingerprint.
+func TestPinNotice(t *testing.T) {
+	cfg := config.Default()
+	cfg.Servers = []config.Server{{ID: "sol", Name: "SOL", URL: "https://sol.lan.invalid:8384"}}
+	fp := "abcdef0123456789" + strings.Repeat("0", 48)
+	first := pinNotice(cfg, "sol", fp, false)
+	if first != (notify.Notice{Title: "Server SOL: certificate pinned", Security: true,
+		Summary: "syncwatch pinned the certificate AB:CD:EF:01:23:45:67:89 of https://sol.lan.invalid:8384 at the first contact."}) {
+		t.Fatalf("first contact: %+v", first)
+	}
+	renewal := pinNotice(cfg, "sol", fp, true)
+	if renewal != (notify.Notice{Title: "Server SOL: new CA-signed certificate", Security: true,
+		Summary: "The certificate of https://sol.lan.invalid:8384 changed to a certificate from a certificate authority for the same host name. syncwatch pinned it: AB:CD:EF:01:23:45:67:89."}) {
+		t.Fatalf("renewal: %+v", renewal)
+	}
+	// A server that the configuration does not have any more.
+	if n := pinNotice(cfg, "akka", fp, false); n.Title != "Server akka: certificate pinned" || !strings.Contains(n.Summary, " of the server at the first contact.") {
+		t.Fatalf("unknown server: %+v", n)
+	}
+	// The function for Manager.OnPin reads the configuration of the call.
+	holder, err := config.NewHolder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []notify.Notice
+	onPin := pinNotices(holder, func(n notify.Notice) { sent = append(sent, n) })
+	c := cfg.Clone()
+	c.Servers[0].URL = "https://sol2.lan.invalid:8384"
+	if err := holder.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	onPin("sol", fp, false)
+	if len(sent) != 1 || !strings.Contains(sent[0].Summary, "https://sol2.lan.invalid:8384") {
+		t.Fatalf("sent %+v", sent)
 	}
 }
 

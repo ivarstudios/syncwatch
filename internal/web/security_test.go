@@ -60,7 +60,7 @@ func TestSecureCookiesOverHTTPS(t *testing.T) {
 	resp.Body.Close()
 	found := false
 	for _, c := range resp.Cookies() {
-		if c.Name == csrfCookie {
+		if c.Name == hostPrefix+csrfCookie {
 			found = true
 			if !c.Secure {
 				t.Fatal("CSRF cookie not Secure over HTTPS")
@@ -192,6 +192,7 @@ func TestViewerLoginKeepsAdminFailures(t *testing.T) {
 	if code := login("viewer password 1"); code != http.StatusSeeOther {
 		t.Fatalf("viewer login: %d", code)
 	}
+	csrf = e.csrf("/") // the login made a new CSRF token
 	if code := login("admin guess 4"); code != http.StatusUnauthorized {
 		t.Fatalf("fifth guess: %d", code)
 	}
@@ -318,6 +319,7 @@ func TestCookiesAreSameSiteLax(t *testing.T) {
 			t.Errorf("%s: SameSite %v, want Lax", name, got[name])
 		}
 	}
+	csrf = e.csrf("/") // the login made a new CSRF token
 	for _, c := range e.post("/logout", url.Values{"csrf": {csrf}}).Cookies() {
 		if c.Name == sessionCookie && c.SameSite != http.SameSiteLaxMode {
 			t.Errorf("logout cookie: SameSite %v, want Lax", c.SameSite)
