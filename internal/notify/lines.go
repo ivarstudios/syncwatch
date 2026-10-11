@@ -192,19 +192,22 @@ func resolvedText(r *store.Record) string {
 
 // resolveAfterGap: a finding that resolves less than this after the end of
 // a time when syncwatch did not run (that began after it opened) resolved
-// in that time, as far as syncwatch knows.
+// in that time, as far as syncwatch knows, when no evaluation after that
+// time saw it open.
 const resolveAfterGap = 5 * time.Minute
 
 // lasted is the duration of a resolved fault from its start to the
 // resolution, with the clock times: "the fault lasted 7 minutes,
 // 21:10–21:17". When the fault ended while syncwatch did not run, the end
 // is not known: "the fault started at 21:00 and was resolved while
-// syncwatch did not run, 21:04–21:24".
+// syncwatch did not run, 21:04–21:24". A fault that syncwatch saw open
+// after its start did not end in that time (W-038): its LastSeen is after
+// the end of the gap.
 func lasted(cfg *config.Config, r *store.Record, gaps []store.Gap) string {
 	loc := cfg.Location()
 	from := started(r)
 	for _, g := range gaps {
-		if g.From.After(r.OpenedAt) && !g.To.After(r.ResolvedAt) && r.ResolvedAt.Sub(g.To) < resolveAfterGap {
+		if g.From.After(r.OpenedAt) && !g.To.After(r.ResolvedAt) && r.ResolvedAt.Sub(g.To) < resolveAfterGap && !r.LastSeen.After(g.To) {
 			return "the fault started at " + clockOn(from, g.From, loc) + " and was resolved while syncwatch did not run, " + span(g.From, g.To, loc)
 		}
 	}

@@ -14,7 +14,7 @@ type Record struct {
 	model.Finding
 	Since              time.Time // when the condition started (for display)
 	OpenedAt           time.Time // when the monitor opened it
-	LastSeen           time.Time
+	LastSeen           time.Time // the last evaluation that saw it open; the database has it at least every 10 minutes and at the resolution
 	ResolvedAt         time.Time // zero while open
 	Stale              bool      // frozen (a server it depends on is unreachable) or held (r1: a device that is away)
 	UrgentSince        time.Time // when it became urgent (zero while it isn't)

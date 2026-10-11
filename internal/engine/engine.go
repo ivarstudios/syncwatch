@@ -497,7 +497,7 @@ func (e *Engine) Evaluate() {
 		if z.gone(rec.Finding) {
 			// The server was removed or disabled in the settings: close the
 			// finding quietly, a "resolved" message would be misleading.
-			rec.ResolvedAt, rec.LastSeen, rec.ResolvedNotifiedAt = now, now, now
+			rec.ResolvedAt, rec.ResolvedNotifiedAt = now, now
 			e.save(rec)
 			if err := e.st.HistoryResolveNote(id, now, "server removed or disabled"); err != nil {
 				e.log.Warn("cannot write the finding history", "err", err)
@@ -516,8 +516,10 @@ func (e *Engine) Evaluate() {
 			}
 			continue
 		}
+		// LastSeen stays the time of the last evaluation that saw the
+		// finding open: the resolved message tells from it whether the
+		// fault ended while syncwatch did not run (W-038).
 		rec.ResolvedAt = now
-		rec.LastSeen = now
 		e.save(rec)
 		if err := e.st.HistoryResolve(id, now); err != nil {
 			e.log.Warn("cannot write the finding history", "err", err)

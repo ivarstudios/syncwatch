@@ -188,3 +188,49 @@ func TestRecordKeepsResolvedText(t *testing.T) {
 		t.Fatal("sameContent must compare the resolved sentence")
 	}
 }
+
+// W-038 (live re-test of wave 3, P1): a resolved finding keeps in LastSeen
+// the time of the last evaluation that saw it open, not the time of the
+// resolution, also across a restart. The resolved message tells from it
+// whether the fault ended while syncwatch did not run.
+func TestResolvedFindingKeepsLastSeen(t *testing.T) {
+	r := newRig(t)
+	down := func(id string, d bool) {
+		r.hub.Update(id, func(s *model.Server) {
+			if d {
+				s.Status, s.DownSince, s.LastError = model.StatusDown, r.now, "connection refused"
+			} else {
+				s.Status, s.LastError = model.StatusUp, ""
+			}
+		})
+	}
+	down("a", true)
+	down("b", true)
+	opened := r.now
+	v := r.at(0)
+	a, b := find(v, "H1", "A"), find(v, "H1", "B")
+	if a == nil || b == nil {
+		t.Fatalf("H1 for A and B: %+v", v.Open)
+	}
+	r.at(time.Minute) // the last evaluation before the stop
+
+	// syncwatch does not run for 10 minutes. A comes back in that time, B
+	// does not.
+	r.now = r.now.Add(10 * time.Minute)
+	down("a", false)
+	r.restart(t)
+	first := r.now.Add(30 * time.Second)
+	r.at(30 * time.Second) // A resolves; B is open
+	down("b", false)
+	r.at(time.Minute) // B resolves
+
+	recA, err := r.st.Record(a.ID)
+	if err != nil || recA == nil || recA.Open() || !recA.ResolvedAt.Equal(first) ||
+		recA.LastSeen.Before(opened) || recA.LastSeen.After(opened.Add(time.Minute)) {
+		t.Fatalf("A resolved at the first evaluation after the start: want LastSeen from before the stop, got %+v %v", recA, err)
+	}
+	recB, err := r.st.Record(b.ID)
+	if err != nil || recB == nil || recB.Open() || !recB.ResolvedAt.Equal(first.Add(time.Minute)) || !recB.LastSeen.Equal(first) {
+		t.Fatalf("B seen open after the start: want LastSeen %s, got %+v %v", first, recB, err)
+	}
+}

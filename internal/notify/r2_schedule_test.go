@@ -2,6 +2,8 @@ package notify
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -297,5 +299,62 @@ func TestDeliveryNextTry(t *testing.T) {
 	r.at(first.Add(3 * time.Minute))
 	if d := r.n.Delivery(); d.Failing || !d.NextTry.IsZero() {
 		t.Fatalf("after a success: %+v", d)
+	}
+}
+
+// stopAndStart replaces the engine and the notifier of a rig with new ones
+// on the same database, like a stop and a start of syncwatch.
+func (r *rig) stopAndStart() {
+	r.t.Helper()
+	eng, err := engine.New(r.st, r.hub, r.n.cfg, func() time.Time { return r.now }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	r.eng = eng
+	r.restart()
+}
+
+// W-038 (live re-test of wave 3, P1): after a stop of syncwatch, a fault
+// that resolved before the start has the time when syncwatch did not run
+// in its resolved line. A fault that syncwatch still saw open after the
+// start has its duration, also when it resolved less than 5 minutes after
+// the start.
+func TestResolvedLinesAfterAStop(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA", "SOL")
+	r.setDown("AKKA", true)
+	r.setDown("SOL", true)
+	r.at(start)
+	r.at(start.Add(5*time.Minute + holdUrgent))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
+		t.Fatalf("urgent message: %+v", m)
+	}
+	r.at(start.Add(9 * time.Minute))
+
+	// syncwatch does not run from 10:10 to 10:20. AKKA comes back in that
+	// time; SOL comes back at 10:21:30.
+	gap := store.Gap{From: start.Add(10 * time.Minute), To: start.Add(20 * time.Minute)}
+	if err := r.st.AddGap(gap); err != nil {
+		t.Fatal(err)
+	}
+	r.now = gap.To
+	r.setDown("AKKA", false)
+	r.stopAndStart()
+	r.at(gap.To.Add(30 * time.Second))
+	r.setDown("SOL", false)
+	r.at(gap.To.Add(90 * time.Second))
+	r.at(gap.To.Add(7 * time.Minute))
+	msgs := r.sender.take()
+	if len(msgs) != 1 || msgs[0].Kind != KindResolved || len(msgs[0].Sections) != 1 {
+		t.Fatalf("resolved message: %+v", msgs)
+	}
+	lines := strings.Join(msgs[0].Sections[0].Lines, "\n")
+	for _, want := range []string{
+		"Server AKKA is reachable again (the fault started at 10:00 and was resolved while syncwatch did not run, 10:10–10:20)",
+		"Server SOL is reachable again (the fault lasted 21 minutes, 10:00–10:21)",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("resolved lines:\n%s\nwant a line with %q", lines, want)
+		}
 	}
 }
