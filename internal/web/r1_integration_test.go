@@ -74,6 +74,13 @@ thresholds: {pc_offline: 1h}
 	if !found {
 		t.Errorf("devices[] has no entry for SIRIUS: %v", devs)
 	}
+	// The Folders grid has no column for the disabled server (it would
+	// have only "–" cells), and its device is not a PC column either.
+	for _, d := range e.web.grid(e.eng.View()).Devices {
+		if d.ID == "SIRIUSS-3333333" {
+			t.Errorf("grid: a column for the disabled server (server=%v)", d.Server)
+		}
+	}
 }
 
 // W-030 for server API keys (r1-5 request 2, integrator follow-up in the

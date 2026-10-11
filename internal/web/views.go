@@ -280,7 +280,15 @@ func plural(n int, one, many string) string {
 
 func (s *Server) grid(v *engine.View) gridVM {
 	snap := v.Snapshot
-	devs := snap.Devices()
+	// A disabled server is a server (r1-3, contract C4), but syncwatch does
+	// not poll it: its column would have only "–" cells. The Overview shows
+	// it as a grey "Disabled" tile instead.
+	var devs []*model.DeviceView
+	for _, d := range snap.Devices() {
+		if !d.Disabled {
+			devs = append(devs, d)
+		}
+	}
 	vm := gridVM{}
 	for _, d := range devs {
 		vm.Devices = append(vm.Devices, gridDevice{ID: d.ID, Name: showControls(d.Name), Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected})
