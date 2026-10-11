@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
@@ -52,6 +53,9 @@ type Collector struct {
 	gaps          gapState
 	clearDue      map[string]time.Time // folders whose error events cleared, with when; see confirmClears
 	copies        copySet              // conflict copies counted from events; see conflictCopy
+	needRefused   atomic.Bool          // the gate refused /rest/db/remoteneed in this session; see needList
+	localSaved    map[string]time.Time // by folder: when its last local change was written to the store; see saveLocalChange
+	localDue      map[string]bool      // folders whose newest local change waits for the store
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
@@ -134,6 +138,9 @@ var (
 // Run loops until ctx is cancelled.
 func (c *Collector) Run(ctx context.Context) {
 	defer c.client.Close()
+	// The local changes that saveLocalChange held back go to the store
+	// before the store closes (the application waits for the collectors).
+	defer c.flushLocalChanges(true)
 	go c.trafficLoop(ctx)
 	for ctx.Err() == nil {
 		// The session's context also bounds the structure scan it starts,
@@ -178,6 +185,8 @@ func (c *Collector) session(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.setRelayListeners(status, time.Now())
+	c.needRefused.Store(false) // the gate may be a newer one now
 	restarted := !status.StartTime.Equal(c.startTime)
 	if restarted {
 		if !c.startTime.IsZero() {
@@ -380,6 +389,7 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 		c.update(func(s *model.Server) { s.LastContact = now })
 		if len(evs) == 0 {
 			c.confirmClears(now)
+			c.flushLocalChanges(false)
 			continue
 		}
 		if evs[0].ID <= c.lastEventID && c.lastEventID > 0 && evs[len(evs)-1].ID < c.lastEventID {
@@ -396,6 +406,7 @@ func (c *Collector) eventLoop(ctx context.Context) error {
 		}
 		c.applyBatch(ctx, evs)
 		c.confirmClears(now)
+		c.flushLocalChanges(false)
 		c.update(func(s *model.Server) { s.LastEvent = now })
 	}
 	return ctx.Err()
@@ -480,6 +491,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.setRelayListeners(status, time.Now())
 	if !status.StartTime.Equal(c.startTime) {
 		// Syncthing restarted between two requests without breaking one:
 		// its event IDs start over, so the stream is followed from 0 again.
@@ -526,6 +538,8 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 	for _, fc := range folders {
 		newFolders[fc.ID] = folderFromConfig(fc, status.MyID)
 	}
+	statusRead := map[string]bool{}                     // folders whose db/status answered
+	needLists := map[string]map[string]model.NeedList{} // see needList
 
 	// Per-folder status and per-device completion, throttled. The first
 	// error that isn't about a single folder ends the check: the server is
@@ -595,6 +609,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 				return folderErr(f, "", "db/status", err)
 			}
 			mu.Lock()
+			statusRead[f.ID] = true
 			applyDBStatus(f, ds)
 			if st, ok := fstats[f.ID]; ok {
 				f.LastScan = st.LastScan
@@ -629,9 +644,21 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 				if err != nil {
 					return folderErr(f, dev, "completion", err)
 				}
+				at := time.Now()
 				mu.Lock()
-				f.Completion[dev] = completionFrom(comp, time.Now())
+				f.Completion[dev] = completionFrom(comp, at)
 				mu.Unlock()
+				// The names for H5, in the same slot of the throttle.
+				if cn, ok := conns[dev]; ok && cn.Connected && comp.NeedItems > 0 {
+					if nl, ok := c.needList(fctx, f.ID, dev, comp.NeedItems, at); ok {
+						mu.Lock()
+						if needLists[f.ID] == nil {
+							needLists[f.ID] = map[string]model.NeedList{}
+						}
+						needLists[f.ID][dev] = nl
+						mu.Unlock()
+					}
+				}
 				return nil
 			})
 		}
@@ -683,6 +710,14 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		}
 	}
 	now := time.Now()
+	// What the store keeps across restarts (W-021): the local changes that
+	// wait for the store go there first, so that it has the newest ones.
+	c.flushLocalChanges(true)
+	ids := make([]string, 0, len(newFolders))
+	for id := range newFolders {
+		ids = append(ids, id)
+	}
+	act := c.folderActivity(ids, now)
 	c.update(func(s *model.Server) {
 		s.MyID = status.MyID
 		s.StartTime = status.StartTime
@@ -690,10 +725,27 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		s.Version = version.Version
 		s.OS = version.OS
 		for id, f := range newFolders {
+			f.FirstSeen, f.LastLocalChange = act[id].FirstSeen, act[id].LastLocalChange
 			if old := s.Folders[id]; old != nil {
-				f.LastLocalChange = old.LastLocalChange // only events know it
+				if f.FirstSeen.IsZero() {
+					f.FirstSeen = old.FirstSeen // the store did not answer
+				}
+				if old.LastLocalChange.After(f.LastLocalChange) {
+					// Only events know it, and the store did not get it.
+					f.LastLocalChange = old.LastLocalChange
+				}
+			}
+			// Progress samples for H5 (W-059): the server's own copy and
+			// each device.
+			if statusRead[id] {
+				s.AddProgress(id, "", model.ProgressSample{At: now, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})
+			}
+			for dev, comp := range f.Completion {
+				s.AddProgress(id, dev, model.ProgressSample{At: comp.UpdatedAt, NeedBytes: comp.NeedBytes, GlobalBytes: comp.GlobalBytes})
 			}
 		}
+		pruneProgress(s, newFolders)
+		s.NeedLists = needLists
 		s.Folders = newFolders
 		s.Devices = newDevices
 		s.Connections = newConns
@@ -802,5 +854,5 @@ func fileErrors(in []stclient.FileError) []model.FileError {
 }
 
 func completionFrom(c stclient.Completion, at time.Time) *model.Completion {
-	return &model.Completion{Percent: c.Completion, NeedBytes: c.NeedBytes, NeedItems: c.NeedItems, RemoteState: c.RemoteState, UpdatedAt: at}
+	return &model.Completion{Percent: c.Completion, NeedBytes: c.NeedBytes, NeedItems: c.NeedItems, GlobalBytes: c.GlobalBytes, RemoteState: c.RemoteState, UpdatedAt: at}
 }

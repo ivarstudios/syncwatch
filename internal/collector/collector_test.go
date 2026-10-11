@@ -43,6 +43,12 @@ type fakeST struct {
 	inBytes    int64  // traffic totals since "start"
 	outBytes   int64
 	conflicts  map[string]int // overrides the fixture's conflict counters
+
+	listeners  map[string]stclient.ListenerStatus // connectionServiceStatus in system/status; nil: none
+	need       map[string]int64                   // need items by "folder/device"; overrides the fixture's completion
+	needNames  []string                           // what /rest/db/remoteneed lists
+	needStatus int                                // when not 0, /rest/db/remoteneed answers this status with needBody
+	needBody   string
 }
 
 func newFakeST(t *testing.T) *fakeST {
@@ -100,6 +106,9 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.startTime != "" {
 			st["startTime"] = f.startTime
 		}
+		if f.listeners != nil {
+			st["connectionServiceStatus"] = f.listeners
+		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(st)
 	case "/rest/system/version":
@@ -145,13 +154,38 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			stclient.Completion
 		}
 		_ = json.Unmarshal(f.fixture("completion"), &all)
+		f.mu.Lock()
+		need, needed := f.need[q.Get("folder")+"/"+q.Get("device")]
+		f.mu.Unlock()
 		for _, c := range all {
 			if c.Folder == q.Get("folder") && c.Device == q.Get("device") {
+				if needed {
+					c.NeedItems, c.NeedBytes, c.Completion.Completion = need, need*1000, 50
+				}
 				_ = json.NewEncoder(w).Encode(c.Completion)
 				return
 			}
 		}
 		_, _ = w.Write([]byte(`{"completion":100,"remoteState":"unknown"}`))
+	case "/rest/db/remoteneed":
+		f.mu.Lock()
+		names, status, body := f.needNames, f.needStatus, f.needBody
+		f.mu.Unlock()
+		if status != 0 {
+			http.Error(w, body, status)
+			return
+		}
+		if q.Get("page") != "1" || q.Get("perpage") != "20" || q.Get("folder") == "" || q.Get("device") == "" {
+			f.t.Errorf("remoteneed query %q", r.URL.RawQuery)
+		}
+		rn := stclient.RemoteNeed{Page: 1, PerPage: 20, Files: []stclient.NeedFile{}}
+		for i, n := range names {
+			if i == 20 {
+				break
+			}
+			rn.Files = append(rn.Files, stclient.NeedFile{Name: n, Size: 10})
+		}
+		_ = json.NewEncoder(w).Encode(rn)
 	case "/rest/folder/errors":
 		_, _ = w.Write([]byte(`{"errors":[{"path":"bad.txt","error":"permission denied"}]}`))
 	case "/metrics":

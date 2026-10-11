@@ -41,9 +41,10 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 		if json.Unmarshal(e.Data, &d) != nil {
 			return
 		}
-		c.withFolder(d.Folder, func(f *model.Folder) {
+		c.withServerFolder(d.Folder, func(s *model.Server, f *model.Folder) {
 			ferr := f.Error
 			applyDBStatus(f, d.Summary)
+			s.AddProgress(f.ID, "", model.ProgressSample{At: e.Time, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})
 			switch {
 			case f.State == "error" || f.Error != "":
 				delete(c.clearDue, f.ID)
@@ -58,7 +59,7 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 		if json.Unmarshal(e.Data, &d) != nil || d.Device == "" {
 			return
 		}
-		c.withFolder(d.Folder, func(f *model.Folder) {
+		c.withServerFolder(d.Folder, func(s *model.Server, f *model.Folder) {
 			comp := completionFrom(d.Completion, e.Time)
 			if comp.RemoteState == "" {
 				// Older versions don't include it; keep what the full check found.
@@ -67,6 +68,7 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 				}
 			}
 			f.Completion[d.Device] = comp
+			s.AddProgress(f.ID, d.Device, model.ProgressSample{At: e.Time, NeedBytes: comp.NeedBytes, GlobalBytes: comp.GlobalBytes})
 		})
 	case "FolderErrors":
 		var d stclient.FolderErrorsData
@@ -141,12 +143,16 @@ func (c *Collector) apply(ctx context.Context, e stclient.Event) {
 		}
 		if e.Type == "LocalChangeDetected" {
 			// lastFile.at only moves for pulled files, so this is the only
-			// trace of local edits (e.g. over SMB); C1 uses the newer of the two.
-			c.withFolder(firstNonEmpty(d.FolderID, d.Folder), func(f *model.Folder) {
+			// trace of local edits (e.g. over SMB); C1 uses the newer of the
+			// two. The store keeps it across restarts.
+			folder := firstNonEmpty(d.FolderID, d.Folder)
+			var newer time.Time
+			c.withFolder(folder, func(f *model.Folder) {
 				if e.Time.After(f.LastLocalChange) {
-					f.LastLocalChange = e.Time
+					f.LastLocalChange, newer = e.Time, e.Time
 				}
 			})
+			c.saveLocalChange(folder, newer) // zero: nothing new
 		} else {
 			c.conflictCopy(d)
 		}
@@ -328,9 +334,14 @@ func eventFolder(e stclient.Event) string {
 }
 
 func (c *Collector) withFolder(id string, fn func(*model.Folder)) {
+	c.withServerFolder(id, func(_ *model.Server, f *model.Folder) { fn(f) })
+}
+
+// withServerFolder is withFolder for a change that also needs the server.
+func (c *Collector) withServerFolder(id string, fn func(*model.Server, *model.Folder)) {
 	c.update(func(s *model.Server) {
 		if f := s.Folders[id]; f != nil {
-			fn(f)
+			fn(s, f)
 		}
 	})
 }
@@ -497,11 +508,13 @@ func (c *Collector) refreshConfig(ctx context.Context) error {
 		}
 	})
 	fresh := map[string]*model.Folder{}
+	statusRead := map[string]time.Time{} // new folders whose db/status answered, with when
 	for _, fc := range folders {
 		f := folderFromConfig(fc, myID)
 		if !known[fc.ID] {
 			if ds, err := c.client.DBStatus(ctx, fc.ID); err == nil {
 				applyDBStatus(f, ds)
+				statusRead[fc.ID] = time.Now()
 			} else if !perFolder(err) {
 				return err
 			}
@@ -536,6 +549,12 @@ func (c *Collector) refreshConfig(ctx context.Context) error {
 				next[id] = old
 			} else {
 				next[id] = f
+				if at, ok := statusRead[id]; ok {
+					s.AddProgress(id, "", model.ProgressSample{At: at, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})
+				}
+				for dev, comp := range f.Completion {
+					s.AddProgress(id, dev, model.ProgressSample{At: comp.UpdatedAt, NeedBytes: comp.NeedBytes, GlobalBytes: comp.GlobalBytes})
+				}
 			}
 		}
 		s.Folders = next
