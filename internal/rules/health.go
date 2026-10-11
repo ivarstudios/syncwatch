@@ -68,6 +68,7 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 	switch sv.Status {
 	case model.StatusDown:
 		msg := fmt.Sprintf("Server %s is unreachable", sv.Name)
+		resolved := fmt.Sprintf("Server %s is reachable again.", sv.Name)
 		details := []model.Detail{
 			detail("URL", sv.URL),
 			timeDetail("Down since", sv.DownSince),
@@ -77,6 +78,7 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 		if refusedKey.MatchString(sv.LastError) {
 			// The server answers: it is not unreachable.
 			msg = fmt.Sprintf("Server %s refuses the API key or the gate token", sv.Name)
+			resolved = fmt.Sprintf("Server %s accepts the API key or the gate token again.", sv.Name)
 			details = append(details, detail("What to do", "Type the API key or the gate token again in Settings → Servers."))
 		} else if networkFailure(sv.LastError) {
 			causes := "The server is off or does not answer, or the network path to it (for example the VPN between the sites) is down."
@@ -92,10 +94,11 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			msg += ": " + sv.LastError
 		}
 		e.add("H1", sv.ID, "server", model.Finding{
-			Subject: sv.Name,
-			Message: msg,
-			Since:   sv.DownSince,
-			Details: details,
+			Subject:      sv.Name,
+			Message:      msg,
+			Since:        sv.DownSince,
+			Details:      details,
+			ResolvedText: resolved,
 		})
 	case model.StatusCertChanged:
 		cc := sv.CertChange
@@ -112,6 +115,7 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 				detail("New fingerprint (full)", cc.New),
 				timeDetail("New certificate expires", cc.NotAfter),
 			},
+			ResolvedText: fmt.Sprintf("syncwatch reads server %s again.", sv.Name),
 		})
 	}
 }
@@ -235,10 +239,11 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 		subject := fmt.Sprintf("%s on %s", name, sv.Name)
 		if f.Paused {
 			e.add("H6", sv.ID, "folder-paused:"+f.ID, model.Finding{
-				Subject:     subject,
-				Message:     fmt.Sprintf("Folder %s is paused on %s", name, sv.Name),
-				MinDuration: e.Config.Thresholds.Paused.D(),
-				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path)},
+				Subject:      subject,
+				Message:      fmt.Sprintf("Folder %s is paused on %s", name, sv.Name),
+				MinDuration:  e.Config.Thresholds.Paused.D(),
+				Details:      []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path)},
+				ResolvedText: fmt.Sprintf("Folder %s on %s is not paused now.", name, sv.Name),
 			})
 			continue
 		}
@@ -277,11 +282,12 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			// watcher fails (inotify limits on a big share, typically), so
 			// this is a warning once it has lasted a while, never urgent.
 			id := e.add("H4", sv.ID, "watcher:"+f.ID, model.Finding{
-				Subject:     subject,
-				Severity:    model.Warn,
-				Message:     fmt.Sprintf("The file watcher of folder %s on %s failed. Syncthing finds changes only with its periodic scans (%s)", name, sv.Name, f.WatchError),
-				MinDuration: watcherGrace,
-				Details:     []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("Watch error", f.WatchError)},
+				Subject:      subject,
+				Severity:     model.Warn,
+				Message:      fmt.Sprintf("The file watcher of folder %s on %s failed. Syncthing finds changes only with its periodic scans (%s)", name, sv.Name, f.WatchError),
+				MinDuration:  watcherGrace,
+				Details:      []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path), detail("Watch error", f.WatchError)},
+				ResolvedText: fmt.Sprintf("The file watcher of folder %s on %s works again.", name, sv.Name),
 			})
 			e.soft[id] = true
 		}
@@ -315,6 +321,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 					detail("Error", f.Error), detail("Watch error", f.WatchError),
 					detail("Failing items", fmt.Sprint(nErr)),
 				},
+				ResolvedText: fmt.Sprintf("Folder %s on %s can sync again.", name, sv.Name),
 			})
 		} else if !dbFull && (busyStates[f.State] || f.NeedItems > 0) {
 			// A folder that Syncthing stopped for its database is in the H4
@@ -328,6 +335,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 					detail("Folder ID", f.ID), detail("State", f.State),
 					detail("Items left", fmt.Sprint(f.NeedItems)), detail("Bytes left", fmt.Sprint(f.NeedBytes)),
 				}, p.details()...),
+				ResolvedText: fmt.Sprintf("Folder %s on %s is in sync.", name, sv.Name),
 			})
 		}
 
@@ -346,10 +354,11 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			case state == "paused" && e.Snapshot.ServerByDeviceID(dev) == nil:
 				// A polled server reports its paused folders itself.
 				e.add("H6", sv.ID, "remote-paused:"+f.ID+":"+dev, model.Finding{
-					Subject:     fmt.Sprintf("%s on %s", name, dn),
-					Message:     fmt.Sprintf("Device %s paused folder %s (seen from %s)", dn, name, sv.Name),
-					MinDuration: e.Config.Thresholds.Paused.D(),
-					Details:     []model.Detail{detail("Folder ID", f.ID), detail("Device ID", dev)},
+					Subject:      fmt.Sprintf("%s on %s", name, dn),
+					Message:      fmt.Sprintf("Device %s paused folder %s (seen from %s)", dn, name, sv.Name),
+					MinDuration:  e.Config.Thresholds.Paused.D(),
+					Details:      []model.Detail{detail("Folder ID", f.ID), detail("Device ID", dev)},
+					ResolvedText: fmt.Sprintf("Folder %s is not paused on device %s now (seen from %s).", name, dn, sv.Name),
 				})
 			case connected && c.RemoteState == "valid":
 				if stuck(*c) {
@@ -402,11 +411,12 @@ func (e *evaluator) stuckDevice(sv *model.Server, f *model.Folder, dev string, c
 	p := e.progressOf(samples, c.NeedBytes, c.GlobalBytes)
 	details = append(details, p.details()...)
 	e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
-		Subject:     fmt.Sprintf("%s on %s", name, dn),
-		Message:     fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), p.suffix(false), sv.Name),
-		MinDuration: e.Config.Thresholds.StuckSync.D(),
-		Held:        held,
-		Details:     details,
+		Subject:      fmt.Sprintf("%s on %s", name, dn),
+		Message:      fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), p.suffix(false), sv.Name),
+		MinDuration:  e.Config.Thresholds.StuckSync.D(),
+		Held:         held,
+		Details:      details,
+		ResolvedText: fmt.Sprintf("Device %s has all files of folder %s (seen from %s).", dn, name, sv.Name),
 	})
 }
 
@@ -419,10 +429,11 @@ func (e *evaluator) pausedDevices(sv *model.Server) {
 		}
 		dn := e.devName(id)
 		e.add("H6", sv.ID, "device-paused:"+id, model.Finding{
-			Subject:     fmt.Sprintf("%s on %s", dn, sv.Name),
-			Message:     fmt.Sprintf("Device %s is paused on %s", dn, sv.Name),
-			MinDuration: e.Config.Thresholds.Paused.D(),
-			Details:     []model.Detail{detail("Device ID", id)},
+			Subject:      fmt.Sprintf("%s on %s", dn, sv.Name),
+			Message:      fmt.Sprintf("Device %s is paused on %s", dn, sv.Name),
+			MinDuration:  e.Config.Thresholds.Paused.D(),
+			Details:      []model.Detail{detail("Device ID", id)},
+			ResolvedText: fmt.Sprintf("Device %s is not paused on %s now.", dn, sv.Name),
 		})
 	}
 }
@@ -435,12 +446,13 @@ func (e *evaluator) pending(sv *model.Server) {
 			name = model.ShortID(p.DeviceID)
 		}
 		msg := fmt.Sprintf("Unknown device %s requests a connection to %s", name, sv.Name)
+		kind := "device"
 		if on := e.configuredOn(p.DeviceID, sv.ID); len(on) > 0 || e.Snapshot.IsServerDevice(p.DeviceID) {
 			// Not an unknown device: use the name that the servers know,
 			// and show the name that the device sends as a value.
 			name = e.devName(p.DeviceID)
 			if e.Snapshot.IsServerDevice(p.DeviceID) {
-				msg = fmt.Sprintf("Server %s requests a connection to %s", name, sv.Name)
+				msg, kind = fmt.Sprintf("Server %s requests a connection to %s", name, sv.Name), "server"
 			} else {
 				msg = fmt.Sprintf("Device %s (known on %s) requests a connection to %s", name, strings.Join(on, ", "), sv.Name)
 			}
@@ -449,10 +461,11 @@ func (e *evaluator) pending(sv *model.Server) {
 			}
 		}
 		e.add("H9", sv.ID, "pending-device:"+p.DeviceID, model.Finding{
-			Subject: fmt.Sprintf("%s on %s", name, sv.Name),
-			Message: msg,
-			Since:   p.Time,
-			Details: []model.Detail{detail("Device ID", p.DeviceID), detail("Address", p.Address), timeDetail("First offered", p.Time)},
+			Subject:      fmt.Sprintf("%s on %s", name, sv.Name),
+			Message:      msg,
+			Since:        p.Time,
+			Details:      []model.Detail{detail("Device ID", p.DeviceID), detail("Address", p.Address), timeDetail("First offered", p.Time)},
+			ResolvedText: fmt.Sprintf("The request of %s %s is not pending on %s now.", kind, name, sv.Name),
 		})
 	}
 	for _, p := range sv.PendingFolders {
@@ -462,10 +475,11 @@ func (e *evaluator) pending(sv *model.Server) {
 		}
 		by := e.devName(p.OfferedBy)
 		e.add("H9", sv.ID, "pending-folder:"+p.FolderID+":"+p.OfferedBy, model.Finding{
-			Subject: fmt.Sprintf("%s on %s", label, sv.Name),
-			Message: fmt.Sprintf("Device %s offers folder %s to %s, which did not accept it", by, label, sv.Name),
-			Since:   p.Time,
-			Details: []model.Detail{detail("Folder ID", p.FolderID), detail("Offered by", p.OfferedBy), timeDetail("First offered", p.Time)},
+			Subject:      fmt.Sprintf("%s on %s", label, sv.Name),
+			Message:      fmt.Sprintf("Device %s offers folder %s to %s, which did not accept it", by, label, sv.Name),
+			Since:        p.Time,
+			Details:      []model.Detail{detail("Folder ID", p.FolderID), detail("Offered by", p.OfferedBy), timeDetail("First offered", p.Time)},
+			ResolvedText: fmt.Sprintf("The offer of folder %s from device %s is not pending on %s now.", label, by, sv.Name),
 		})
 	}
 }
@@ -495,9 +509,10 @@ func (e *evaluator) conflicts(sv *model.Server) {
 			name = f.DisplayName()
 		}
 		e.add("H10", sv.ID, "conflicts:"+fid, model.Finding{
-			Subject: fmt.Sprintf("%s on %s", name, sv.Name),
-			Message: fmt.Sprintf("%s in folder %s on %s in the last %s", Plural(int(n), "new sync conflict", "new sync conflicts"), name, sv.Name, Ago(e.Config.Thresholds.ConflictWindow.D())),
-			Details: []model.Detail{detail("Folder ID", fid), detail("New conflicts", fmt.Sprint(n))},
+			Subject:      fmt.Sprintf("%s on %s", name, sv.Name),
+			Message:      fmt.Sprintf("%s in folder %s on %s in the last %s", Plural(int(n), "new sync conflict", "new sync conflicts"), name, sv.Name, Ago(e.Config.Thresholds.ConflictWindow.D())),
+			Details:      []model.Detail{detail("Folder ID", fid), detail("New conflicts", fmt.Sprint(n))},
+			ResolvedText: fmt.Sprintf("Folder %s on %s has no new sync conflicts now.", name, sv.Name),
 		})
 	}
 }
@@ -515,9 +530,10 @@ func (e *evaluator) relays(sv *model.Server) {
 		}
 		dn := e.devName(id)
 		e.add("H11", sv.ID, "relay:"+id, model.Finding{
-			Subject: fmt.Sprintf("%s ↔ %s", sv.Name, dn),
-			Message: fmt.Sprintf("Device %s is connected to %s through a relay, which is slow", dn, sv.Name),
-			Details: []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Type", c.Type)},
+			Subject:      fmt.Sprintf("%s ↔ %s", sv.Name, dn),
+			Message:      fmt.Sprintf("Device %s is connected to %s through a relay, which is slow", dn, sv.Name),
+			Details:      []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Type", c.Type)},
+			ResolvedText: fmt.Sprintf("Device %s is not connected to %s through a relay now.", dn, sv.Name),
 		})
 	}
 }
@@ -647,6 +663,7 @@ func (e *evaluator) links() {
 					timeDetail(b.Name+" last saw "+a.Name, db.LastSeen),
 					detail("What to check", check),
 				},
+				ResolvedText: fmt.Sprintf("Servers %s and %s are connected again.", a.Name, b.Name),
 			})
 		}
 	}
@@ -703,10 +720,11 @@ func (e *evaluator) versions() {
 	}
 	if len(count) > 1 {
 		e.add("H8", "", "servers", model.Finding{
-			Subject: "Servers",
-			Message: "Servers run different Syncthing versions: " + strings.Join(servers, ", "),
-			Related: ids,
-			Details: []model.Detail{detail("Versions", strings.Join(servers, ", "))},
+			Subject:      "Servers",
+			Message:      "Servers run different Syncthing versions: " + strings.Join(servers, ", "),
+			Related:      ids,
+			Details:      []model.Detail{detail("Versions", strings.Join(servers, ", "))},
+			ResolvedText: "The servers run the same Syncthing version again.",
 		})
 	}
 	for _, dv := range e.Snapshot.Devices() {
@@ -715,10 +733,11 @@ func (e *evaluator) versions() {
 		}
 		if NormVersion(dv.Version) != ref {
 			e.add("H8", "", "device:"+dv.ID, model.Finding{
-				Subject: dv.Name,
-				Message: fmt.Sprintf("PC %s runs Syncthing %s. The servers run v%s", dv.Name, dv.Version, ref),
-				Related: dv.SeenBy,
-				Details: []model.Detail{detail("Device ID", dv.ID), detail("Version", dv.Version)},
+				Subject:      dv.Name,
+				Message:      fmt.Sprintf("PC %s runs Syncthing %s. The servers run v%s", dv.Name, dv.Version, ref),
+				Related:      dv.SeenBy,
+				Details:      []model.Detail{detail("Device ID", dv.ID), detail("Version", dv.Version)},
+				ResolvedText: fmt.Sprintf("PC %s runs the Syncthing version of the servers now.", dv.Name),
 			})
 		}
 	}
@@ -741,11 +760,12 @@ func (e *evaluator) offlinePCs() {
 			continue
 		}
 		e.add("H7", "", "device:"+dv.ID, model.Finding{
-			Subject: dv.Name,
-			Message: fmt.Sprintf("PC %s is offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.In(loc).Format("2006-01-02 15:04")),
-			Since:   dv.LastSeen,
-			Related: dv.SeenBy,
-			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
+			Subject:      dv.Name,
+			Message:      fmt.Sprintf("PC %s is offline for %s (last seen %s)", dv.Name, Ago(off), dv.LastSeen.In(loc).Format("2006-01-02 15:04")),
+			Since:        dv.LastSeen,
+			Related:      dv.SeenBy,
+			Details:      []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
+			ResolvedText: fmt.Sprintf("PC %s is online again.", dv.Name),
 		})
 	}
 }

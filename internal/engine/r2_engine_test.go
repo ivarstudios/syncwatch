@@ -163,3 +163,28 @@ servers: [{name: A, url: "https://a:1", site: IVAR Office}, {name: B, url: "http
 		t.Fatalf("reconnect: version %d, links %+v", v.Version, v.Snapshot.Links)
 	}
 }
+
+// W-038: the record of a finding keeps the sentence of its resolved message
+// (the notifier reads it after the finding resolved), and a change of only
+// that sentence is a change of the record.
+func TestRecordKeepsResolvedText(t *testing.T) {
+	r := newRig(t)
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince, s.LastError = model.StatusDown, r.now, "timeout" })
+	h1 := find(r.at(0), "H1", "B")
+	if h1 == nil || h1.ResolvedText != "Server B is reachable again." {
+		t.Fatalf("H1: %+v", h1)
+	}
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.LastError = model.StatusUp, "" })
+	if find(r.at(time.Minute), "H1", "B") != nil {
+		t.Fatal("H1 should resolve")
+	}
+	rec, err := r.st.Record(h1.ID)
+	if err != nil || rec == nil || rec.Open() || rec.ResolvedText != "Server B is reachable again." {
+		t.Fatalf("resolved record: %+v %v", rec, err)
+	}
+	other := rec.Finding
+	other.ResolvedText = "Server B accepts the API key or the gate token again."
+	if sameContent(rec.Finding, other) {
+		t.Fatal("sameContent must compare the resolved sentence")
+	}
+}

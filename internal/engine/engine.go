@@ -581,11 +581,12 @@ func (e *Engine) save(r *store.Record) {
 	}
 }
 
-// sameContent compares the parts of a finding that matter to viewers.
+// sameContent compares the parts of a finding that matter to viewers, and
+// the sentence of its resolved message.
 func sameContent(a, b model.Finding) bool {
 	return a.Check == b.Check && a.Severity == b.Severity && a.Subject == b.Subject && a.Message == b.Message &&
 		a.Urgent == b.Urgent && a.Link == b.Link && slices.Equal(a.Checks, b.Checks) && slices.Equal(a.Paths, b.Paths) &&
-		slices.Equal(a.Related, b.Related) && reflect.DeepEqual(a.Details, b.Details)
+		slices.Equal(a.Related, b.Related) && reflect.DeepEqual(a.Details, b.Details) && a.ResolvedText == b.ResolvedText
 }
 
 // visibleFingerprint hashes what the dashboard shows of the snapshot (server

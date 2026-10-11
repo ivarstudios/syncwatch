@@ -567,3 +567,116 @@ func TestInactiveProjectFirstSeen(t *testing.T) {
 	s.LastLocalChange, a.FirstSeen, s.FirstSeen = time.Time{}, time.Time{}, time.Time{}
 	mustNot(t, run(t, c, akka, sol), "C1", "")
 }
+
+// W-038: every finding has 1 sentence for its resolved message. It ends with
+// a period and does not repeat the sentence of the open finding. The
+// scenarios below give every check of the catalog.
+func TestEveryFindingHasAResolvedSentence(t *testing.T) {
+	c := ivarConfig(t)
+	cs, _ := c.Structure.Compile()
+	var all []model.Finding
+	eval := func(in Input) {
+		in.Config, in.Now = c, now
+		in.Snapshot.At = now
+		all = append(all, Evaluate(in)...)
+	}
+
+	// Health of the folders and devices of 2 servers.
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	sol.Version = "v2.1.4"
+	akka.Devices[solID] = &model.Device{ID: solID, Name: "SOL", LastSeen: now.Add(-time.Hour)}
+	sol.Devices[akkaID] = &model.Device{ID: akkaID, Name: "AKKA", LastSeen: now.Add(-time.Hour)}
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now, Paused: true}
+	akka.Connections[pcID] = &model.Connection{Connected: true, ClientVersion: "v2.0.9", Type: "relay-client"}
+	akka.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS", LastSeen: now.Add(-9 * 24 * time.Hour)}
+	e := folder("e", "LIVE-ERR", "/s/AKKA-LIVE-1SOURCE/LIVE-ERR")
+	e.State, e.Error, e.WatchError = "error", "folder marker missing", "too many open files"
+	akka.Folders["e"] = e
+	s := folder("s", "LIVE-STUCK", "/s/AKKA-LIVE-1SOURCE/LIVE-STUCK", pcID)
+	s.State, s.NeedItems = "syncing", 12
+	s.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 7, RemoteState: "valid"}
+	akka.Folders["s"] = s
+	p := folder("p", "LIVE-PAUSED", "/s/AKKA-LIVE-1SOURCE/LIVE-PAUSED")
+	p.Paused = true
+	akka.Folders["p"] = p
+	r := folder("r", "LIVE-REMOTE", "/s/AKKA-LIVE-1SOURCE/LIVE-REMOTE", pcID)
+	r.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "paused"}
+	akka.Folders["r"] = r
+	akka.PendingDevices = []model.PendingDevice{{DeviceID: "PENDING-6666666-6666666-6666666-6666666-6666666-6666666-6666666", Name: "stranger", Time: now}}
+	akka.PendingFolders = []model.PendingFolder{{FolderID: "xyz", Label: "LIVE-OFFER", OfferedBy: pcID, Time: now}}
+	akka.RelayListeners = []model.RelayListener{{URI: "relay://10.115.1.60:22067", Since: now}}
+	akka.Cert = model.CertInfo{Fingerprint: "b6cfed46", NotAfter: now.Add(10 * 24 * time.Hour)}
+	db := folder("db", "LIVE-DB", "/s/SOL-LIVE-1SOURCE/LIVE-DB")
+	db.State, db.Error = "error", "insufficient space on disk for database (/var/syncthing/config/index-v2): current 89.54 % < required 99.9 %"
+	sol.Folders["db"] = db
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{akka, sol}}, Conflicts: map[string]map[string]int64{"akka": {"e": 2}}})
+
+	// H12 for a device, H1 and H3.
+	c.Devices = []config.Device{{ID: pcID, Relay: true}}
+	akka.Connections[pcID].Connected = false
+	akka.Devices[pcID].LastSeen = now.Add(-time.Hour)
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{akka, sol}}})
+	c.Devices = nil
+	down := server("sol", "SOL", solID)
+	down.Status, down.LastError = model.StatusDown, "timeout"
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{down}}})
+	down.LastError = "/rest/system/status: HTTP 403 (check the API key)"
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{down}}})
+	down.Status, down.CertChange = model.StatusCertChanged, &model.CertChange{Old: "aa", New: "bb", SeenAt: now}
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{down}}})
+
+	// Cross-server checks.
+	x, y := server("akka", "AKKA", akkaID), server("sol", "SOL", solID)
+	x.Folders["id-a"] = folder("id-a", "LIVE-SAME", "/s/AKKA-LIVE-2PROJECTFILES/LIVE-SAME")
+	y.Folders["id-b"] = folder("id-b", "LIVE-SAME", "/s/SOL-LIVE-2PROJECTFILES/LIVE-SAME")
+	x.Folders["moved"] = folder("moved", "LIVE-MOVED", "/s/AKKA-LIVE-1SOURCE/LIVE-MOVED")
+	y.Folders["moved"] = folder("moved", "LIVE-MOVED", "/s/SOL-LIVE-2PROJECTFILES/LIVE-MOVED")
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{x, y}}})
+
+	// Structure checks.
+	st := server("akka", "AKKA", akkaID)
+	src := "/share/X/AKKA-LIVE-1SOURCE"
+	st.Folders["k"] = folder("k", "LIVE-KYRGYZ-2PROJECTFILES", src+"/LIVE-KYRGYZ-2PROJECTFILES")
+	st.Folders["same"] = folder("same", "LIVE-KYRGYZ copy", src+"/LIVE-KYRGYZ-2PROJECTFILES/")
+	st.Folders["in"] = folder("in", "LIVE-KYRGYZ inner", src+"/LIVE-KYRGYZ-2PROJECTFILES/inner")
+	st.Folders["root"] = folder("root", "AKKA-LIVE-4FINALS", "/share/X/AKKA-LIVE-4FINALS")
+	addShare(st, cs, src, "LIVE-KYRGYZ-2PROJECTFILES", "ME-LIVE-WORKSHOP", "random stuff", "LIVE-NOTSYNCED-1SOURCE")
+	addShare(st, cs, "/share/X/AKKA-LIVE-2PROJECTFILES", "LIVE-NOTSYNCED-1SOURCE")
+	st.Structure.Nested["n"] = &model.NestedDir{Path: src + "/LIVE-NOTSYNCED-1SOURCE/r/LIVE-NESTED", Parent: src + "/LIVE-NOTSYNCED-1SOURCE", Share: src, Source: "scan", FoundAt: now}
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{st}}})
+
+	// Cleanup checks.
+	cl := server("akka", "AKKA", akkaID)
+	never := "NEVERRR-7777777-7777777-7777777-7777777-7777777-7777777-7777777"
+	cl.Devices[never] = &model.Device{ID: never, Name: "NEWPC"}
+	cl.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "OLDPC", LastSeen: now.Add(-100 * 24 * time.Hour)}
+	cl.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now}
+	cl.Connections[pcID] = &model.Connection{Connected: true}
+	old := folder("old", "LIVE-OLD", "/s/AKKA-LIVE-1SOURCE/LIVE-OLD", pcID)
+	old.LastFileAt = now.Add(-200 * 24 * time.Hour)
+	old.Completion[pcID] = &model.Completion{Percent: 0, RemoteState: "notSharing"}
+	cl.Folders["old"] = old
+	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{cl}}})
+
+	seen := map[string]bool{}
+	for _, f := range all {
+		for _, ch := range f.Checks {
+			seen[ch] = true
+		}
+		rt := f.ResolvedText
+		if !strings.HasSuffix(rt, ".") || strings.Count(rt, ". ") > 0 || rt == f.Message+"." || strings.Contains(rt, f.Message) {
+			t.Errorf("%s %s: resolved sentence %q for the message %q", f.Check, f.Subject, rt, f.Message)
+		}
+		for _, open := range []string{" is unreachable", " refuses ", " is paused ", " cannot sync", " did not finish", " is stuck ", " is offline", " is inside ", " has no connection", " expires on", " expired on", " is a Syncthing folder", " requests ", " offers "} {
+			if strings.Contains(rt, open) {
+				t.Errorf("%s %s: the resolved sentence %q has the open form %q", f.Check, f.Subject, rt, open)
+			}
+		}
+	}
+	for _, info := range config.Catalog {
+		if !seen[info.ID] {
+			t.Errorf("no scenario gives %s", info.ID)
+		}
+	}
+}

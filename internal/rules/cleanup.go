@@ -105,9 +105,10 @@ func (e *evaluator) oldDevices() {
 			continue
 		}
 		f := model.Finding{
-			Subject: dv.Name,
-			Related: dv.SeenBy,
-			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
+			Subject:      dv.Name,
+			Related:      dv.SeenBy,
+			ResolvedText: fmt.Sprintf("Device %s is not inactive now.", dv.Name),
+			Details:      []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
 		}
 		if dv.LastSeen.IsZero() {
 			// Opens once the device has been watched for the threshold.
@@ -160,10 +161,11 @@ func (e *evaluator) deadShares() {
 					continue
 				}
 				e.add("C3", sv.ID, "dead:"+fid+":"+dev, model.Finding{
-					Subject:     fmt.Sprintf("%s → %s", f.DisplayName(), dn),
-					Message:     msg + ". You can remove the device from the folder",
-					MinDuration: th,
-					Details:     []model.Detail{detail("Folder ID", fid), detail("Device ID", dev)},
+					Subject:      fmt.Sprintf("%s → %s", f.DisplayName(), dn),
+					Message:      msg + ". You can remove the device from the folder",
+					MinDuration:  th,
+					Details:      []model.Detail{detail("Folder ID", fid), detail("Device ID", dev)},
+					ResolvedText: fmt.Sprintf("Device %s uses folder %s, or the folder is not shared with it now.", dn, f.DisplayName()),
 				})
 			}
 		}

@@ -151,10 +151,11 @@ func (e *evaluator) nested(sv *model.Server) {
 			details = append(details, detail("Syncthing folder", n.FolderID))
 		}
 		e.add("S3", sv.ID, "nested:"+pathKey(st, n.Path), model.Finding{
-			Subject: fmt.Sprintf("%s/%s/%s on %s", share, parent, rel, sv.Name),
-			Message: fmt.Sprintf("Project folder %s is nested inside project folder %s (%s on %s)", st.Base(n.Path), parent, share, sv.Name),
-			Since:   n.FoundAt,
-			Details: details,
+			Subject:      fmt.Sprintf("%s/%s/%s on %s", share, parent, rel, sv.Name),
+			Message:      fmt.Sprintf("Project folder %s is nested inside project folder %s (%s on %s)", st.Base(n.Path), parent, share, sv.Name),
+			Since:        n.FoundAt,
+			Details:      details,
+			ResolvedText: fmt.Sprintf("Project folder %s is not inside project folder %s now.", st.Base(n.Path), parent),
 		})
 	}
 }
@@ -290,6 +291,8 @@ func (e *evaluator) addDir(sv *model.Server, sh *model.Share, d *model.Dir, reas
 		Details:  details,
 		Link:     e.link(sv.ID),
 		Urgent:   urgent,
+		// One sentence for the reasons of S4–S7 together.
+		ResolvedText: fmt.Sprintf("Directory %s in share %s on %s agrees with the structure rules now.", d.Name, sh.Name, sv.Name),
 	})
 }
 
