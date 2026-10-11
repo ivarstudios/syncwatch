@@ -299,7 +299,7 @@ func TestSiteTexts(t *testing.T) {
 	}
 
 	// SOL is unreachable from syncwatch at IVAR Office.
-	sol.Status, sol.LastError, sol.DownSince = model.StatusDown, "timeout", now.Add(-10*time.Minute)
+	sol.Status, sol.LastError, sol.DownSince, sol.LastContact = model.StatusDown, "timeout", now.Add(-10*time.Minute), now.Add(-11*time.Minute)
 	h1 := mustFind(t, run(t, c, akka, sol), "H1", "SOL")
 	if h1.Message != "Server SOL (Branch office) is unreachable from IVAR Office: timeout" {
 		t.Fatalf("H1 with sites: %s", h1.Message)
@@ -316,6 +316,13 @@ func TestSiteTexts(t *testing.T) {
 	if got := h1.DetailValue("What AKKA sees"); got != "AKKA is connected to SOL. Thus Syncthing on SOL runs, and the network path from syncwatch to SOL is down." {
 		t.Fatalf("row: %q", got)
 	}
+	// In the first minutes after the last contact, Syncthing can still keep
+	// a connection whose network path is down (a silent cut of the VPN).
+	sol.LastContact = now.Add(-3 * time.Minute)
+	if f := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL"); f.DetailValue("What AKKA sees") != "" {
+		t.Fatal("a row 3 minutes after the last contact")
+	}
+	sol.LastContact = now.Add(-11 * time.Minute)
 	// The connections of a server that is down are old data.
 	akka.Status = model.StatusDown
 	if f := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL"); f.DetailValue("What AKKA sees") != "" {

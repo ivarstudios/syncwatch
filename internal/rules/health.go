@@ -120,11 +120,18 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 	}
 }
 
+// deadLinkTime is how long Syncthing can keep a connection whose network
+// path is down: it closes a connection that receives nothing for 5 minutes
+// (the kit measured 300 to 421 seconds after a silent cut of the VPN).
+const deadLinkTime = 7 * time.Minute
+
 // peerViews gives a row for each other polled server that is up and has a
 // live connection to a server that syncwatch cannot reach: Syncthing on that
-// server runs, and the network path from syncwatch to it is down.
+// server runs, and the network path from syncwatch to it is down. Until
+// syncwatch has had no contact with the server for deadLinkTime, the
+// connection can be one that Syncthing did not close yet: no row.
 func (e *evaluator) peerViews(sv *model.Server) []model.Detail {
-	if sv.MyID == "" {
+	if sv.MyID == "" || sv.LastContact.IsZero() || e.Now.Sub(sv.LastContact) < deadLinkTime {
 		return nil
 	}
 	var out []model.Detail
