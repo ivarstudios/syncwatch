@@ -1,12 +1,12 @@
 package web
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/store"
@@ -107,40 +107,72 @@ func apiError(w http.ResponseWriter, code int, msg string) {
 	_, _ = w.Write(append(b, '\n'))
 }
 
-// apiAuthorized lets a bearer token or a logged-in viewer through to the
-// JSON API, and answers 401 otherwise. The scheme name is not case
-// sensitive (RFC 7235): "bearer" is the same as "Bearer".
-func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request) bool {
+// apiCaller is the caller of an API request that apiAuthorized let through.
+type apiCaller struct {
+	token *store.APIToken // the API token of the request; nil for a session or proxy mode
+	admin bool            // the administrator role: the answer can have notifications.error
+}
+
+// scopeCovers reports whether an API token with the scope have can read an
+// address that needs the scope need: full reads all of /api/v1, ha only
+// /api/v1/ha.
+func scopeCovers(have, need string) bool {
+	return have == store.ScopeFull || (have == store.ScopeHA && need == store.ScopeHA)
+}
+
+// apiAuthorized lets a request through to the JSON API, or answers 401 or
+// 403. need is the scope that the address needs: store.ScopeFull for
+// /api/v1/status, store.ScopeHA for /api/v1/ha. A request with an API token
+// passes when the scope of the API token covers need. A request without one
+// passes only with a logged-in session (administrator or viewer) or in proxy
+// mode: open access shows the dashboard pages, not the API (W-048). The
+// scheme name is not case sensitive (RFC 7235): "bearer" is the same as
+// "Bearer".
+func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request, need string) (apiCaller, bool) {
+	info := s.resolve(r)
+	caller := apiCaller{admin: info.Role == RoleAdmin}
 	if scheme, tok, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
-		want, err := s.st.Secret(store.SecretAPIToken)
-		got := strings.TrimSpace(tok)
-		if err == nil && want != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
-			return true
+		t, err := s.st.APITokenByValue(strings.TrimSpace(tok))
+		if err != nil {
+			s.log.Error("cannot read the API tokens", "err", err)
+			apiError(w, http.StatusInternalServerError, "internal error")
+			return caller, false
 		}
-		// The API tokens of api_tokens (the store moves the single API
-		// token of an older version there at the start), any scope.
-		if t, err := s.st.APITokenByValue(got); err == nil && t != nil {
-			return true
+		if t == nil {
+			ip := clientIP(r)
+			if n := s.logs.count("token "+ip, s.now()); n > 0 {
+				s.log.Warn("API request with an unknown token", "ip", ip, "path", r.URL.Path, "count", n)
+			}
+			w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch"`)
+			apiError(w, http.StatusUnauthorized, "invalid token")
+			return caller, false
 		}
-		ip := clientIP(r)
-		if n := s.logs.count("token "+ip, s.now()); n > 0 {
-			s.log.Warn("API request with an unknown token", "ip", ip, "path", r.URL.Path, "count", n)
+		// The API token is in use, also when its scope refuses the address.
+		s.touchAPIToken(t)
+		if !scopeCovers(t.Scope, need) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch", error="insufficient_scope", scope="`+need+`"`)
+			apiError(w, http.StatusForbidden, "the API token permits only /api/v1/ha")
+			return caller, false
 		}
-		w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch"`)
-		apiError(w, http.StatusUnauthorized, "invalid token")
-		return false
+		caller.token = t
+		return caller, true
 	}
-	if roleAtLeast(s.resolve(r).Role, RoleViewer) {
-		return true
+	if s.cfg.Get().Access.Mode == config.AccessProxy {
+		return caller, true // the reverse proxy controls access
+	}
+	if info.Session != nil && roleAtLeast(info.Role, RoleViewer) {
+		return caller, true
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch"`)
 	apiError(w, http.StatusUnauthorized, "token required")
-	return false
+	return caller, false
 }
 
-// handleAPIStatus serves /api/v1/status to a bearer token, or to a logged-in viewer.
+// handleAPIStatus serves /api/v1/status to an API token with the scope full,
+// a logged-in session or proxy mode.
 func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.apiAuthorized(w, r) {
+	c, ok := s.apiAuthorized(w, r, store.ScopeFull)
+	if !ok {
 		return
 	}
 	v := s.eng.View()
@@ -152,7 +184,7 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 			out.Notifications = apiNotifications{Failing: true, Since: tptr(d.Since.UTC())}
 			// The error text can quote the channel's answer; like the
 			// banner, only admins see it.
-			if s.resolve(r).Role == RoleAdmin {
+			if c.admin {
 				out.Notifications.Error = d.Error
 			}
 		}

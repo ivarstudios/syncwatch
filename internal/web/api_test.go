@@ -495,10 +495,11 @@ func TestAPIHygieneAndRefusalLogs(t *testing.T) {
 }
 
 // The delivery error text can quote the channel's answer, so the API shows
-// it to admins only; viewers, open viewing and token holders get failing
-// and since.
+// it to admins only; viewer sessions and token holders get failing and
+// since. (Open viewing without a token gets no answer at all: W-048.)
 func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
-	e := adminEnv(t, twoServers+"access: {viewer: open}\n")
+	e := adminEnv(t, twoServers+"access: {viewer: password}\n")
+	viewer := e.loginClient("viewer password 1", RoleViewer)
 	e.setDelivery(notify.Delivery{Failing: true, Since: time.Now(), Error: "discord: HTTP 404: Unknown Webhook"})
 	status := func(c *http.Client, bearer string) string {
 		t.Helper()
@@ -520,8 +521,8 @@ func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
 	if body := status(e.http, ""); !strings.Contains(body, "Unknown Webhook") {
 		t.Fatalf("admin session: no error text in %s", body)
 	}
-	if body := status(http.DefaultClient, ""); strings.Contains(body, "Unknown Webhook") {
-		t.Fatal("open viewing sees the error text")
+	if body := status(viewer, ""); strings.Contains(body, "Unknown Webhook") {
+		t.Fatal("a viewer session sees the error text")
 	}
 	if body := status(http.DefaultClient, "swt_test_token"); strings.Contains(body, "Unknown Webhook") {
 		t.Fatal("token holder sees the error text")
@@ -537,16 +538,17 @@ func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
 	}
 }
 
-// W-032: Replace and Revoke acted at once. Each now asks first, in its own
-// form, and the API text names both endpoints and what the answer contains.
-// The replace notice says that the old API token stops working.
+// W-032, for each API token (W-053): Replace and Revoke ask first, in the
+// form of their own button, with the name of the API token. The API text
+// names both endpoints and what the answer contains. The replace notice says
+// that the old value stops working. Add API token asks nothing.
 func TestAPITokenFormsAskFirst(t *testing.T) {
-	e := adminEnv(t, twoServers)
+	e := adminEnv(t, twoServers) // the API token "API token" of the file
 	_, page := e.get("/settings")
 	csrf := csrfRe.FindStringSubmatch(page)[1]
 	api := section(t, page, "api")
-	const replace = `data-confirm="Replace the API token? Home Assistant and scripts with the current API token lose access immediately."`
-	const revoke = `data-confirm="Revoke the API token? Home Assistant and scripts with the current API token lose access immediately."`
+	const replace = `data-confirm="Replace the API token &#34;API token&#34;? The programs with this API token lose access immediately."`
+	const revoke = `data-confirm="Revoke the API token &#34;API token&#34;? The programs with this API token lose access immediately."`
 	for _, want := range []string{replace, revoke, "<code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code>",
 		"The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL."} {
 		if !strings.Contains(api, want) {
@@ -554,20 +556,19 @@ func TestAPITokenFormsAskFirst(t *testing.T) {
 		}
 	}
 	// Each confirmation is on the form of its own button.
-	if a, b, c, d := strings.Index(api, replace), strings.Index(api, `value="generate"`), strings.Index(api, revoke), strings.Index(api, `value="revoke"`); !(a < b && b < c && c < d) {
+	if a, b, c, d := strings.Index(api, replace), strings.Index(api, `value="replace"`), strings.Index(api, revoke), strings.Index(api, `value="revoke"`); !(a >= 0 && a < b && b < c && c < d) {
 		t.Errorf("forms and buttons are not paired: %d %d %d %d", a, b, c, d)
 	}
-	resp, body := e.postPage("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"generate"}})
+	if i := strings.Index(api, `value="add"`); i < 0 || strings.Contains(api[strings.LastIndex(api[:i], "<form"):i], "data-confirm") {
+		t.Error("Add API token asks for a confirmation")
+	}
+	id := e.tokenID("API token")
+	resp, body := e.postPage("/settings/api-tokens", url.Values{"csrf": {csrf}, "op": {"replace"}, "id": {id}})
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "for <code>GET /api/v1/status</code> and <code>GET /api/v1/ha</code>.") {
 		t.Fatalf("new token panel: %d", resp.StatusCode)
 	}
-	if n := e.noticesText(); !strings.Contains(n, "API token replaced: The API token gives read access to /api/v1/status and /api/v1/ha. syncwatch refuses the old API token now.") {
+	if n := e.noticesText(); !strings.Contains(n, `API token replaced: The API token "API token" is replaced. syncwatch refuses the old value now.`) {
 		t.Fatalf("notice: %q", n)
-	}
-	// Without a token, Generate does not ask.
-	e.post("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"revoke"}})
-	if _, page = e.get("/settings"); strings.Contains(section(t, page, "api"), "data-confirm") || !strings.Contains(page, "Generate API token") {
-		t.Fatal("Generate API token asks for a confirmation")
 	}
 }
 
@@ -595,36 +596,55 @@ func TestAPITokenGenerateForm(t *testing.T) {
 	}
 }
 
-// Each change of the API token sends one settings notice (the API token part
-// of TestEverySettingsChangeIsAnnounced).
+// Each change of an API token sends one settings notice about security
+// (C5: Security true), with the name of the API token (the API token part of
+// TestEverySettingsChangeIsAnnounced; W-053).
 func TestAPITokenChangesAreAnnounced(t *testing.T) {
 	e := adminEnv(t, twoServers)
 	csrf := e.csrf("/settings")
-	seen := len(e.noticeList())
-	expect := func(step string, want ...string) {
+	seen := len(e.noticeValues())
+	expect := func(step, title, summary string) {
 		t.Helper()
-		all := e.noticeList()
+		all := e.noticeValues()
 		if len(all) != seen+1 {
-			t.Fatalf("%s: %d notices, want 1: %q", step, len(all)-seen, all[seen:])
+			t.Fatalf("%s: %d notices, want 1: %+v", step, len(all)-seen, all[seen:])
 		}
-		for _, w := range want {
-			if !strings.Contains(all[seen], w) {
-				t.Errorf("%s: notice %q lacks %q", step, all[seen], w)
-			}
+		n := all[seen]
+		if n.Title != title || !strings.HasPrefix(n.Summary, summary+"\nChanged from ") || !n.Security {
+			t.Errorf("%s: notice %+v, want %q, %q and Security", step, n, title, summary)
 		}
 		seen = len(all)
 	}
 	e.post("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"generate"}})
-	expect("token", "API token replaced")
+	expect("old route: generate", "API token replaced", `The API token "API token" is replaced. syncwatch refuses the old value now.`)
 	if msg, isErr := flash(e.post("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"revoke"}})); isErr {
 		t.Fatalf("POST /settings/api-token: %s", msg)
 	}
-	expect("revoke", "API token revoked")
+	expect("old route: revoke", "API token revoked", `The API token "API token" is revoked. syncwatch refuses its value now.`)
+	e.addToken("Home Assistant", store.ScopeHA)
+	expect("add ha", "API token added", `The API token "Home Assistant" is added. It can read /api/v1/ha only.`)
+	e.addToken("Scripts", store.ScopeFull)
+	expect("add full", "API token added", `The API token "Scripts" is added. It can read /api/v1/status and /api/v1/ha.`)
+	e.postPage("/settings/api-tokens", url.Values{"csrf": {csrf}, "op": {"replace"}, "id": {e.tokenID("Home Assistant")}})
+	expect("replace", "API token replaced", `The API token "Home Assistant" is replaced. syncwatch refuses the old value now.`)
+	if msg, isErr := flash(e.post("/settings/api-tokens", url.Values{"csrf": {csrf}, "op": {"revoke"}, "id": {e.tokenID("Scripts")}})); isErr || msg != `The API token "Scripts" is revoked.` {
+		t.Fatalf("revoke: %q %v", msg, isErr)
+	}
+	expect("revoke", "API token revoked", `The API token "Scripts" is revoked. syncwatch refuses its value now.`)
+	// A refused form changes nothing and says nothing.
+	if resp, _ := e.postPage("/settings/api-tokens", url.Values{"csrf": {csrf}, "op": {"revoke"}, "id": {"00000000"}}); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("revoke of an unknown ID: %d", resp.StatusCode)
+	}
+	if all := e.noticeValues(); len(all) != seen {
+		t.Fatalf("a refused form sent a notice: %+v", all[seen:])
+	}
 }
 
 // W-030 for the API token: after the secret key changed, Settings showed the
 // API token as "set" although syncwatch could not decrypt it (the API token
-// part of TestUndecryptableSecretsAreNotShownAsSet).
+// part of TestUndecryptableSecretsAreNotShownAsSet). The store keeps an API
+// token of an older version that it cannot decrypt (it cannot move it into
+// api_tokens): the API card says so and has a button that deletes it (W-053).
 func TestUndecryptableAPITokenIsNotShownAsSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syncwatch.db")
 	keyA, keyB := make([]byte, 32), make([]byte, 32)
@@ -648,12 +668,28 @@ func TestUndecryptableAPITokenIsNotShownAsSet(t *testing.T) {
 		t.Fatalf("login: %d", r.StatusCode)
 	}
 	_, page := e.get("/settings")
-	if a := section(t, page, "api"); !strings.Contains(a, "API token: <span class=\"c-err\">set, but syncwatch cannot decrypt it: the secret key changed. Replace the API token or restore the old secret key</span>.") {
+	a := section(t, page, "api")
+	if !strings.Contains(a, `<p class="c-err">An API token of an older version is stored, but syncwatch cannot decrypt it. Revoke it.</p>`) ||
+		!strings.Contains(a, `value="revoke-old" class="danger">Revoke old API token</button>`) || !strings.Contains(a, "<p>There are no API tokens.</p>") {
 		t.Errorf("API token: %s", a)
 	}
-	// An API token that syncwatch can decrypt is "set" as before.
+	if resp, _ := e.apiGet("/api/v1/status", "Bearer swt_x", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("the value of the old API token: %d", resp.StatusCode)
+	}
+	msg, isErr := flash(e.post("/settings/api-tokens", url.Values{"csrf": {e.csrf("/settings")}, "op": {"revoke-old"}}))
+	if isErr || msg != "The API token of an older version is revoked." || st.HasSecret(store.SecretAPIToken) {
+		t.Fatalf("revoke the old API token: %q %v, secret kept %v", msg, isErr, st.HasSecret(store.SecretAPIToken))
+	}
+	if n := e.noticeValues(); len(n) != 1 || n[0].Title != "API token revoked" || !n[0].Security {
+		t.Fatalf("notice: %+v", n)
+	}
+	if _, page = e.get("/settings"); strings.Contains(section(t, page, "api"), "older version") {
+		t.Error("the API card still shows the old API token")
+	}
+	// An API token that syncwatch can decrypt is in the list, without the
+	// line of the old API token.
 	_, page = adminEnv(t, twoServers).get("/settings")
-	if a := section(t, page, "api"); strings.Contains(a, "cannot decrypt") || !strings.Contains(a, "API token: <strong>set</strong>.") {
-		t.Errorf("a readable API token is not shown as set: %s", a)
+	if a := section(t, page, "api"); strings.Contains(a, "older version") || !strings.Contains(a, "<td><strong>API token</strong></td><td>Full: /api/v1/status and /api/v1/ha</td>") {
+		t.Errorf("a readable API token is not in the list: %s", a)
 	}
 }

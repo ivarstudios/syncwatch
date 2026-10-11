@@ -1,30 +1,60 @@
-{{/* The API parts of the Settings page. Both read the page data of "settings": .Data.API (apiSettings), .Data.NewToken and .CSRF. */}}
+{{/* The API parts of the Settings page. Both read the page data of "settings": .Data.API (apiSettings), .Data.NewToken (newAPIToken) and .CSRF. */}}
 {{define "settings-api-new-token"}}{{with .Data.NewToken}}
 <section class="card flash ok" role="status">
   <h2>New API token</h2>
-  <p>Copy the token now. syncwatch does not show it again.</p>
-  <p class="mono token">{{.}}</p>
-  <p class="small">Use it as <code>Authorization: Bearer &lt;token&gt;</code> for <code>GET /api/v1/status</code> and <code>GET /api/v1/ha</code>.</p>
+  <p>Copy the value of the API token "{{.Name}}" now. syncwatch does not show it again.</p>
+  <p class="mono token">{{.Value}}</p>
+  <p class="small">Use it as <code>Authorization: Bearer &lt;token&gt;</code> for {{if eq .Scope "ha"}}<code>GET /api/v1/ha</code>{{else}}<code>GET /api/v1/status</code> and <code>GET /api/v1/ha</code>{{end}}.</p>
 </section>
 {{end}}{{end}}
 
 {{define "settings-api"}}{{$api := .Data.API}}{{$csrf := .CSRF}}
 <section class="card" id="api">
   <h2>JSON status API</h2>
-  <p>Send <code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>. The API is read-only. The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL. API token: {{if $api.TokenLost}}<span class="c-err">set, but syncwatch cannot decrypt it: the secret key changed. Replace the API token or restore the old secret key</span>{{else if $api.HasToken}}<strong>set</strong>{{else}}not set{{end}}.</p>
-  {{if $api.HasToken}}
-  <div class="actions">
-    <form method="post" action="/settings/api-token" class="inline" data-confirm="Replace the API token? Home Assistant and scripts with the current API token lose access immediately.">
-      <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="generate">Replace API token</button>
-    </form>
-    <form method="post" action="/settings/api-token" class="inline" data-confirm="Revoke the API token? Home Assistant and scripts with the current API token lose access immediately.">
-      <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="revoke" class="danger">Revoke API token</button>
-    </form>
-  </div>
+  <p>Send <code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>. The API is read-only. The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL.</p>
+  <p>Give each program its own API token. An API token with the scope Home Assistant reads only <code>/api/v1/ha</code>: the names, states and numbers of the servers, without device IDs, addresses and paths. You can replace or revoke each API token alone.</p>
+  {{with $api.Error}}<p id="api-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
+  {{if $api.Tokens}}
+  <div class="scroll"><table class="list">
+    <thead><tr><th>Name</th><th>Scope</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+    {{range $api.Tokens}}
+    <tr>
+      <td><strong>{{.Name}}</strong></td><td>{{.ScopeLabel}}</td><td class="nowrap">{{.Created}}</td><td class="nowrap">{{.LastUsed}}</td>
+      <td>
+        <form method="post" action="/settings/api-tokens" class="inline" data-confirm="{{.ReplaceConfirm}}">
+          <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" name="op" value="replace">Replace</button>
+        </form>
+        <form method="post" action="/settings/api-tokens" class="inline" data-confirm="{{.RevokeConfirm}}">
+          <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" name="op" value="revoke" class="danger">Revoke</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
   {{else}}
-  <form method="post" action="/settings/api-token" class="inline">
-    <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="generate">Generate API token</button>
+  <p>There are no API tokens.</p>
+  {{end}}
+  {{if $api.Old}}
+  <p class="c-err">{{if $api.OldLost}}An API token of an older version is stored, but syncwatch cannot decrypt it. Revoke it.{{else}}An API token of an older version is stored. syncwatch does not accept it. Revoke it.{{end}}</p>
+  <form method="post" action="/settings/api-tokens" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="revoke-old" class="danger">Revoke old API token</button>
   </form>
+  {{end}}
+  {{if $api.CanAdd}}
+  <h3>Add API token</h3>
+  <form method="post" action="/settings/api-tokens" class="grid-form">
+    <input type="hidden" name="csrf" value="{{$csrf}}">
+    <label>Name (at most {{$api.MaxName}} characters) <input name="name" value="{{$api.Name}}" maxlength="{{$api.MaxName}}" required placeholder="Home Assistant"></label>
+    <label>Scope <select name="scope">
+      <option value="ha" {{if eq $api.Scope "ha"}}selected{{end}}>Home Assistant: /api/v1/ha only</option>
+      <option value="full" {{if eq $api.Scope "full"}}selected{{end}}>Full: /api/v1/status and /api/v1/ha</option>
+    </select></label>
+    <div class="actions"><button type="submit" name="op" value="add">Add API token</button></div>
+  </form>
+  {{else}}
+  <p class="muted">There are {{$api.Max}} API tokens. Revoke an API token before you add an API token.</p>
   {{end}}
 </section>
 {{end}}

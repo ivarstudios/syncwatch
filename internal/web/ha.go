@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
 // haServer is one server's values for Home Assistant's RESTful sensors:
@@ -42,9 +43,9 @@ func mbPerS(bytesPerS float64) float64 { return math.Round(bytesPerS/1e4) / 1e2 
 
 // handleAPIHA serves /api/v1/ha: per server whether Syncthing runs, its
 // overall sync status, the data moved in the last 24 hours and 7 days, and
-// the current transfer rate. Same access as /api/v1/status.
+// the current transfer rate. Every API token can read it.
 func (s *Server) handleAPIHA(w http.ResponseWriter, r *http.Request) {
-	if !s.apiAuthorized(w, r) {
+	if _, ok := s.apiAuthorized(w, r, store.ScopeHA); !ok {
 		return
 	}
 	now := s.now()
