@@ -111,8 +111,10 @@
     {{with index $d.Errors "notifications"}}<p id="notifications-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
     <div class="actions"><button type="submit">Save</button></div>
   </form>
-  <form method="post" action="/settings/notifications/test"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
-  {{if $d.HasNoticesWebhook}}<form method="post" action="/settings/notifications/test-notices"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test settings notice</button></form>{{end}}
+  <div class="actions">
+    <form method="post" action="/settings/notifications/test" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
+    {{if $d.HasNoticesWebhook}}<form method="post" action="/settings/notifications/test-notices" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test settings notice</button></form>{{end}}
+  </div>
   {{if $d.Log}}
   <details data-key="notify-log"><summary>Recent notifications</summary>
     <table class="list small"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>Result</th><th>Title</th></tr></thead><tbody>

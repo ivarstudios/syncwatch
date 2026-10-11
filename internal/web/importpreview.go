@@ -214,6 +214,8 @@ func (s *Server) buildImportPreview(data []byte, old, c *config.Config) *importP
 		switch k.key {
 		case "access":
 			effect = strings.Join(accessEffects(old, c), " ")
+		case "devices":
+			effect = "H11 is on again for each device."
 		case "site", "timezone", "public_url":
 			effect = "The value changes to " + orNone(importSection(rc, k.key).(string)) + "."
 		default:

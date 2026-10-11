@@ -917,6 +917,15 @@ func TestDevicesForm(t *testing.T) {
 	if e.cfg.Get().Thresholds.RelayLost.String() != "1h" {
 		t.Fatal("a refused save changed relay_lost")
 	}
+
+	// The preview of a file without devices says what that does.
+	if msg, isErr := save(relayPC); isErr {
+		t.Fatal(msg)
+	}
+	_, body, _ := impPreview(e, csrf, "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\nthresholds: {relay_lost: 1h}\n")
+	if !strings.Contains(body, "<li>Devices: not in the file. H11 is on again for each device.</li>") {
+		t.Fatalf("preview: %s", section(t, body, "import"))
+	}
 }
 
 // W-039: the settings notices name each setting by its label. The settings
