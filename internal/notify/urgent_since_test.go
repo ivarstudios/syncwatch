@@ -29,7 +29,7 @@ func TestDebounceCountsFromBecomingUrgent(t *testing.T) {
 	if m := r.sender.take(); len(m) != 0 {
 		t.Fatalf("pinged within the debounce of becoming urgent: %s", m[0].Title)
 	}
-	r.at(local(2026, 10, 6, 12, 6))
+	r.at(local(2026, 10, 6, 12, 6).Add(holdUrgent))
 	m := r.sender.take()
 	if len(m) != 1 || m[0].Kind != KindUrgent {
 		t.Fatalf("want one urgent message after the debounce, got %d", len(m))

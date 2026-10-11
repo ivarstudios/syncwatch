@@ -123,12 +123,17 @@ func escapeMD(s string) string {
 }
 
 func findingLine(r *store.Record, url string) string {
+	return findingText(r) + detailsLink(url, r.ID)
+}
+
+// findingText is the line of a finding without its link.
+func findingText(r *store.Record) string {
 	checks := strings.Join(r.Checks, "+")
 	line := fmt.Sprintf("%s **%s** %s", Icon(r.Severity), checks, escapeMD(clip(r.Message, 280)))
 	if r.Stale {
 		line += " _(no current data, last known state)_"
 	}
-	return line + detailsLink(url, r.ID)
+	return line
 }
 
 // detailsLink links a finding on the dashboard's Findings page.
@@ -137,10 +142,6 @@ func detailsLink(url, id string) string {
 		return ""
 	}
 	return fmt.Sprintf(" — [details](%s/problems#f-%s)", strings.TrimRight(url, "/"), id)
-}
-
-func resolvedLine(r *store.Record) string {
-	return fmt.Sprintf("✅ **%s** %s", strings.Join(r.Checks, "+"), escapeMD(clip(r.Message, 280)))
 }
 
 func historyLine(h store.HistoryEntry, resolved bool) string {

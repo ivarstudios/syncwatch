@@ -133,7 +133,7 @@ func TestDebounceBatchResolve(t *testing.T) {
 	if m := r.sender.take(); len(m) != 0 {
 		t.Fatalf("sent before debounce: %v", m[0].Title)
 	}
-	r.at(local(2026, 10, 6, 10, 5))
+	r.at(local(2026, 10, 6, 10, 5).Add(holdUrgent)) // due at 10:05, then the hold window
 	msgs := r.sender.take()
 	if len(msgs) != 1 {
 		t.Fatalf("want one batched message, got %d", len(msgs))
@@ -239,9 +239,10 @@ func TestFailingChannelBacksOff(t *testing.T) {
 		err  error
 		want int
 	}{
-		// 10:05, :06, :08, :12, :20 and :36 (back-off 1, 2, 4, 8, 16, 30 min).
+		// 10:06, :07, :09, :13, :21 and :37 (back-off 1, 2, 4, 8, 16, 30 min; due at
+		// 10:05, the first try is the first tick after the hold window).
 		{&httpError{code: 404, text: "Unknown Webhook"}, 6},
-		// 10:05, :06, :08, :12, then every 5 minutes until 11:02.
+		// 10:06, :07, :09, :13, then every 5 minutes until 11:03.
 		{&httpError{code: 502}, 14},
 	} {
 		r := newRig(t, start, "AKKA")
@@ -266,7 +267,7 @@ func TestFailingChannelBacksOff(t *testing.T) {
 		r.at(start.Add(time.Duration(m) * time.Minute))
 	}
 	d := r.n.Delivery()
-	if !d.Failing || !d.Since.Equal(local(2026, 10, 6, 10, 5)) || !strings.Contains(d.Error, "404") {
+	if !d.Failing || !d.Since.Equal(local(2026, 10, 6, 10, 6)) || !strings.Contains(d.Error, "404") {
 		t.Fatalf("delivery state: %+v", d)
 	}
 	// Replacing the channel clears the old channel's failure from the banner.
@@ -473,7 +474,7 @@ func TestDiscordEscapesNames(t *testing.T) {
 	}
 	// A Windows path keeps its backslashes, escaped for Discord.
 	rec.Message = `Sync stopped for X on SOL: D:\Share\LIVE-*1*`
-	if desc := d.Payload(ResolvedMessage(cfg, []*store.Record{rec})).Embeds[0].Description; !strings.Contains(desc, `D:\\Share\\LIVE-\*1\*`) {
+	if desc := d.Payload(ResolvedMessage(cfg, []*store.Record{rec}, nil)).Embeds[0].Description; !strings.Contains(desc, `D:\\Share\\LIVE-\*1\*`) {
 		t.Errorf("Windows path in the description: %s", desc)
 	}
 }
@@ -735,7 +736,7 @@ func TestRejectedNoticeIsDropped(t *testing.T) {
 	}
 	r.setDown("AKKA", true)
 	r.at(start)
-	r.at(local(2026, 10, 6, 10, 5))
+	r.at(local(2026, 10, 6, 10, 5).Add(holdUrgent))
 	if msgs := sel.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
 		t.Fatalf("urgent ping held up by a rejected notice: %+v", msgs)
 	}
@@ -771,7 +772,8 @@ func TestFailingNoticeDoesNotHoldUpUrgent(t *testing.T) {
 	if n := sel.tried(KindNotice); n != 3 { // two first attempts, one retry
 		t.Fatalf("notices tried %d times in the tick; want one retry", n)
 	}
-	r.at(local(2026, 10, 6, 10, 5))
+	due := local(2026, 10, 6, 10, 5).Add(holdUrgent) // after the hold window
+	r.at(due)
 	if msgs := sel.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
 		t.Fatalf("urgent ping held up by a failing notice: %+v", msgs)
 	}
@@ -786,11 +788,11 @@ func TestFailingNoticeDoesNotHoldUpUrgent(t *testing.T) {
 	sel.mu.Lock()
 	sel.failKind = ""
 	sel.mu.Unlock()
-	r.at(local(2026, 10, 6, 10, 5).Add(30 * time.Second))
+	r.at(due.Add(30 * time.Second))
 	if n := sel.tried(KindNotice); n != 4 {
 		t.Fatalf("retried within the back-off: %d attempts", n)
 	}
-	r.at(local(2026, 10, 6, 10, 6))
+	r.at(due.Add(time.Minute))
 	if msgs := sel.take(); len(msgs) != 2 || msgs[0].Kind != KindNotice || msgs[1].Kind != KindNotice {
 		t.Fatalf("after the back-off: %+v", msgs)
 	}
@@ -860,7 +862,7 @@ func TestStaleFailureDoesNotUndoChannelChange(t *testing.T) {
 	r.n.SetSenders(func() []Sender { return []Sender{slow} })
 	r.setDown("AKKA", true)
 	r.at(start)
-	r.now = local(2026, 10, 6, 10, 5)
+	r.now = local(2026, 10, 6, 10, 5).Add(holdUrgent) // after the hold window
 	r.eng.Evaluate()
 	done := make(chan struct{})
 	go func() {
@@ -920,6 +922,7 @@ func TestResolveHysteresisDuringFlapping(t *testing.T) {
 		r.now = start.Add(time.Duration(m) * time.Minute)
 		r.setDown("AKKA", m%10 < 6)
 		r.at(r.now)
+		r.at(r.now.Add(holdUrgent)) // the timer at the end of a hold window
 		for _, msg := range r.sender.take() {
 			counts[msg.Kind]++
 		}
@@ -940,7 +943,7 @@ func TestResolveHysteresisDuringFlapping(t *testing.T) {
 	r.now = local(2026, 10, 6, 12, 10)
 	r.setDown("AKKA", true)
 	r.at(r.now)
-	r.at(local(2026, 10, 6, 12, 15))
+	r.at(local(2026, 10, 6, 12, 15).Add(holdUrgent))
 	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Kind != KindUrgent {
 		t.Fatalf("new outage after a settled resolution: %+v", msgs)
 	}
@@ -1098,7 +1101,7 @@ func TestReminderSkipsRecentlyAnnounced(t *testing.T) {
 	}
 	r.setDown("AKKA", true)
 	r.at(r.now)
-	r.at(local(2026, 10, 6, 7, 59))
+	r.at(local(2026, 10, 6, 7, 59).Add(holdUrgent))
 	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
 		t.Fatalf("ping at 07:59: %+v", m)
 	}

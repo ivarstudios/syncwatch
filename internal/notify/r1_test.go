@@ -49,7 +49,7 @@ func TestOvernightSkipsEarlierAnnouncedOccurrence(t *testing.T) {
 	r := newRig(t, utc(19, 0), "AKKA")
 	r.setDown("AKKA", true)
 	r.at(utc(19, 0))
-	r.at(utc(19, 5))
+	r.at(utc(19, 5).Add(holdUrgent))
 	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
 		t.Fatalf("urgent message: %+v", m)
 	}
@@ -141,7 +141,7 @@ func TestCatchUpAfterFailure(t *testing.T) {
 	r.sender.fail(&httpError{code: 502})
 	r.setDown("AKKA", true)
 	r.at(local(2026, 10, 6, 10, 0))
-	r.at(local(2026, 10, 6, 10, 5)) // due: the urgent message fails
+	r.at(local(2026, 10, 6, 10, 5).Add(holdUrgent)) // due: the urgent message fails
 	r.now = local(2026, 10, 6, 10, 20)
 	r.setDown("AKKA", false) // resolved before anybody heard of it
 	r.at(r.now)
@@ -182,7 +182,7 @@ func TestCatchUpWithUrgentAfterNewWebhook(t *testing.T) {
 	r.n.SetSenders(func() []Sender { return []Sender{dead} })
 	r.setDown("AKKA", true)
 	r.at(local(2026, 10, 6, 10, 0))
-	r.at(local(2026, 10, 6, 10, 5))
+	r.at(local(2026, 10, 6, 10, 5).Add(holdUrgent))
 	r.now = local(2026, 10, 6, 10, 10)
 	r.setDown("AKKA", false)
 	r.setDown("SOL", true)
@@ -209,7 +209,7 @@ func TestCatchUpAndOvernightListEachOccurrenceOnce(t *testing.T) {
 	r.sender.fail(&httpError{code: 500})
 	r.setDown("AKKA", true)
 	r.at(local(2026, 10, 6, 21, 0))
-	r.at(local(2026, 10, 6, 21, 5)) // due: fails
+	r.at(local(2026, 10, 6, 21, 5).Add(holdUrgent)) // due: fails
 	r.now = local(2026, 10, 6, 21, 30)
 	r.setDown("AKKA", false)
 	r.at(r.now)
@@ -477,7 +477,7 @@ func TestCatchUpSurvivesTestMessage(t *testing.T) {
 	r.setDown("AKKA", true)
 	r.setDown("SOL", true)
 	r.at(local(2026, 10, 6, 10, 0))
-	r.at(local(2026, 10, 6, 10, 5)) // both due: the urgent message fails
+	r.at(local(2026, 10, 6, 10, 5).Add(holdUrgent)) // both due: the urgent message fails
 	for _, rec := range r.eng.View().Open {
 		if rec.Server == "sol" {
 			if err := r.eng.Ignore(rec.ID, "planned work", "admin"); err != nil {

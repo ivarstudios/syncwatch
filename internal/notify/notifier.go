@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ type Source interface {
 	View() *engine.View
 	MarkPinged(ids []string, at time.Time)
 	MarkResolvedNotified(ids []string, at time.Time)
+	MarkRepeated(ids []string, at time.Time)
 }
 
 // Settings keys for schedule markers.
@@ -31,7 +31,8 @@ const (
 	keyOvernight = "notify.overnight_done"
 	keyReminder  = "notify.last_reminder"
 	keyWeekly    = "notify.last_weekly"
-	keyAnnounced = "notify.announced" // see announcedRun
+	keyAnnounced = "notify.announced"    // see announcedRun
+	keyKept      = "notify.kept_notices" // see pendingNotice
 )
 
 // Notifier decides what to send and when.
@@ -41,39 +42,69 @@ type Notifier struct {
 	cfg     *config.Holder
 	log     *slog.Logger
 	senders func() []Sender
-	now     func() time.Time
-	wake    chan struct{}
-	started time.Time // first tick, for the start-up grace
+	// noticeSenders builds the channel for settings notices: the webhook
+	// for settings notices, or nothing (then the notices go to senders).
+	noticeSenders func() []Sender
+	now           func() time.Time
+	wake          chan struct{}
+	started       time.Time // first tick, for the start-up grace
 
 	mu        sync.Mutex
 	httpProxy *http.Client
 	runs      []announcedRun // under mu; read from the store at first use
 	runsRead  bool
 
-	dmu       sync.Mutex
-	delivered map[string]map[string]bool // message key → channels that already have it
-	gen       int                        // bumped by ChannelsChanged: a failure from before it is an old channel's
-	failures  int                        // failed ticks in a row, for the back-off
-	retryAt   time.Time
-	state     Delivery
-	missed    time.Time         // first failure since the last catch-up; see missedBlips
-	lastErr   map[string]string // channel → error already in the notification log
-	notices   []pendingNotice   // settings notices that couldn't be delivered yet
-	noticeSeq int
+	dmu        sync.Mutex
+	delivered  map[string]map[string]bool // message key → channels that already have it
+	gen        int                        // bumped by ChannelsChanged: a failure from before it is an old channel's
+	failures   int                        // failed ticks in a row, for the back-off
+	retryAt    time.Time
+	state      Delivery
+	missed     time.Time         // first failure since the last catch-up; see missedBlips
+	lastErr    map[string]string // channel → error already in the notification log
+	notices    []pendingNotice   // settings notices that wait for a channel; see keptRead
+	keptRead   bool              // notices holds the list stored before the start
+	noticeSeq  int
+	own        ownChannel // the state of the webhook for settings notices
+	noticesErr bool       // the error of reading that webhook is in the log
+	hold       *time.Timer
+	holdUntil  time.Time // the end of the hold window of an urgent message; see holdUrgent
 }
 
-// pendingNotice is a settings notice whose first delivery failed. It is
-// retried with the regular messages, to the channels configured then.
+// ownChannel is the delivery state of the webhook for settings notices. Its
+// failures have their own back-off and never show in Delivery, which is
+// about the channel of the findings.
+type ownChannel struct {
+	failures int
+	retryAt  time.Time
+	since    time.Time // first failure in the current run of failures
+}
+
+// pendingNotice is a settings notice whose first delivery failed. It waits
+// for a channel that accepts it: the channels configured at each retry.
+// The list is stored in the settings (keyKept), thus a restart keeps it.
 type pendingNotice struct {
-	m      Message
-	giveUp time.Time
+	Key      string    `json:"key"`
+	Title    string    `json:"title"`
+	Summary  string    `json:"summary"`
+	Security bool      `json:"security,omitempty"`
+	At       time.Time `json:"at"` // the time of the change
+	// GiveUp is when a notice that is not about security is dropped; zero
+	// for a security notice, which is kept until a channel accepts it.
+	GiveUp time.Time `json:"give_up,omitzero"`
 }
 
-// Settings notices are retried for a day, at most this many at a time.
+// Settings notices that are not about security are retried for a day. At
+// most maxNotices wait at a time: the oldest one that is not about security
+// goes first.
 const (
 	noticeRetryFor = 24 * time.Hour
 	maxNotices     = 50
 )
+
+// A kept security notice also goes to the channel of the findings when the
+// webhook for settings notices fails for longer than this.
+const noticeFallbackAfter = time.Hour
 
 // Delivery is whether notifications currently reach their channels, for
 // the dashboard banner and the status API.
@@ -99,18 +130,23 @@ type Notice struct {
 func (n *Notifier) Delivery() Delivery {
 	n.dmu.Lock()
 	defer n.dmu.Unlock()
-	return n.state
+	n.readKept()
+	d := n.state
+	d.NoticesKept = len(n.notices)
+	return d
 }
 
 // ChannelsChanged is called when notification channels were replaced: the
 // next tick tries again at once instead of waiting out the back-off, and an
-// old channel's failure no longer shows in the banner.
+// old channel's failure no longer shows in the banner. This also holds for
+// the webhook for settings notices.
 func (n *Notifier) ChannelsChanged() {
 	n.dmu.Lock()
 	n.gen++
 	n.failures, n.retryAt = 0, time.Time{}
 	n.state = Delivery{}
 	n.lastErr = map[string]string{}
+	n.own = ownChannel{}
 	n.dmu.Unlock()
 	n.Wake()
 }
@@ -155,11 +191,17 @@ func New(src Source, st *store.Store, cfg *config.Holder, log *slog.Logger) *Not
 	n := &Notifier{src: src, st: st, cfg: cfg, log: log, now: time.Now, wake: make(chan struct{}, 1),
 		delivered: map[string]map[string]bool{}, lastErr: map[string]string{}}
 	n.senders = n.defaultSenders
+	n.noticeSenders = n.defaultNoticeSenders
 	return n
 }
 
 // SetSenders replaces how senders are built (for tests).
 func (n *Notifier) SetSenders(fn func() []Sender) { n.senders = fn }
+
+// SetNoticeSenders replaces how the channel for settings notices is built
+// (for tests). A function that returns nothing sends the notices to the
+// senders of SetSenders.
+func (n *Notifier) SetNoticeSenders(fn func() []Sender) { n.noticeSenders = fn }
 
 // SetHTTPClient sets the HTTP client used for Discord (for tests).
 func (n *Notifier) SetHTTPClient(c *http.Client) { n.httpProxy = c }
@@ -178,15 +220,46 @@ func (n *Notifier) defaultSenders() []Sender {
 	return out
 }
 
+// defaultNoticeSenders builds the channel of the webhook for settings
+// notices, when one is set. It never mentions the role.
+func (n *Notifier) defaultNoticeSenders() []Sender {
+	u, err := n.st.Secret(store.SecretNoticesWebhook)
+	n.dmu.Lock()
+	logged := n.noticesErr
+	n.noticesErr = err != nil
+	n.dmu.Unlock()
+	if err != nil {
+		if !logged { // the kept notices try again each minute
+			n.log.Error("cannot read the Discord webhook for settings notices", "err", err)
+		}
+		return []Sender{&brokenChannel{name: channelNotices, err: errNoticesUndecryptable}}
+	}
+	if u == "" {
+		return nil
+	}
+	return []Sender{&Discord{URL: u, HTTP: n.httpProxy, Channel: channelNotices}}
+}
+
 // errUndecryptable is the failure of every send while the stored webhook
 // cannot be decrypted.
 var errUndecryptable error = unusableError("syncwatch cannot decrypt the Discord webhook: check the secret key")
 
-// brokenChannel stands in for the Discord channel while its webhook can't
-// be read. Every send fails with the reason.
-type brokenChannel struct{ err error }
+// errNoticesUndecryptable is the same for the webhook for settings notices.
+var errNoticesUndecryptable error = unusableError("syncwatch cannot decrypt the Discord webhook for settings notices: check the secret key")
 
-func (b *brokenChannel) Name() string { return "discord" }
+// brokenChannel stands in for a Discord channel while its webhook can't be
+// read. Every send fails with the reason.
+type brokenChannel struct {
+	name string // "" is discord
+	err  error
+}
+
+func (b *brokenChannel) Name() string {
+	if b.name != "" {
+		return b.name
+	}
+	return channelDiscord
+}
 
 func (b *brokenChannel) Send(context.Context, Message) error { return b.err }
 
@@ -220,16 +293,28 @@ func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	if n.started.IsZero() {
 		n.started = now
 	}
+	// Settings notices go out at once, also during quiet hours. With their
+	// own webhook they have their own back-off: a failure there does not
+	// hold up the messages about findings.
+	var own []Sender
+	if len(n.keptNotices()) > 0 {
+		if own = n.noticeSenders(); len(own) > 0 {
+			n.retryOwnNotices(ctx, now, own)
+		}
+	}
 	n.dmu.Lock()
 	wait, gen := now.Before(n.retryAt), n.gen
 	n.dmu.Unlock()
 	if wait {
 		return
 	}
-	// Settings notices go out at once, also during quiet hours. One that
-	// can't be sent doesn't hold up the urgent messages: its failure counts
-	// once the rest of the tick is done.
-	nerr := n.retryNotices(ctx, now)
+	// Without their own webhook, a notice that can't be sent doesn't hold
+	// up the urgent messages: its failure counts once the rest of the tick
+	// is done.
+	var nerr error
+	if len(own) == 0 {
+		nerr = n.retryNotices(ctx, now)
+	}
 	cfg := n.cfg.Get()
 	loc := cfg.Location()
 	local := now.In(loc)
@@ -246,6 +331,10 @@ func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	}
 	if !quiet {
 		if err := n.urgent(ctx, cfg, v, now); err != nil {
+			n.fail(now, gen, err)
+			return
+		}
+		if err := n.repeat(ctx, cfg, n.src.View(), now); err != nil {
 			n.fail(now, gen, err)
 			return
 		}
@@ -284,14 +373,22 @@ func (n *Notifier) fail(now time.Time, gen int, err error) {
 		return
 	}
 	n.failures++
+	d := backoff(n.failures, err)
+	n.retryAt = now.Add(d)
+	if n.state.Failing {
+		n.state.NextTry = n.retryAt
+	}
+	n.dmu.Unlock()
+	n.log.Warn("cannot send the notification", "err", err, "retry_in", d)
+}
+
+// backoff is the wait after the given number of failed tries in a row.
+func backoff(failures int, err error) time.Duration {
 	limit := 30 * time.Minute
 	if transient(err) {
 		limit = 5 * time.Minute
 	}
-	d := min(time.Minute<<min(n.failures-1, 5), limit)
-	n.retryAt = now.Add(d)
-	n.dmu.Unlock()
-	n.log.Warn("cannot send the notification", "err", err, "retry_in", d)
+	return min(time.Minute<<min(failures-1, 5), limit)
 }
 
 // debounce is the shortest debounce of a record's urgent checks.
@@ -354,8 +451,48 @@ func ids(rs []*store.Record) []string {
 	return out
 }
 
+// holdUrgent is how long an urgent message waits after the first of its
+// findings fell due, so that findings that fall due seconds apart (the
+// AKKA and SOL findings of one directory) share one message and one
+// mention. A timer wakes the notifier at the end of the wait.
+const holdUrgent = 10 * time.Second
+
+// dueAt is when the urgent message of a finding falls due.
+func dueAt(cfg *config.Config, r *store.Record) time.Time {
+	return r.UrgentFrom().Add(debounce(cfg, r))
+}
+
+// holding reports whether the urgent message for due waits for more
+// findings, and arms the timer that ends the wait.
+func (n *Notifier) holding(cfg *config.Config, due []*store.Record, now time.Time) bool {
+	if len(due) == 0 {
+		return false
+	}
+	first := dueAt(cfg, due[0])
+	for _, r := range due[1:] {
+		if t := dueAt(cfg, r); t.Before(first) {
+			first = t
+		}
+	}
+	until := first.Add(holdUrgent)
+	if !now.Before(until) {
+		return false
+	}
+	n.dmu.Lock()
+	defer n.dmu.Unlock()
+	if n.hold != nil {
+		n.hold.Stop()
+	}
+	n.holdUntil = until
+	n.hold = time.AfterFunc(until.Sub(now), n.Wake)
+	return true
+}
+
 func (n *Notifier) urgent(ctx context.Context, cfg *config.Config, v *engine.View, now time.Time) error {
 	due := dueRecords(cfg, v, now)
+	if n.holding(cfg, due, now) {
+		return nil // the catch-up goes with them
+	}
 	n.dmu.Lock()
 	since, failing := n.missed, n.state.Failing
 	n.dmu.Unlock()
@@ -431,7 +568,7 @@ func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Ti
 		return nil
 	}
 	engine.SortRecords(pend)
-	m := ResolvedMessage(cfg, pend)
+	m := ResolvedMessage(cfg, pend, n.gaps())
 	m.Key = "resolved:" + strings.Join(ids(pend), ",")
 	if err := n.send(ctx, now, m); err != nil {
 		return err
@@ -439,6 +576,57 @@ func (n *Notifier) resolved(ctx context.Context, cfg *config.Config, now time.Ti
 	n.src.MarkResolvedNotified(ids(pend), now)
 	n.remember(now, resolvedRuns(pend))
 	return nil
+}
+
+// repeat sends the urgent message again for the urgent ERROR findings of a
+// server that stay open (notifications.repeat_urgent; 0 is off): every
+// interval after the urgent message or the last repeat. Snoozed, ignored
+// and stale findings are not repeated, and nothing goes out in the quiet
+// hours: a repeat that falls due there goes out at their end.
+func (n *Notifier) repeat(ctx context.Context, cfg *config.Config, v *engine.View, now time.Time) error {
+	due := repeatDue(cfg, v, now)
+	if len(due) == 0 {
+		return nil
+	}
+	m := RepeatMessage(cfg, due, now)
+	m.Key = "repeat:" + strings.Join(ids(due), ",")
+	if err := n.send(ctx, now, m); err != nil {
+		return err
+	}
+	n.src.MarkRepeated(ids(due), now)
+	return nil
+}
+
+// repeatDue returns the findings whose urgent message falls due again: open
+// urgent ERROR findings of one server that are not stale, snoozed or
+// ignored, announced at least one interval ago.
+func repeatDue(cfg *config.Config, v *engine.View, now time.Time) []*store.Record {
+	every := cfg.Notify.RepeatUrgent.D()
+	if every <= 0 {
+		return nil
+	}
+	var due []*store.Record
+	for _, r := range v.Open {
+		if !r.Urgent || r.Severity != model.Error || r.Server == "" || r.Stale || !r.Open() || r.PingedAt.IsZero() {
+			continue
+		}
+		if _, z := v.Snoozed(r.ID, now); z {
+			continue
+		}
+		if now.Sub(announcedAt(r)) >= every {
+			due = append(due, r)
+		}
+	}
+	return due
+}
+
+// announcedAt is the time of the last message with the role mention for a
+// finding: its urgent message or the last repeat.
+func announcedAt(r *store.Record) time.Time {
+	if r.RepeatedAt.After(r.PingedAt) {
+		return r.RepeatedAt
+	}
+	return r.PingedAt
 }
 
 func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.View, q quietHours, now time.Time) error {
@@ -490,7 +678,7 @@ func (n *Notifier) overnight(ctx context.Context, cfg *config.Config, v *engine.
 		blips = append(blips, h)
 	}
 	if len(due) > 0 || len(day) > 0 || len(pend) > 0 || len(blips) > 0 {
-		m := OvernightMessage(cfg, due, pend, blips, day)
+		m := OvernightMessage(cfg, due, pend, blips, day, n.gaps())
 		m.Key = "overnight:" + marker
 		if err := n.send(ctx, now, m); err != nil {
 			return err
@@ -615,9 +803,10 @@ func (n *Notifier) reminder(ctx context.Context, cfg *config.Config, v *engine.V
 	var open []*store.Record
 	for _, r := range v.Open {
 		// Only findings announced more than an hour before the reminder
-		// time; one pinged just now (after a snooze, say) or listed in the
-		// overnight summary at quiet end doesn't need a reminder yet.
-		if !r.Urgent || r.PingedAt.IsZero() || r.PingedAt.After(at.Add(-time.Hour)) {
+		// time; one pinged or repeated just now (after a snooze, say) or
+		// listed in the overnight summary at quiet end doesn't need a
+		// reminder yet.
+		if !r.Urgent || r.PingedAt.IsZero() || announcedAt(r).After(at.Add(-time.Hour)) {
 			continue
 		}
 		if _, snoozed := v.Snoozed(r.ID, now); snoozed {
@@ -732,114 +921,6 @@ func (n *Notifier) SendTest(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Notice announces a security-relevant settings change (a server's URL, API
-// key or certificate pin, access settings). It is sent at once, also during
-// quiet hours, without a mention, so a change nobody expected is noticed.
-func (n *Notifier) Notice(nt Notice) {
-	gen := n.generation()
-	n.notice(n.senders(), gen, true, nt)
-}
-
-// NoticeLater captures the channels configured now and returns a function
-// that sends a notice to them. A change that replaces or removes a channel
-// is announced with it, so the channel that loses messages hears about it.
-func (n *Notifier) NoticeLater() func(Notice) {
-	gen := n.generation()
-	senders := n.senders()
-	// Those channels may be gone by then; their failures aren't the
-	// current channels' and don't count towards the banner.
-	return func(nt Notice) { n.notice(senders, gen, false, nt) }
-}
-
-// errNoNoticesChannel means no webhook for settings notices is configured.
-var errNoNoticesChannel = errors.New("No Discord webhook for settings notices is configured.")
-
-// SendNoticesTest sends a test notice to the webhook for settings notices.
-func (n *Notifier) SendNoticesTest(ctx context.Context) error {
-	return errNoNoticesChannel
-}
-
-// notice sends a settings notice to senders, built in channel generation
-// built.
-func (n *Notifier) notice(senders []Sender, built int, current bool, nt Notice) {
-	cfg := n.cfg.Get()
-	now := n.now()
-	n.dmu.Lock()
-	n.noticeSeq++
-	key := fmt.Sprintf("notice:%d:%d", now.UnixNano(), n.noticeSeq)
-	gen := n.gen
-	n.dmu.Unlock()
-	title := nt.Title
-	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: nt.Summary, Color: ColorNotice, URL: cfg.PublicURL, Key: key}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		if err := n.sendTo(ctx, now, m, senders, current, gen); errors.Is(err, errNoChannel) {
-			n.log.Info("settings notice not sent: no Discord webhook is configured", "title", title)
-		} else if rejected(err) && built == n.generation() {
-			// The retry would go to the same channels, which refuse it:
-			// one decision, one log line.
-			n.log.Warn("settings notice discarded, Discord refused it", "title", title, "err", err)
-		} else if err != nil {
-			n.log.Warn("cannot send the settings notice, syncwatch retries it with the next notifications", "title", title, "err", err)
-			n.queueNotice(m, now)
-		}
-	}()
-}
-
-// queueNotice keeps a notice whose first delivery failed, so a change made
-// while a channel is down still gets announced.
-func (n *Notifier) queueNotice(m Message, at time.Time) {
-	m.Summary += "\nChanged at " + at.In(n.cfg.Get().Location()).Format("2006-01-02 15:04") + ". syncwatch kept this settings notice because the first send failed."
-	n.dmu.Lock()
-	n.notices = append(n.notices, pendingNotice{m: m, giveUp: at.Add(noticeRetryFor)})
-	if len(n.notices) > maxNotices {
-		n.log.Warn("oldest delayed settings notice discarded", "title", n.notices[0].m.Title)
-		n.notices = n.notices[1:]
-	}
-	n.dmu.Unlock()
-	n.Wake()
-}
-
-// retryNotices sends held-back notices to the channels configured now (the
-// ones a notice first went to may be gone; a dead old webhook mustn't hold
-// up urgent messages). Notices older than noticeRetryFor, and notices the
-// channel rejects for good, are dropped. It stops at the first failure, so
-// a notice that can't be sent costs each tick one attempt.
-func (n *Notifier) retryNotices(ctx context.Context, now time.Time) error {
-	n.dmu.Lock()
-	pending := append([]pendingNotice(nil), n.notices...)
-	n.dmu.Unlock()
-	for _, p := range pending {
-		if now.After(p.giveUp) {
-			n.log.Warn("settings notice discarded after 1 day of send failures", "title", p.m.Title)
-			n.dropNotice(p.m.Key)
-			continue
-		}
-		if err := n.send(ctx, now, p.m); err != nil {
-			if !rejected(err) {
-				return err
-			}
-			n.log.Warn("settings notice discarded, Discord refused it", "title", p.m.Title, "err", err)
-			n.dropNotice(p.m.Key)
-			continue
-		}
-		n.dropNotice(p.m.Key)
-	}
-	return nil
-}
-
-func (n *Notifier) dropNotice(key string) {
-	n.dmu.Lock()
-	defer n.dmu.Unlock()
-	for i, p := range n.notices {
-		if p.m.Key == key {
-			n.notices = append(n.notices[:i], n.notices[i+1:]...)
-			return
-		}
-	}
-}
-
 // errNoChannel means no notification channel is configured. Callers mark
 // nothing as sent, so urgent findings stay due until a channel is added.
 var errNoChannel = errors.New("No Discord webhook is configured.")
@@ -847,9 +928,79 @@ var errNoChannel = errors.New("No Discord webhook is configured.")
 // send delivers to every channel. It succeeds if Discord succeeds, or if
 // there is no Discord channel and any other channel succeeds. When a keyed
 // message is retried, channels that got it on an earlier attempt are skipped.
+// A message about findings first names the times when syncwatch did not
+// run that no message reported yet.
 func (n *Notifier) send(ctx context.Context, now time.Time, m Message) error {
+	var upTo time.Time
+	if gapKinds[m.Kind] {
+		var lines []string
+		if lines, upTo = n.gapLines(now); len(lines) > 0 {
+			if m.Summary != "" {
+				lines = append(lines, m.Summary)
+			}
+			m.Summary = strings.Join(lines, "\n")
+		}
+	}
 	gen := n.generation()
-	return n.sendTo(ctx, now, m, n.senders(), true, gen)
+	err := n.sendTo(ctx, now, m, n.senders(), true, gen)
+	if err == nil && !upTo.IsZero() {
+		if err := n.st.MarkGapsReported(upTo); err != nil {
+			n.log.Warn("cannot mark the reported times when syncwatch did not run", "err", err)
+		}
+	}
+	return err
+}
+
+// gapKinds are the messages that report the times when syncwatch did not
+// run: the messages about findings (the catch-up is an urgent or a
+// resolved message). Test messages and settings notices do not.
+var gapKinds = map[string]bool{KindUrgent: true, KindRepeat: true, KindResolved: true, KindOvernight: true, KindReminder: true, KindWeekly: true}
+
+// maxGapLines is the number of gaps a message names; "…and N more" stands
+// for the older ones.
+const maxGapLines = 5
+
+// gapLines returns a line for each time when syncwatch did not run that no
+// message reported yet, "syncwatch did not run from 21:04 to 21:24.", with
+// the date for a time that is not on the day of the message, and the end
+// of the newest of them.
+func (n *Notifier) gapLines(now time.Time) ([]string, time.Time) {
+	var lines []string
+	var upTo time.Time
+	loc := n.cfg.Get().Location()
+	for _, g := range n.gaps() {
+		if g.Reported {
+			continue
+		}
+		lines = append(lines, "syncwatch did not run from "+clockOn(g.From, now, loc)+" to "+clockOn(g.To, now, loc)+".")
+		if g.To.After(upTo) {
+			upTo = g.To
+		}
+	}
+	if k := len(lines) - maxGapLines; k > 0 {
+		lines = append(lines[k:], fmt.Sprintf("…and %s when syncwatch did not run.", plural(k, "more time")))
+	}
+	return lines, upTo
+}
+
+// gaps returns the times when syncwatch did not run (the last 30 days),
+// oldest first.
+func (n *Notifier) gaps() []store.Gap {
+	gaps, err := n.st.Gaps(time.Time{})
+	if err != nil {
+		n.log.Warn("cannot read the times when syncwatch did not run", "err", err)
+	}
+	return gaps
+}
+
+// clockOn writes a time in loc as "21:04", with the date when it is not on
+// the day of ref: "2026-10-05 21:04".
+func clockOn(t, ref time.Time, loc *time.Location) string {
+	t, ref = t.In(loc), ref.In(loc)
+	if t.Format("2006-01-02") != ref.Format("2006-01-02") {
+		return t.Format("2006-01-02 15:04")
+	}
+	return t.Format("15:04")
 }
 
 // sendTo delivers to the given channels. record says whether they are the
@@ -1015,7 +1166,19 @@ func UrgentMessage(cfg *config.Config, rs []*store.Record) Message {
 		title += where(cfg, rs)
 	}
 	return Message{Kind: KindUrgent, Mention: true, Title: title, Color: colorFor(rs), URL: dashboard(cfg),
-		Sections: []Section{{Title: "New findings", Lines: limitLines(urgentLines(cfg, rs), 25)}}}
+		Sections: []Section{{Title: "New findings", Lines: limitLines(recordLines(cfg, rs, time.Time{}, withAdvice), 25)}}}
+}
+
+// RepeatMessage sends the urgent message again for urgent findings that
+// stay open (notifications.repeat_urgent), with the role mention.
+func RepeatMessage(cfg *config.Config, rs []*store.Record, now time.Time) Message {
+	title := fmt.Sprintf("🚨 %d urgent findings are still open", len(rs)) + where(cfg, rs)
+	if len(rs) == 1 {
+		r := rs[0]
+		title = "🚨 Still open after " + rules.Ago(now.Sub(started(r))) + ": " + config.CatalogByID[r.Check].Title + ": " + r.Subject
+	}
+	return Message{Kind: KindRepeat, Mention: true, Title: title, Color: colorFor(rs), URL: dashboard(cfg),
+		Sections: []Section{{Title: "Still open", Lines: limitLines(recordLines(cfg, rs, now, withOpen|withAdvice), 25)}}}
 }
 
 // where names the servers (in configuration order) and the checks of
@@ -1059,57 +1222,6 @@ func where(cfg *config.Config, rs []*store.Record) string {
 	return out
 }
 
-// urgentLines writes one line per finding. Findings of one check on other
-// servers whose subject and message differ only in the server name (an S3
-// for a directory that both NAS sync) share the first one's line:
-// "… _(also on SOL)_".
-func urgentLines(cfg *config.Config, rs []*store.Record) []string {
-	type line struct {
-		r    *store.Record
-		also []string
-		on   map[string]bool
-	}
-	var lines []*line
-	same := map[string]*line{}
-	for _, r := range rs {
-		k := sameKey(cfg, r)
-		if l := same[k]; k != "" && l != nil && !l.on[r.Server] {
-			l.also = append(l.also, serverName(cfg, r.Server))
-			l.on[r.Server] = true
-			continue
-		}
-		l := &line{r: r, on: map[string]bool{r.Server: true}}
-		lines = append(lines, l)
-		if k != "" && same[k] == nil {
-			same[k] = l
-		}
-	}
-	var out []string
-	for _, l := range lines {
-		s := findingLine(l.r, "")
-		if len(l.also) > 0 {
-			s += " _(also on " + escapeMD(andList(l.also)) + ")_"
-		}
-		out = append(out, s+detailsLink(dashboard(cfg), l.r.ID))
-	}
-	return out
-}
-
-// sameKey is what a finding has in common with the same finding on another
-// server: its checks, severity, subject and message with its server's name
-// taken out. "" for a finding that is not on one server, or that is about
-// the server itself (H1: two servers down are two problems).
-func sameKey(cfg *config.Config, r *store.Record) string {
-	if r.Server == "" {
-		return ""
-	}
-	name := regexp.MustCompile(`\b` + regexp.QuoteMeta(serverName(cfg, r.Server)) + `\b`)
-	if strings.TrimSpace(name.ReplaceAllString(r.Subject, "")) == "" {
-		return ""
-	}
-	return fmt.Sprint(r.Checks, r.Severity, r.Stale) + "\x00" + name.ReplaceAllString(r.Subject, "\x01") + "\x00" + name.ReplaceAllString(r.Message, "\x01")
-}
-
 // serverName is the configured name of a server, or its ID.
 func serverName(cfg *config.Config, id string) string {
 	for _, s := range cfg.Servers {
@@ -1128,46 +1240,31 @@ func andList(names []string) string {
 	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
-// ResolvedMessage announces that pinged findings are resolved.
-func ResolvedMessage(cfg *config.Config, rs []*store.Record) Message {
+// ResolvedMessage announces that pinged findings are resolved. gaps are the
+// times when syncwatch did not run: a finding can resolve in one.
+func ResolvedMessage(cfg *config.Config, rs []*store.Record, gaps []store.Gap) Message {
 	title := fmt.Sprintf("✅ %d findings resolved", len(rs))
 	if len(rs) == 1 {
 		title = "✅ Resolved: " + config.CatalogByID[rs[0].Check].Title + ": " + rs[0].Subject
 	}
-	var lines []string
-	for _, r := range rs {
-		lines = append(lines, resolvedLine(r)+fmt.Sprintf(" (open %s)", rules.Ago(r.ResolvedAt.Sub(r.OpenedAt))))
-	}
 	return Message{Kind: KindResolved, Title: title, Color: ColorResolved, URL: dashboard(cfg),
-		Sections: []Section{{Title: "Resolved findings", Lines: limitLines(lines, 25)}}}
+		Sections: []Section{{Title: "Resolved findings", Lines: limitLines(resolvedLines(cfg, rs, gaps), 25)}}}
 }
 
 // ReminderMessage lists urgent findings that are still open.
 func ReminderMessage(cfg *config.Config, rs []*store.Record, now time.Time) Message {
-	var lines []string
-	for _, r := range rs {
-		lines = append(lines, findingLine(r, dashboard(cfg))+fmt.Sprintf(" (open %s)", rules.Ago(now.Sub(r.OpenedAt))))
-	}
 	return Message{Kind: KindReminder, Title: "⏰ Still open: " + plural(len(rs), "urgent finding"), Color: colorFor(rs), URL: dashboard(cfg),
-		Sections: []Section{{Title: "Still open", Lines: limitLines(lines, 25)}}}
+		Sections: []Section{{Title: "Still open", Lines: limitLines(recordLines(cfg, rs, now, withOpen|withAdvice), 25)}}}
 }
 
 // OvernightMessage is the batch sent when quiet hours end. day holds the
 // findings that became due after they ended (a summary that went out late).
-func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips []store.HistoryEntry, day []*store.Record) Message {
-	var openL, resL, blipL, dayL []string
-	for _, r := range open {
-		openL = append(openL, findingLine(r, dashboard(cfg)))
-	}
-	for _, r := range resolved {
-		resL = append(resL, resolvedLine(r))
-	}
-	for _, h := range blips {
-		blipL = append(blipL, blipLine(cfg, h))
-	}
-	for _, r := range day {
-		dayL = append(dayL, findingLine(r, dashboard(cfg)))
-	}
+// The counts in the section titles count the lines.
+func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips []store.HistoryEntry, day []*store.Record, gaps []store.Gap) Message {
+	openL := recordLines(cfg, open, time.Time{}, 0)
+	resL := resolvedLines(cfg, resolved, gaps)
+	blipL := blipLines(cfg, blips)
+	dayL := recordLines(cfg, day, time.Time{}, 0)
 	var all []*store.Record
 	all = append(all, open...)
 	all = append(all, day...)
@@ -1177,17 +1274,11 @@ func OvernightMessage(cfg *config.Config, open, resolved []*store.Record, blips 
 	}
 	return Message{Kind: KindOvernight, Mention: len(all) > 0, Title: "🌅 Overnight summary", Color: color, URL: dashboard(cfg),
 		Sections: []Section{
-			{Title: fmt.Sprintf("New and still open (%d)", len(open)), Lines: limitLines(openL, 20)},
-			{Title: fmt.Sprintf("Resolved during the night (%d)", len(resolved)), Lines: limitLines(resL, 20)},
-			{Title: fmt.Sprintf("Opened and resolved during the night (%d)", len(blips)), Lines: limitLines(blipL, 20)},
-			{Title: fmt.Sprintf("New after the end of quiet hours (%d)", len(day)), Lines: limitLines(dayL, 20)},
+			{Title: fmt.Sprintf("New and still open (%d)", len(openL)), Lines: limitLines(openL, 20)},
+			{Title: fmt.Sprintf("Resolved during the night (%d)", len(resL)), Lines: limitLines(resL, 20)},
+			{Title: fmt.Sprintf("Opened and resolved during the night (%d)", len(blipL)), Lines: limitLines(blipL, 20)},
+			{Title: fmt.Sprintf("New after the end of quiet hours (%d)", len(dayL)), Lines: limitLines(dayL, 20)},
 		}}
-}
-
-// blipLine is an occurrence that opened and resolved without a message,
-// with its times.
-func blipLine(cfg *config.Config, h store.HistoryEntry) string {
-	return historyLine(h, true) + fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(cfg.Location()).Format("15:04"), h.ResolvedAt.In(cfg.Location()).Format("15:04"))
 }
 
 // MissedMessage reports the urgent findings that opened and resolved while
@@ -1209,16 +1300,12 @@ func MissedMessage(cfg *config.Config, rs []*store.Record, missed []store.Histor
 	if len(missed) == 0 {
 		return m
 	}
-	var lines []string
-	for _, h := range missed {
-		lines = append(lines, blipLine(cfg, h))
-	}
 	from, to := since.In(cfg.Location()), now.In(cfg.Location())
 	span := from.Format("15:04") + "–" + to.Format("15:04")
 	if from.Format("2006-01-02") != to.Format("2006-01-02") {
 		span = from.Format("2006-01-02 15:04") + "–" + to.Format("15:04")
 	}
-	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span + ")", Lines: limitLines(lines, 20)})
+	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span + ")", Lines: limitLines(blipLines(cfg, missed), 20)})
 	return m
 }
 
@@ -1348,7 +1435,7 @@ func plural(n int, noun string) string {
 // WeeklyMessage is the weekly report.
 func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry, now time.Time) Message {
 	from := now.Add(-7 * 24 * time.Hour)
-	var newL, resL []string
+	var opened, resolved []store.HistoryEntry
 	for _, h := range hist {
 		// ERROR and WARNING findings only, and not the snoozed or ignored
 		// ones (as in the overnight summary); the counts are of the lines.
@@ -1359,25 +1446,28 @@ func WeeklyMessage(cfg *config.Config, v *engine.View, hist []store.HistoryEntry
 			continue
 		}
 		if !h.OpenedAt.Before(from) {
-			newL = append(newL, historyLine(h, false))
+			opened = append(opened, h)
 		}
 		if !h.ResolvedAt.IsZero() && !h.ResolvedAt.Before(from) {
-			resL = append(resL, historyLine(h, true))
+			resolved = append(resolved, h)
 		}
 	}
-	var top []string
+	// The resolved lines keep the message of the history, which has no
+	// resolved form.
+	newL, resL := historyLines(cfg, opened, false), historyLines(cfg, resolved, true)
+	var open []*store.Record
 	for _, r := range v.Open {
-		if _, ok := v.Snoozed(r.ID, now); ok {
-			continue
+		if _, ok := v.Snoozed(r.ID, now); !ok {
+			open = append(open, r)
 		}
-		top = append(top, findingLine(r, dashboard(cfg))+fmt.Sprintf(" (open %s)", rules.Ago(now.Sub(r.OpenedAt))))
-		if len(top) == cfg.Notify.WeeklyTop {
-			break
-		}
+	}
+	top := recordLines(cfg, open, now, withOpen)
+	if k := cfg.Notify.WeeklyTop; k > 0 && len(top) > k {
+		top = top[:k]
 	}
 	color := ColorResolved
-	for _, r := range v.Open {
-		if _, ok := v.Snoozed(r.ID, now); !ok && r.Severity >= model.Warn {
+	for _, r := range open {
+		if r.Severity >= model.Warn {
 			color = ColorWarn
 			if r.Severity == model.Error {
 				color = ColorError
