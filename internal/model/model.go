@@ -159,18 +159,30 @@ type ProgressSample struct {
 
 // Limits of the progress samples of one folder and device.
 const (
-	progressSpacing = time.Minute   // the shortest time between 2 samples
+	progressSpacing = time.Minute   // the shortest time between a sample and the sample after the next one
 	progressWindow  = 2 * time.Hour // samples older than this before the newest one go
 	maxProgress     = 120
 )
 
 // AddProgress records a progress sample of a folder for a device ("" for the
-// server's own copy). A sample less than 1 minute after the newest sample of
-// the pair is not kept. Samples more than 2 hours older than p go, and at
-// most 120 samples stay.
+// server's own copy). The newest sample always has the newest need, thus
+// the end of a change is not lost (W-059: a PC that received its files in
+// 10 seconds and then stopped): a sample less than 1 minute after the
+// sample before the newest one replaces the newest one. A sample with the
+// need of the newest one does not replace it: the newest sample keeps the
+// time when its need began. Thus a minute has at most 2 samples. A sample
+// that is not after the newest one is not kept. Samples more than 2 hours
+// older than p go, and at most 120 samples stay.
 func (s *Server) AddProgress(folderID, deviceID string, p ProgressSample) {
 	samples := s.Progress[folderID][deviceID]
-	if n := len(samples); n > 0 && p.At.Sub(samples[n-1].At) < progressSpacing {
+	n := len(samples)
+	switch {
+	case n > 0 && !p.At.After(samples[n-1].At):
+		return
+	case n > 1 && p.At.Sub(samples[n-2].At) < progressSpacing:
+		if p.NeedBytes != samples[n-1].NeedBytes {
+			samples[n-1] = p
+		}
 		return
 	}
 	cut := p.At.Add(-progressWindow)

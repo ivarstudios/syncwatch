@@ -1,6 +1,8 @@
 package model
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,23 +60,33 @@ func TestCloneOfR2Fields(t *testing.T) {
 	}
 }
 
-// AddProgress keeps samples at least 1 minute apart for each folder and
-// device, for 2 hours before the newest sample, and at most 120.
+// AddProgress keeps for each folder and device samples about 1 minute
+// apart (at most 2 in a minute) for 2 hours before the newest sample, and
+// at most 120. The newest sample always has the newest need, with the time
+// when that need began (W-059).
 func TestAddProgress(t *testing.T) {
 	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 	sv := &Server{ID: "akka"}
 	add := func(dev string, d time.Duration, need int64) {
 		sv.AddProgress("f", dev, ProgressSample{At: at.Add(d), NeedBytes: need, GlobalBytes: 1000})
 	}
+	needs := func(dev string) string {
+		var parts []string
+		for _, p := range sv.Progress["f"][dev] {
+			parts = append(parts, fmt.Sprintf("%s=%d", p.At.Sub(at), p.NeedBytes))
+		}
+		return strings.Join(parts, " ")
+	}
 	add("PC", 0, 900)
-	add("PC", 30*time.Second, 800)    // too soon: not kept
-	add("PC", -time.Minute, 950)      // older than the newest: not kept
-	add("PC", time.Minute, 700)       // 1 minute later: kept
+	add("PC", 10*time.Second, 850)    // the newest sample
+	add("PC", 30*time.Second, 800)    // less than 1 minute after the sample before the newest: replaces the newest
+	add("PC", 50*time.Second, 800)    // the same need: the newest keeps its time
+	add("PC", 20*time.Second, 950)    // not after the newest: not kept
+	add("PC", time.Minute, 700)       // 1 minute after the sample before the newest: added
 	add("", 10*time.Second, 500)      // the server's own copy is a pair of its own
 	add("LAPTOP", 10*time.Second, 10) // so is another device
-	ps := sv.Progress["f"]["PC"]
-	if len(ps) != 2 || ps[0].NeedBytes != 900 || ps[1].NeedBytes != 700 || ps[1].GlobalBytes != 1000 {
-		t.Fatalf("PC samples: %+v", ps)
+	if got := needs("PC"); got != "0s=900 30s=800 1m0s=700" || sv.Progress["f"]["PC"][2].GlobalBytes != 1000 {
+		t.Fatalf("PC samples: %s %+v", got, sv.Progress["f"]["PC"])
 	}
 	if len(sv.Progress["f"][""]) != 1 || len(sv.Progress["f"]["LAPTOP"]) != 1 {
 		t.Fatalf("other pairs: %+v", sv.Progress["f"])
@@ -83,12 +95,12 @@ func TestAddProgress(t *testing.T) {
 	// The window: a sample exactly 2 hours older than the newest stays, an
 	// older one goes.
 	add("PC", 2*time.Hour, 600)
-	if ps := sv.Progress["f"]["PC"]; len(ps) != 3 || !ps[0].At.Equal(at) {
-		t.Fatalf("after 2 hours: %+v", ps)
+	if got := needs("PC"); got != "0s=900 30s=800 1m0s=700 2h0m0s=600" {
+		t.Fatalf("after 2 hours: %s", got)
 	}
-	add("PC", 2*time.Hour+time.Minute, 500)
-	if ps := sv.Progress["f"]["PC"]; len(ps) != 3 || !ps[0].At.Equal(at.Add(time.Minute)) || ps[2].NeedBytes != 500 {
-		t.Fatalf("after 2 hours and 1 minute: %+v", ps)
+	add("PC", 2*time.Hour+30*time.Second, 500)
+	if got := needs("PC"); got != "30s=800 1m0s=700 2h0m0s=600 2h0m30s=500" {
+		t.Fatalf("after 2 hours and 30 seconds: %s", got)
 	}
 
 	// The limit: 1 sample a minute for 3 hours keeps the last 120.
@@ -96,16 +108,31 @@ func TestAddProgress(t *testing.T) {
 	for i := 0; i < 180; i++ {
 		add("PC", time.Duration(i)*time.Minute, int64(1000-i))
 	}
-	ps = sv.Progress["f"]["PC"]
+	ps := sv.Progress["f"]["PC"]
 	if len(ps) != maxProgress || !ps[0].At.Equal(at.Add(60*time.Minute)) || !ps[len(ps)-1].At.Equal(at.Add(179*time.Minute)) {
 		t.Fatalf("%d samples from %v to %v", len(ps), ps[0].At, ps[len(ps)-1].At)
 	}
-	// Samples 30 seconds apart: every second one is kept.
+	// A new need every 10 seconds: a sample and the sample after the next
+	// one are at least 1 minute apart, and the newest has the newest need.
 	sv = &Server{ID: "akka"}
-	for i := 0; i < 10; i++ {
-		add("PC", time.Duration(i)*30*time.Second, 0)
+	for i := 0; i < 18; i++ {
+		add("PC", time.Duration(i)*10*time.Second, int64(1000-i))
 	}
-	if n := len(sv.Progress["f"]["PC"]); n != 5 {
-		t.Fatalf("%d samples kept of 10 in 4.5 minutes, want 5", n)
+	if got := needs("PC"); got != "0s=1000 50s=995 1m40s=990 2m30s=985 2m50s=983" {
+		t.Fatalf("samples of 3 minutes: %s", got)
+	}
+
+	// W-059 (live re-test of wave 3, P2 a): a PC receives its files in 10
+	// seconds after it connects and then stops with 57 bytes that it cannot
+	// store. The end of the change stays a sample, also when the full
+	// checks add samples with the same need later.
+	sv = &Server{ID: "akka"}
+	add("PC", 0, 458_934)
+	add("PC", 5*time.Second, 200_000)
+	add("PC", 10*time.Second, 57)
+	add("PC", 5*time.Minute, 57)
+	add("PC", 10*time.Minute, 57)
+	if got := needs("PC"); got != "0s=458934 10s=57 5m0s=57 10m0s=57" {
+		t.Fatalf("samples of a PC that stopped: %s", got)
 	}
 }
