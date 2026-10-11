@@ -91,7 +91,7 @@ api: {token: swt_test_token}
 			t.Errorf("akka %s = %v, want %v", k, akka[k], v)
 		}
 	}
-	if sol["running"] != false || sol["status"] != "unknown" || sol["download_mb_s"] != 0.0 {
+	if sol["running"] != false || sol["status"] != "unreachable" || sol["download_mb_s"] != 0.0 {
 		t.Errorf("sol (down): %v", sol)
 	}
 	// A disabled server is listed too, so Home Assistant's templates find it.
@@ -177,12 +177,13 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 	resp, _ = http.DefaultClient.Do(req)
 	_ = json.NewDecoder(resp.Body).Decode(&ha)
 	resp.Body.Close()
-	if ha.Servers["akka"]["status"] != "watch error" {
-		t.Errorf("HA status with a watcher error = %v, want \"watch error\"", ha.Servers["akka"]["status"])
+	if ha.Servers["akka"]["status"] != "watch_error" {
+		t.Errorf("HA status with a watcher error = %v, want \"watch_error\"", ha.Servers["akka"]["status"])
 	}
 
 	// Unreachable, and never contacted (sol): the tile, the grid and the
-	// status API show the last known state as such, and HA says unknown.
+	// status API show the last known state as such, and HA says
+	// unreachable and not_contacted (W-049; before: unknown for both).
 	e.hub.Update("akka", func(s *model.Server) { s.Status, s.LastContact = model.StatusDown, time.Now() })
 	e.hub.Update("sol", func(s *model.Server) { s.Status = model.StatusUnknown })
 	e.eng.Evaluate()
@@ -218,7 +219,7 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 	resp, _ = http.DefaultClient.Do(req)
 	_ = json.NewDecoder(resp.Body).Decode(&ha)
 	resp.Body.Close()
-	if ha.Servers["akka"]["status"] != "unknown" || ha.Servers["sol"]["status"] != "unknown" {
+	if ha.Servers["akka"]["status"] != "unreachable" || ha.Servers["sol"]["status"] != "not_contacted" {
 		t.Errorf("HA status of unreachable servers: %v, %v", ha.Servers["akka"]["status"], ha.Servers["sol"]["status"])
 	}
 }
