@@ -1,0 +1,71 @@
+package web
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ivarstudios/syncwatch/internal/model"
+)
+
+// Integration of r1-3 (C4: a disabled server's device is a server), r1-4
+// (the health line, C3) and r1-6 (health_counts and the PCs tile, C3): the
+// three count the same PCs. SIRIUS is disabled; its stored device ID is
+// configured on AKKA, so before C4 it counted as a fifth, offline PC.
+func TestHealthLineAndCountsAgree(t *testing.T) {
+	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1"}, {name: SOL, url: "https://b:1"}, {name: SIRIUS, url: "https://c:1", disabled: true}]
+api: {token: swt_test_token}
+thresholds: {pc_offline: 1h}
+`)
+	if err := e.st.SetServerDeviceID("sirius", "SIRIUSS-3333333"); err != nil {
+		t.Fatal(err)
+	}
+	e.hub.SetServers([]*model.Server{{ID: "akka", Name: "AKKA"}, {ID: "sol", Name: "SOL"}})
+	old := time.Now().Add(-3 * time.Hour)
+	pc := func(id, name string) *model.Device { return &model.Device{ID: id, Name: name, LastSeen: old} }
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID, s.LastContact, s.StartTime = model.StatusUp, true, "AKKAAAA-1111111", time.Now(), time.Now().Add(-time.Hour)
+		s.Devices = map[string]*model.Device{
+			"PCONLIN-1": pc("PCONLIN-1", "ONLINE"), "PCOFFLN-2": pc("PCOFFLN-2", "OFFLINE"), "PCBOTHS-3": pc("PCBOTHS-3", "BOTH"),
+			"SIRIUSS-3333333": pc("SIRIUSS-3333333", "SIRIUS"),
+		}
+		s.Connections = map[string]*model.Connection{"PCONLIN-1": {Connected: true, StartedAt: time.Now()}}
+	})
+	e.hub.Update("sol", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID, s.LastContact = model.StatusDown, true, "SOLLLLL-2222222", old
+		s.Devices = map[string]*model.Device{"PCBOTHS-3": pc("PCBOTHS-3", "BOTH"), "PCSOLON-4": pc("PCSOLON-4", "SOL-ONLY")}
+	})
+	e.eng.Evaluate()
+
+	_, st := e.apiGet("/api/v1/status", "Bearer swt_test_token", "")
+	hc, _ := st["health_counts"].(map[string]any)
+	want := map[string]float64{"servers": 3, "servers_up": 1, "servers_disabled": 1, "pcs": 4, "pcs_online": 1, "pcs_offline": 1, "pcs_unknown": 2}
+	for k, v := range want {
+		if hc[k] != v {
+			t.Errorf("health_counts.%s = %v, want %v", k, hc[k], v)
+		}
+	}
+	health, _ := st["health"].(string)
+	for _, s := range []string{"1 of 3 servers up (SOL down, SIRIUS disabled)", "4 PCs, 1 offline more than 60 minutes, 2 unknown"} {
+		if !strings.Contains(health, s) {
+			t.Errorf("health line %q does not contain %q", health, s)
+		}
+	}
+	vm := e.web.overview(e.eng.View())
+	if vm.PCTotal != 4 || vm.PCOnline != 1 || vm.PCOff != 1 || vm.PCUnknown != 2 {
+		t.Errorf("PCs tile: total %d online %d offline %d unknown %d", vm.PCTotal, vm.PCOnline, vm.PCOff, vm.PCUnknown)
+	}
+	devs, _ := st["devices"].([]any)
+	found := false
+	for _, d := range devs {
+		if m, _ := d.(map[string]any); m["id"] == "SIRIUSS-3333333" || m["name"] == "SIRIUS" {
+			found = true
+			if m["server"] != true {
+				t.Errorf("devices[] SIRIUS: server = %v, want true", m["server"])
+			}
+		}
+	}
+	if !found {
+		t.Errorf("devices[] has no entry for SIRIUS: %v", devs)
+	}
+}
