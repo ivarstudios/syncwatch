@@ -340,3 +340,47 @@ func TestSiteTexts(t *testing.T) {
 		t.Fatalf("refused: %s %v", h1.Message, h1.Details)
 	}
 }
+
+// W-058 (b): H5 for a device names the files that it still needs, from the
+// list that the collector reads from the server (Server.NeedLists).
+func TestStuckDeviceNamesNeededFiles(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-ANNA", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f := folder("f", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 99.99, NeedItems: 18, NeedBytes: 28, RemoteState: "valid", UpdatedAt: now.Add(-time.Hour)}
+	akka.Folders["f"] = f
+	h5 := mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+	if h5.DetailValue("Needed files") != "" {
+		t.Fatalf("no list: no row, got %v", h5.Details)
+	}
+	msg := h5.Message
+
+	akka.NeedLists = map[string]map[string]model.NeedList{"f": {pcID: {Names: []string{"aux.txt", "final:cut.mov", "notes."}, Items: 18, At: now.Add(-30 * time.Minute)}}}
+	h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+	if got := h5.DetailValue("Needed files"); got != "aux.txt · final:cut.mov · notes. · …and 15 more" {
+		t.Fatalf("row %q", got)
+	}
+	if h5.Message != msg {
+		t.Fatalf("the message changed: %s", h5.Message)
+	}
+	// A list older than the completion gives its time in the configured zone.
+	f.Completion[pcID].UpdatedAt = now
+	if got := mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA").DetailValue("Needed files"); got != "aux.txt · final:cut.mov · notes. · …and 15 more (list from 13:30)" {
+		t.Fatalf("older list: %q", got)
+	}
+	// A list from the day before gives the date too; all items named: no "more".
+	akka.NeedLists["f"][pcID] = model.NeedList{Names: []string{"aux.txt", "final:cut.mov", "notes."}, Items: 3, At: now.Add(-25 * time.Hour)}
+	if got := mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA").DetailValue("Needed files"); got != "aux.txt · final:cut.mov · notes. (list from 2026-10-04 13:00)" {
+		t.Fatalf("list of the day before: %q", got)
+	}
+	// The device is away: the held H5 keeps the row.
+	akka.Connections[pcID].Connected = false
+	f.Completion[pcID].RemoteState = "unknown"
+	akka.RemoteStates = map[string]map[string]string{"f": {pcID: "valid"}}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !h5.Held || !strings.HasPrefix(h5.DetailValue("Needed files"), "aux.txt · final:cut.mov · notes.") {
+		t.Fatalf("held: %+v", h5)
+	}
+}

@@ -357,15 +357,19 @@ func floorPercent(p float64) float64 { return math.Floor(p*10) / 10 }
 func (e *evaluator) stuckDevice(sv *model.Server, f *model.Folder, dev string, c model.Completion, held bool) {
 	name, dn := f.DisplayName(), e.devName(dev)
 	pct := strconv.FormatFloat(floorPercent(c.Percent), 'f', -1, 64)
+	details := []model.Detail{
+		detail("Folder ID", f.ID), detail("Device ID", dev),
+		detail("Completion", fmt.Sprintf("%.1f%%", floorPercent(c.Percent))), detail("Items left", fmt.Sprint(c.NeedItems)),
+	}
+	if nl, ok := sv.NeedLists[f.ID][dev]; ok && len(nl.Names) > 0 {
+		details = append(details, detail("Needed files", e.neededFiles(nl, c)))
+	}
 	e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
 		Subject:     fmt.Sprintf("%s on %s", name, dn),
 		Message:     fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), sv.Name),
 		MinDuration: e.Config.Thresholds.StuckSync.D(),
 		Held:        held,
-		Details: []model.Detail{
-			detail("Folder ID", f.ID), detail("Device ID", dev),
-			detail("Completion", fmt.Sprintf("%.1f%%", floorPercent(c.Percent))), detail("Items left", fmt.Sprint(c.NeedItems)),
-		},
+		Details:     details,
 	})
 }
 
