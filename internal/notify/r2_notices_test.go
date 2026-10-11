@@ -243,8 +243,9 @@ func TestNoticesWebhookFallsBackAfterAnHour(t *testing.T) {
 	if msgs := r.sender.take(); len(msgs) != 0 {
 		t.Fatalf("the channel of the findings got %+v within the first hour", msgs[0].Title)
 	}
-	if tries := own.tries(); tries > 2+6 { // 1, 2, 4, 8, 16 … minutes, not each tick
-		t.Fatalf("%d tries in 1 hour", own.tries())
+	tries := own.tries()
+	if tries > 2+6 { // 1, 2, 4, 8, 16 … minutes, not each tick
+		t.Fatalf("%d tries in 1 hour", tries)
 	}
 	r.at(start.Add(2 * time.Hour))
 	msgs := r.sender.take()
@@ -253,6 +254,16 @@ func TestNoticesWebhookFallsBackAfterAnHour(t *testing.T) {
 	}
 	if d := r.n.Delivery(); d.NoticesKept != 0 || d.Failing {
 		t.Fatalf("after the fallback: %+v", d)
+	}
+	// A new security notice while the webhook still fails goes to the
+	// channel of the findings at once; another notice does not.
+	r.now = start.Add(2*time.Hour + time.Minute)
+	r.n.Notice(Notice{Title: "Access settings changed", Summary: "z", Security: true})
+	r.n.Notice(Notice{Title: "Structure rules changed", Summary: "w"})
+	waitFor(t, func() bool { return r.sender.sent() == 1 && own.tries() >= tries+2 })
+	time.Sleep(50 * time.Millisecond)
+	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Title != "🔧 Access settings changed" || pendingNotices(r) != 0 {
+		t.Fatalf("new notices: %+v, %d kept", msgs, pendingNotices(r))
 	}
 }
 

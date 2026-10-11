@@ -97,6 +97,16 @@ func (n *Notifier) notice(senders []Sender, own bool, built int, current bool, n
 			n.ownResult(now, gen, err)
 		}
 		p := pendingNotice{Key: key, Title: m.Title, Summary: m.Summary, Security: nt.Security, At: now}
+		if err != nil && own && nt.Security && !invalidMessage(err) && n.ownFailingFor(p, now) > noticeFallbackAfter {
+			// The webhook for settings notices fails for more than an hour:
+			// the channel of the findings too, as for a kept notice.
+			more, aerr := n.sendNotice(ctx, now, m, n.senders(), false, gen)
+			if aerr == nil {
+				err = nil
+			} else {
+				failed, err = append(failed, more...), errors.Join(err, aerr)
+			}
+		}
 		switch {
 		case err == nil:
 		case errors.Is(err, errNoChannel):
