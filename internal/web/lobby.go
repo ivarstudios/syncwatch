@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/engine"
@@ -108,20 +107,6 @@ func lobbyTheme(t string) string {
 	return ""
 }
 
-// lobbyTime writes a time for the lobby: the clock time when it is today in
-// the configured time zone, else the date and the time.
-func (s *Server) lobbyTime(t time.Time) string {
-	if t.IsZero() {
-		return "—"
-	}
-	loc := s.cfg.Get().Location()
-	lt, now := t.In(loc), s.now().In(loc)
-	if lt.Year() == now.Year() && lt.YearDay() == now.YearDay() {
-		return lt.Format("15:04")
-	}
-	return s.fmtTime(t)
-}
-
 // lobbyCard is a server of the lobby before the grouping.
 type lobbyCard struct {
 	id    string
@@ -138,7 +123,7 @@ func (s *Server) lobby(v *engine.View, site string) lobbyVM {
 		snap = &model.Snapshot{}
 	}
 	site = strings.TrimSpace(site)
-	vm := lobbyVM{Health: showControls(notify.HealthLine(cfg, v, now)), Changed: s.lobbyTime(v.Changed)}
+	vm := lobbyVM{Health: showControls(notify.HealthLine(cfg, v, now)), Changed: s.fmtClock(v.Changed)}
 	if site != "" {
 		vm.Query = url.Values{"site": {site}}.Encode()
 		vm.Site = showControls(site)
@@ -148,7 +133,7 @@ func (s *Server) lobby(v *engine.View, site string) lobbyVM {
 	}
 	if s.hooks.Delivery != nil {
 		if d := s.hooks.Delivery(); d.Failing {
-			vm.Failing = s.lobbyTime(d.Since)
+			vm.Failing = s.fmtClock(d.Since)
 		}
 	}
 
@@ -176,7 +161,7 @@ func (s *Server) lobby(v *engine.View, site string) lobbyVM {
 	for _, sv := range snap.Servers {
 		label, icon, class := statusLabel(sv.Status)
 		srv := lobbyServer{Name: showControls(sv.Name), Status: class, StatusLabel: label, StatusIcon: icon,
-			Folders: countFolders(sv), Stale: !folderStateKnown(sv), LastContact: s.lobbyTime(sv.LastContact)}
+			Folders: countFolders(sv), Stale: !folderStateKnown(sv), LastContact: s.fmtClock(sv.LastContact)}
 		srv.NoContact = srv.Stale && sv.LastContact.IsZero()
 		// A finding counts for its server and for each related server (the
 		// rule of the per-server counts of /api/v1/ha).
@@ -250,7 +235,7 @@ func (s *Server) lobby(v *engine.View, site string) lobbyVM {
 		return vm
 	}
 
-	vm.Links = s.lobbyLinks(cfg, snap, site)
+	vm.Links = s.lobbyLinks(v, site)
 
 	var list []*store.Record
 	for _, r := range open {
@@ -338,101 +323,18 @@ func lobbyPCs(snap *model.Snapshot, servers []*model.Server) string {
 	return "unknown"
 }
 
-// lobbyLinks gives the rows of the connections (C11): one row for each link
-// between 2 sites when 2 or more sites are set, else one row for each link
-// between 2 servers. With a site, only the rows that touch the site.
-func (s *Server) lobbyLinks(cfg *config.Config, snap *model.Snapshot, site string) []lobbyLink {
-	// The sites of the polled servers: a disabled server is in no link.
-	sites := map[string]bool{}
-	for _, sc := range cfg.Servers {
-		if !sc.Disabled && sc.Site != "" {
-			sites[sc.Site] = true
-		}
-	}
+// lobbyLinks gives the rows of the connections (C11): the rows of the
+// Overview (linkRows, the same texts on both pages), and with a site only the
+// rows that touch the site.
+func (s *Server) lobbyLinks(v *engine.View, site string) []lobbyLink {
 	var out []lobbyLink
-	if len(sites) >= 2 {
-		for _, l := range snap.SiteLinks {
-			if site != "" && l.A != site && l.B != site {
-				continue
-			}
-			var ids []string
-			for _, p := range l.Servers {
-				ids = append(ids, p[0], p[1])
-			}
-			out = append(out, s.lobbyLink(snap, l.A, l.B, l.State, l.Since, ids))
-		}
-		return out
-	}
-	name := func(id string) string {
-		if sv := snap.Server(id); sv != nil {
-			return sv.Name
-		}
-		if sc, ok := cfg.ServerByKey(id); ok {
-			return sc.Name
-		}
-		return id
-	}
-	for _, l := range snap.Links {
-		if site != "" && cfg.SiteOf(l.A) != site && cfg.SiteOf(l.B) != site {
+	for _, row := range s.linkRows(v) {
+		if site != "" && !slices.Contains(row.Sites, site) {
 			continue
 		}
-		out = append(out, s.lobbyLink(snap, name(l.A), name(l.B), l.State, l.Since, []string{l.A, l.B}))
+		out = append(out, lobbyLink{Text: row.Text(), State: row.Kind, Icon: row.Icon})
 	}
 	return out
-}
-
-// lobbyLink writes one row: "IVAR Office ↔ Branch office: connected from
-// 08:12", "…: not connected from 21:04" or "…: state unknown: SOL is
-// unreachable". ids are the servers of the link.
-func (s *Server) lobbyLink(snap *model.Snapshot, a, b, state string, since time.Time, ids []string) lobbyLink {
-	row := lobbyLink{State: state}
-	text := showControls(a) + " ↔ " + showControls(b) + ": "
-	switch state {
-	case model.LinkConnected:
-		row.Icon = "✔"
-		text += "connected"
-	case model.LinkDisconnected:
-		row.Icon = "✖"
-		text += "not connected"
-	default:
-		row.Icon, row.State = "?", model.LinkUnreachable
-		text += "state unknown"
-		if why := lobbyUnknownWhy(snap, ids); why != "" {
-			text += ": " + why
-		}
-		since = time.Time{}
-	}
-	if !since.IsZero() {
-		text += " from " + s.lobbyTime(since)
-	}
-	row.Text = text
-	return row
-}
-
-// lobbyUnknownWhy says why syncwatch cannot tell the state of a link: the
-// servers of the link that are not up or did not finish a full check.
-func lobbyUnknownWhy(snap *model.Snapshot, ids []string) string {
-	var why []string
-	seen := map[string]bool{}
-	for _, id := range ids {
-		sv := snap.Server(id)
-		if seen[id] || sv == nil || folderStateKnown(sv) {
-			continue
-		}
-		seen[id] = true
-		name := showControls(sv.Name)
-		switch sv.Status {
-		case model.StatusDown:
-			why = append(why, name+" is unreachable")
-		case model.StatusCertChanged:
-			why = append(why, "the certificate of "+name+" changed")
-		case model.StatusUp:
-			why = append(why, "the full check of "+name+" is not complete")
-		default:
-			why = append(why, "syncwatch has no contact with "+name)
-		}
-	}
-	return strings.Join(why, ", ")
 }
 
 var deviceIDText = regexp.MustCompile(`[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}`)

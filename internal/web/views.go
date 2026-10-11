@@ -188,10 +188,15 @@ func siteMatch(sites []string, site string) bool {
 type linkRow struct {
 	A, B  string   // the names of the 2 sites or servers
 	Sites []string // the sites of the 2 ends, for the site filter
+	Kind  string   // model.LinkConnected, LinkDisconnected or LinkUnreachable
 	Class string   // ok (connected), err (not connected), off (unknown)
 	Icon  string
 	State string // "connected from 08:12", "not connected from 21:04", "state unknown: SOL is unreachable"
 }
+
+// Text is the row in one line, as the lobby page shows it (C11):
+// "IVAR Office ↔ Branch office: connected from 08:12".
+func (r linkRow) Text() string { return r.A + " ↔ " + r.B + ": " + r.State }
 
 // linkRows gives the rows of the Connections section: one row for each site
 // link (2 or more sites), else one for each server link. An empty list (one
@@ -210,7 +215,7 @@ func (s *Server) linkRows(v *engine.View) []linkRow {
 				ids = append(ids, p[0], p[1])
 			}
 			row := s.linkState(snap, l.State, l.Since, ids)
-			row.A, row.B, row.Sites = l.A, l.B, siteList([]string{l.A}, l.B)
+			row.A, row.B, row.Sites = showControls(l.A), showControls(l.B), siteList([]string{l.A}, l.B)
 			out = append(out, row)
 		}
 		return out
@@ -242,9 +247,9 @@ func (s *Server) linkState(snap *model.Snapshot, state string, since time.Time, 
 	}
 	switch state {
 	case model.LinkConnected:
-		return linkRow{Class: "ok", Icon: "✔", State: "connected" + from}
+		return linkRow{Kind: model.LinkConnected, Class: "ok", Icon: "✔", State: "connected" + from}
 	case model.LinkDisconnected:
-		return linkRow{Class: "err", Icon: "✖", State: "not connected" + from}
+		return linkRow{Kind: model.LinkDisconnected, Class: "err", Icon: "✖", State: "not connected" + from}
 	}
 	var why []string
 	var seen []string
@@ -256,7 +261,7 @@ func (s *Server) linkState(snap *model.Snapshot, state string, since time.Time, 
 		seen = append(seen, id)
 		why = append(why, linkUnknownWhy(sv))
 	}
-	row := linkRow{Class: "off", Icon: "?", State: "state unknown"}
+	row := linkRow{Kind: model.LinkUnreachable, Class: "off", Icon: "?", State: "state unknown"}
 	if len(why) > 0 {
 		row.State += ": " + strings.Join(why, " and ")
 	}

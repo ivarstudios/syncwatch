@@ -6,10 +6,12 @@ package web
 import (
 	"html"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
@@ -75,5 +77,138 @@ func TestImportTokenLineFollowsTheImportRule(t *testing.T) {
 	}
 	if strings.Join(names, ",") != "Home Assistant/ha,API token/full" {
 		t.Fatalf("API tokens after the import: %v", names)
+	}
+}
+
+// C3/C7/C11 end to end: the engine (fixer 2) computes the links between the
+// servers and the sites; /api/v1/status and /api/v1/ha (fixer 5) give them
+// with the keys of the plan, and the Overview (fixer 6) and the lobby page
+// (fixer 7) show the same rows.
+func TestLinksEndToEnd(t *testing.T) {
+	e := adminEnv(t, `servers:
+  - {name: AKKA, url: "https://a:1", site: "IVAR Office"}
+  - {name: SOL, url: "https://b:1", site: "Branch office"}
+  - {name: ODEN, url: "https://c:1", site: "IVAR Office"}
+site: IVAR Office
+timezone: Europe/Stockholm
+api: {token: swt_test_token}
+`)
+	start := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const akkaID, solID, odenID = "AKKAAAA-AAAAAAA", "SOLSOLS-BBBBBBB", "ODENODE-CCCCCCC"
+	server := func(id, my string, peers ...string) {
+		e.hub.Update(id, func(s *model.Server) {
+			s.Status, s.Loaded, s.MyID, s.LastContact, s.LastError = model.StatusUp, true, my, time.Now(), ""
+			s.Devices, s.Connections = map[string]*model.Device{}, map[string]*model.Connection{}
+			for _, p := range peers {
+				s.Devices[p] = &model.Device{ID: p, Name: p}
+				s.Connections[p] = &model.Connection{Connected: true, StartedAt: start}
+			}
+		})
+	}
+	server("akka", akkaID, solID, odenID)
+	server("sol", solID, akkaID)
+	server("oden", odenID, akkaID)
+	e.eng.Evaluate()
+
+	snap := e.eng.View().Snapshot
+	if len(snap.Links) != 2 || len(snap.SiteLinks) != 1 || snap.SiteLinks[0].State != model.LinkConnected {
+		t.Fatalf("engine links %+v, site links %+v", snap.Links, snap.SiteLinks)
+	}
+	keys := func(m map[string]any) string {
+		var out []string
+		for k := range m {
+			out = append(out, k)
+		}
+		slices.Sort(out)
+		return strings.Join(out, ",")
+	}
+	for _, path := range []string{"/api/v1/status", "/api/v1/ha"} {
+		resp, body := e.apiGet(path, "Bearer swt_test_token", "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d", path, resp.StatusCode)
+		}
+		links, _ := body["links"].([]any)
+		siteLinks, _ := body["site_links"].([]any)
+		if len(links) != 2 || len(siteLinks) != 1 {
+			t.Fatalf("%s: links %v, site_links %v", path, body["links"], body["site_links"])
+		}
+		l0, _ := links[0].(map[string]any)
+		if keys(l0) != "a,b,since,site_a,site_b,state" || l0["a"] != "akka" || l0["b"] != "sol" || l0["site_a"] != "IVAR Office" ||
+			l0["site_b"] != "Branch office" || l0["state"] != "connected" || l0["since"] != start.UTC().Format("2006-01-02T15:04:05Z") {
+			t.Errorf("%s: links[0] %v", path, l0)
+		}
+		s0, _ := siteLinks[0].(map[string]any)
+		if keys(s0) != "a,b,since,state" || s0["a"] != "IVAR Office" || s0["b"] != "Branch office" || s0["state"] != "connected" {
+			t.Errorf("%s: site_links[0] %v", path, s0)
+		}
+	}
+	_, ha := e.apiGet("/api/v1/ha", "Bearer swt_test_token", "")
+	if servers, _ := ha["servers"].(map[string]any); servers == nil || servers["sol"].(map[string]any)["site"] != "Branch office" {
+		t.Errorf("/api/v1/ha servers: %v", ha["servers"])
+	}
+	_, st := e.apiGet("/api/v1/status", "Bearer swt_test_token", "")
+	if sv := apiServers(st); sv["oden"]["site"] != "IVAR Office" {
+		t.Errorf("/api/v1/status servers: %v", st["servers"])
+	}
+
+	// The Overview and the lobby show the same rows: connected, then SOL is
+	// unreachable.
+	same := func(step, want string) {
+		t.Helper()
+		v := e.eng.View()
+		var ov, lb []string
+		for _, r := range e.web.overview(v).Links {
+			ov = append(ov, r.Text())
+		}
+		for _, l := range e.web.lobby(v, "").Links {
+			lb = append(lb, l.Text)
+		}
+		if strings.Join(ov, " | ") != want || strings.Join(lb, " | ") != want {
+			t.Errorf("%s: Overview %q, lobby %q, want %q", step, ov, lb, want)
+		}
+	}
+	same("connected", "IVAR Office ↔ Branch office: connected from "+e.web.fmtClock(start))
+	e.hub.Update("sol", func(s *model.Server) {
+		s.Status, s.DownSince, s.LastError = model.StatusDown, time.Now(), "no route to host"
+	})
+	e.eng.Evaluate()
+	same("SOL down", "IVAR Office ↔ Branch office: state unknown: SOL is unreachable")
+	_, st = e.apiGet("/api/v1/status", "Bearer swt_test_token", "")
+	if sl, _ := st["site_links"].([]any); len(sl) != 1 || sl[0].(map[string]any)["state"] != "unreachable" || sl[0].(map[string]any)["since"] != nil {
+		t.Errorf("site_links with SOL down: %v", st["site_links"])
+	}
+}
+
+// C11: the Overview and the lobby page write the rows of the connections
+// with one helper: 2 servers whose state is not known are joined with "and",
+// and a time of another day has its date.
+func TestOverviewAndLobbyWriteTheSameLinkRows(t *testing.T) {
+	e := adminEnv(t, r2vSites)
+	e.web.now = func() time.Time { return r2vNow }
+	yesterday := time.Date(2026, 10, 10, 19, 4, 0, 0, time.UTC)
+	links := []model.ServerLink{
+		{A: "akka", B: "oden", State: model.LinkDisconnected, Since: yesterday},
+		{A: "sol", B: "oden", State: model.LinkUnreachable},
+	}
+	siteLinks := []model.SiteLink{{A: "IVAR Office", B: "Branch office", State: model.LinkUnreachable, Servers: [][2]string{{"akka", "sol"}, {"oden", "sol"}}}}
+	for _, tc := range []struct {
+		links     []model.ServerLink
+		siteLinks []model.SiteLink
+		want      string
+	}{
+		{links, nil, "AKKA ↔ ODEN: not connected from 2026-10-10 21:04 | SOL ↔ ODEN: state unknown: SOL is unreachable and the full check of ODEN is not complete"},
+		{links, siteLinks, "IVAR Office ↔ Branch office: state unknown: SOL is unreachable and the full check of ODEN is not complete"},
+	} {
+		v := r2vView(tc.links, tc.siteLinks, nil)
+		var ov, lb []string
+		for _, r := range e.web.overview(v).Links {
+			ov = append(ov, r.Text())
+		}
+		for _, l := range e.web.lobby(v, "").Links {
+			lb = append(lb, l.Text)
+		}
+		if strings.Join(ov, " | ") != tc.want || strings.Join(lb, " | ") != tc.want {
+			t.Errorf("Overview %q, lobby %q, want %q", ov, lb, tc.want)
+		}
 	}
 }
