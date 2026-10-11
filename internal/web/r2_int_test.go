@@ -306,3 +306,49 @@ func TestSettingsKeysReachTheChecks(t *testing.T) {
 		t.Errorf("/api/v1/status sites: %v", st["servers"])
 	}
 }
+
+// C7: both answers have every key that the plan names for wave 3, also when
+// the value is not known (null) or empty.
+func TestAPIKeysOfThePlan(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	for _, r := range e.eng.View().Open {
+		if err := e.eng.Snooze(r.ID, time.Now().Add(time.Hour), "maintenance", "admin"); err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	has := func(where string, m map[string]any, keys ...string) {
+		t.Helper()
+		for _, k := range keys {
+			if _, ok := m[k]; !ok {
+				t.Errorf("%s has no key %q: %v", where, k, m)
+			}
+		}
+	}
+	_, st := e.apiGet("/api/v1/status", "Bearer swt_test_token", "")
+	has("/api/v1/status", st, "generated_at", "links", "site_links", "notifications", "counts", "health_counts", "servers", "devices", "findings")
+	n, _ := st["notifications"].(map[string]any)
+	has("notifications", n, "next_try", "since")
+	for _, sv := range apiServers(st) {
+		has("servers[]", sv, "site", "last_contact", "cert_expires")
+	}
+	findings, _ := st["findings"].([]any)
+	if len(findings) == 0 {
+		t.Fatal("no findings")
+	}
+	for _, x := range findings {
+		f, _ := x.(map[string]any)
+		has("findings[]", f, "snooze_until", "snooze_reason", "opened_at", "since", "snoozed", "ignored")
+	}
+	_, ha := e.apiGet("/api/v1/ha", "Bearer swt_test_token", "")
+	has("/api/v1/ha", ha, "findings_open", "findings_urgent", "findings_error", "findings_warn", "findings_info",
+		"notifications_failing", "notifications_failing_since", "links", "site_links", "generated_at", "servers")
+	servers, _ := ha["servers"].(map[string]any)
+	for id, x := range servers {
+		sv, _ := x.(map[string]any)
+		has("/api/v1/ha servers."+id, sv, "status", "site", "last_contact", "findings_open", "findings_urgent", "running", "folders_error")
+		if sv["status"] != "unreachable" {
+			t.Errorf("servers.%s.status %v, want unreachable (a server that is down)", id, sv["status"])
+		}
+	}
+}
