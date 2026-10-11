@@ -14,6 +14,20 @@ type SystemStatus struct {
 	StartTime     time.Time `json:"startTime"`
 	Uptime        int64     `json:"uptime"`
 	PathSeparator string    `json:"pathSeparator"`
+
+	// The listeners of Syncthing by their listen address, for example
+	// tcp://0.0.0.0:22000 or relay://10.115.1.60:22067/?id=…&token=… (the
+	// query of a relay address can hold the token of the relay).
+	ConnectionServiceStatus map[string]ListenerStatus `json:"connectionServiceStatus"`
+}
+
+// ListenerStatus is the state of one listener of Syncthing. A relay
+// listener that has a session with its relay reports the address of the
+// relay as its WAN address.
+type ListenerStatus struct {
+	Error        *string  `json:"error"`
+	LANAddresses []string `json:"lanAddresses"`
+	WANAddresses []string `json:"wanAddresses"`
 }
 
 // SystemVersion is /rest/system/version.
@@ -134,6 +148,21 @@ type Completion struct {
 	NeedDeletes int64   `json:"needDeletes"`
 	RemoteState string  `json:"remoteState"`
 	Sequence    int64   `json:"sequence"`
+}
+
+// RemoteNeed is one page of /rest/db/remoteneed: the files that a remote
+// device still needs from a folder, as the server sees it.
+type RemoteNeed struct {
+	Files   []NeedFile `json:"files"`
+	Page    int        `json:"page"`
+	PerPage int        `json:"perpage"`
+}
+
+// NeedFile is one file of RemoteNeed. Name is the path in the folder.
+type NeedFile struct {
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Deleted bool   `json:"deleted"`
 }
 
 // PendingDevice is one entry of /rest/cluster/pending/devices.

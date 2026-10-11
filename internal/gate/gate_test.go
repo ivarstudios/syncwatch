@@ -31,6 +31,7 @@ import (
 const (
 	realKey = "syncthing-real-api-key-0123456789"
 	token   = "gate-token-for-syncwatch-0123456789"
+	devA    = "4PN542F-6INLZTY-ENGWNSD-7FV7WWJ-HIATIPR-2QPM2ZO-TFR5TRA-WF5QTQN" // a device ID
 )
 
 // fakeSyncthing answers the allowlisted endpoints and records what it got.
@@ -285,6 +286,27 @@ func TestGateQueryAllowlist(t *testing.T) {
 		{"/rest/folder/errors?folder=f&page=1&perpage=5", 200},
 		{"/rest/folder/errors?folder=f&page=0&perpage=5", 400},
 		{"/rest/folder/errors?folder=f&page=1&perpage=x", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1&perpage=20", 200},
+		{"/rest/db/remoteneed?perpage=100&device=" + devA + "&folder=f", 200},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1000&perpage=1", 200},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=0", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=101", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=2x", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=0&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1001&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=WS-CARL&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + strings.ToLower(devA) + "&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA[:62] + "&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&perpage=20", 400},
+		{"/rest/db/remoteneed?device=" + devA + "&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=&device=" + devA + "&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=20&x=1", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=20&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&folder=g&device=" + devA + "&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&device=" + devA + "&perpage=20", 400},
 		{"/rest/events", 200},
 		{"/rest/events?since=0&timeout=1&events=" + mask, 200},
 		{"/rest/events?since=7&timeout=600", 200},
@@ -323,6 +345,40 @@ func TestGateQueryAllowlist(t *testing.T) {
 	}
 	if q := st.last().URL.Query(); q.Get("events") != strings.Join(rev, ",") || q.Get("since") != "3" || len(q) != 2 {
 		t.Fatalf("forwarded query %q", st.last().URL.RawQuery)
+	}
+}
+
+// The names of the files that a device still needs (W-058) pass the gate
+// with the query of syncwatch's client, unchanged; the gate says what it
+// refuses.
+func TestGateRemoteNeed(t *testing.T) {
+	st, _, gs := setup(t)
+	cl, err := stclient.New(stclient.Options{Name: "NAS", URL: gs.URL, APIKey: token, Timeout: 5 * time.Second,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.RemoteNeed(context.Background(), "live-fjord-4finals", devA, 20); err != nil {
+		t.Fatalf("RemoteNeed through the gate: %v", err)
+	}
+	last := st.last()
+	if last.URL.Path != "/rest/db/remoteneed" || last.Header.Get("X-API-Key") != realKey {
+		t.Fatalf("Syncthing got %s with key %q", last.URL.Path, last.Header.Get("X-API-Key"))
+	}
+	if q := last.URL.Query(); q.Get("folder") != "live-fjord-4finals" || q.Get("device") != devA || q.Get("page") != "1" || q.Get("perpage") != "20" || len(q) != 4 {
+		t.Fatalf("forwarded query %q", last.URL.RawQuery)
+	}
+	for path, want := range map[string]string{
+		"/rest/db/remoteneed?folder=f&device=" + devA:                       "the parameter perpage must be between 1 and 100",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=500":      "the parameter perpage must be between 1 and 100",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=0&perpage=1": "the parameter page must be between 1 and 1000",
+		"/rest/db/remoteneed?folder=f&device=WS-CARL&perpage=20":            "the parameter device must be a complete device ID",
+		"/rest/db/remoteneed?device=" + devA + "&perpage=20":                "the parameter folder is necessary",
+	} {
+		code, body := get(t, gs, http.MethodGet, path, token)
+		if code != http.StatusBadRequest || strings.TrimSpace(body) != "syncwatch gate: query not permitted: "+want {
+			t.Errorf("%s: %d %q", path, code, body)
+		}
 	}
 }
 
