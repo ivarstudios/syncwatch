@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,10 +25,12 @@ func (e *evaluator) health() {
 		e.pending(sv)
 		e.conflicts(sv)
 		e.relays(sv)
+		e.relayListeners(sv)
 	}
 	e.links()
 	e.versions()
 	e.offlinePCs()
+	e.relayDevices()
 }
 
 // refusedKey matches the error of a server that refuses the API key or the
@@ -432,14 +435,15 @@ func (e *evaluator) conflicts(sv *model.Server) {
 	}
 }
 
-// H11
+// H11. A device that always connects through a relay (devices[].relay) gets
+// no H11: the relay is its normal path, and H12 reports when it has none.
 func (e *evaluator) relays(sv *model.Server) {
 	if sv.Status != model.StatusUp {
 		return
 	}
 	for _, id := range sortedKeys(sv.Connections) {
 		c := sv.Connections[id]
-		if !c.Connected || !c.IsRelay() {
+		if !c.Connected || !c.IsRelay() || e.Config.RelayExpected(id) {
 			continue
 		}
 		dn := e.devName(id)
@@ -447,6 +451,76 @@ func (e *evaluator) relays(sv *model.Server) {
 			Subject: fmt.Sprintf("%s ↔ %s", sv.Name, dn),
 			Message: fmt.Sprintf("Device %s is connected to %s through a relay, which is slow", dn, sv.Name),
 			Details: []model.Detail{detail("Device ID", id), detail("Address", c.Address), detail("Type", c.Type)},
+		})
+	}
+}
+
+// relayHost is the host and port of a relay listener's address
+// (relay://10.115.1.60:22067 gives 10.115.1.60:22067), or the address when
+// it has no host.
+func relayHost(uri string) string {
+	if u, err := url.Parse(uri); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return uri
+}
+
+// H12 for a server: Syncthing reports that its relay listener has no
+// connection to the relay. Devices that connect only through this relay
+// cannot sync.
+func (e *evaluator) relayListeners(sv *model.Server) {
+	if sv.Status != model.StatusUp {
+		return
+	}
+	for _, l := range sv.RelayListeners {
+		if l.Connected {
+			continue
+		}
+		relay := relayHost(l.URI)
+		msg := fmt.Sprintf("Server %s has no connection to its relay %s", sv.Name, relay)
+		if l.Error != "" {
+			msg += ": " + l.Error
+		}
+		e.add("H12", sv.ID, "relay-listener:"+l.URI, model.Finding{
+			Subject:     fmt.Sprintf("%s on %s", relay, sv.Name),
+			Message:     msg,
+			Since:       l.Since,
+			MinDuration: e.Config.Thresholds.RelayLost.D(),
+			Details: []model.Detail{
+				detail("Relay", l.URI), detail("Error", l.Error),
+				detail("Possible causes", "The relay is off, or the network path from the server to the relay is down. Devices that connect only through this relay cannot sync."),
+			},
+			ResolvedText: fmt.Sprintf("Server %s is connected to its relay again.", sv.Name),
+		})
+	}
+}
+
+// H12 for a device that always connects through a relay (devices[].relay):
+// it has no connection to a server that is up for more than relay_lost.
+// Like H7, the absence of a device is known only while every server that
+// has it configured can be reached (the engine keeps the finding stale
+// meanwhile).
+func (e *evaluator) relayDevices() {
+	if len(e.Config.Devices) == 0 {
+		return
+	}
+	th := e.Config.Thresholds.RelayLost.D()
+	loc := e.Config.Location()
+	for _, dv := range e.Snapshot.Devices() {
+		if dv.IsServer || dv.Connected || dv.LastSeen.IsZero() || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) || !e.Config.RelayExpected(dv.ID) {
+			continue
+		}
+		e.add("H12", "", "relay-device:"+dv.ID, model.Finding{
+			Subject:     dv.Name,
+			Message:     fmt.Sprintf("Device %s has no connection for more than %s (last seen %s). It connects only through a relay", dv.Name, Ago(th), dv.LastSeen.In(loc).Format("2006-01-02 15:04")),
+			Since:       dv.LastSeen,
+			MinDuration: th,
+			Related:     dv.SeenBy,
+			Details: []model.Detail{
+				detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen),
+				detail("Possible causes", "The relay is off or cannot be reached, or the device is off. H12 for the servers shows a relay that is off."),
+			},
+			ResolvedText: fmt.Sprintf("Device %s is connected again.", dv.Name),
 		})
 	}
 }

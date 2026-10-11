@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
@@ -44,5 +45,80 @@ func TestMarkRepeated(t *testing.T) {
 	rec, err := r.st.Record(h1.ID)
 	if err != nil || rec == nil || rec.Open() || !rec.RepeatedAt.Equal(repeated) {
 		t.Fatalf("resolved record: %+v %v", rec, err)
+	}
+}
+
+// laptopID is a device ID that the configuration accepts (devices[].id).
+const laptopID = "LAPTOPD-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG"
+
+// withConfig gives the rig another configuration.
+func (r *rig) withConfig(t *testing.T, yaml string) {
+	t.Helper()
+	c, err := config.ParseYAML([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.cfg, err = config.NewHolder(c); err != nil {
+		t.Fatal(err)
+	}
+	r.restart(t)
+}
+
+// W-047: H12 for a device that always connects through a relay opens after
+// relay_lost without a connection. Like H7, it is judged only while every
+// server that has the device configured is reachable: no new H12 while one
+// is not, and an open H12 stays as it is (stale).
+func TestRelayDeviceWaitsForEveryServer(t *testing.T) {
+	r := newRig(t)
+	r.withConfig(t, `
+servers: [{name: A, url: "https://a:1"}, {name: B, url: "https://b:1"}]
+devices: [{id: `+laptopID+`, relay: true}]
+thresholds: {relay_lost: 2m}
+`)
+	laptop := func(id string, connected bool) {
+		r.hub.Update(id, func(s *model.Server) {
+			s.Devices[laptopID] = &model.Device{ID: laptopID, Name: "LAPTOP-DANI", LastSeen: r.now}
+			s.Connections[laptopID] = &model.Connection{Connected: connected, Type: "relay-client", StartedAt: r.now}
+		})
+	}
+	laptop("a", true)
+	laptop("b", true)
+	if v := r.at(0); find(v, "H11", "LAPTOP-DANI") != nil || find(v, "H12", "") != nil {
+		t.Fatal("a device that always uses a relay must get no H11 and no H12 while connected")
+	}
+	// The relay stops.
+	laptop("a", false)
+	laptop("b", false)
+	if find(r.at(time.Minute), "H12", "LAPTOP-DANI") != nil {
+		t.Fatal("H12 opened before relay_lost")
+	}
+	h12 := find(r.at(70*time.Second), "H12", "LAPTOP-DANI")
+	if h12 == nil || h12.Stale || h12.Server != "" {
+		t.Fatalf("H12 should open after relay_lost: %+v", h12)
+	}
+	// B is unreachable: B can have the device connected. H12 stays stale.
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince, s.LastError = model.StatusDown, r.now, "timeout" })
+	if got := find(r.at(time.Minute), "H12", "LAPTOP-DANI"); got == nil || !got.Stale || got.ID != h12.ID {
+		t.Fatalf("H12 must stay open and stale while B is unreachable: %+v", got)
+	}
+	// The device connects to A: while B is unreachable, H12 waits.
+	laptop("a", true)
+	if got := find(r.at(time.Minute), "H12", "LAPTOP-DANI"); got == nil || !got.Stale {
+		t.Fatalf("H12 must wait for B: %+v", got)
+	}
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	if find(r.at(time.Minute), "H12", "LAPTOP-DANI") != nil {
+		t.Fatal("H12 should resolve when the device is connected and no server is stale")
+	}
+	// No new H12 opens while a server of the device is unreachable.
+	laptop("a", false)
+	laptop("b", false)
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
+	if find(r.at(10*time.Minute), "H12", "LAPTOP-DANI") != nil {
+		t.Fatal("H12 opened while a server of the device is unreachable")
+	}
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	if find(r.at(time.Second), "H12", "LAPTOP-DANI") == nil {
+		t.Fatal("H12 should open when B is back and the device is still away")
 	}
 }

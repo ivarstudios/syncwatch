@@ -174,3 +174,102 @@ func TestOutOfSpaceInFolderOpensAtOnce(t *testing.T) {
 		t.Fatalf("failed item: %+v", h4)
 	}
 }
+
+// W-047 (a): a device that always connects through a relay (devices[].relay)
+// gets no H11. H12 opens when it has no connection to any server that is up
+// for relay_lost. A device without the flag keeps H11.
+func TestRelayDevice(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	c.Devices = []config.Device{{ID: pcID, Relay: true}}
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	for _, sv := range []*model.Server{akka, sol} {
+		sv.Devices[pcID] = &model.Device{ID: pcID, Name: "LAPTOP-DANI", LastSeen: now}
+		sv.Connections[pcID] = &model.Connection{Connected: true, Type: "relay-client", Address: "relay://10.115.1.60:22067"}
+		sv.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS", LastSeen: now}
+		sv.Connections[pc2ID] = &model.Connection{Connected: true, Type: "relay-client", Address: "relay://10.115.1.60:22067"}
+	}
+	fs := run(t, c, akka, sol)
+	mustNot(t, fs, "H11", "LAPTOP-DANI")
+	mustNot(t, fs, "H12", "")
+	if count(fs, "H11") != 2 {
+		t.Fatalf("VENUS has no flag: want its 2 H11, got:\n%s", dump(fs))
+	}
+
+	// The relay stops: the laptop has no connection.
+	last := now.Add(-34 * time.Minute)
+	for _, sv := range []*model.Server{akka, sol} {
+		sv.Connections[pcID].Connected = false
+		sv.Devices[pcID].LastSeen = last
+	}
+	fs = run(t, c, akka, sol)
+	h12 := mustFind(t, fs, "H12", "LAPTOP-DANI")
+	want := "Device LAPTOP-DANI has no connection for more than 30 minutes (last seen 2026-10-05 13:26). It connects only through a relay"
+	if h12.Message != want {
+		t.Fatalf("message\n got %s\nwant %s", h12.Message, want)
+	}
+	if h12.ID != model.FindingID("H12", "", "relay-device:"+pcID) || h12.Server != "" || strings.Join(h12.Related, ",") != "akka,sol" ||
+		!h12.Since.Equal(last) || h12.MinDuration != 30*time.Minute || h12.Urgent || h12.Severity != model.Warn || h12.Subject != "LAPTOP-DANI" {
+		t.Fatalf("H12 %+v", h12)
+	}
+	if h12.DetailValue("Device ID") != pcID || h12.DetailValue("Last seen") != "2026-10-05T11:26:00Z" || !strings.Contains(h12.DetailValue("Possible causes"), "The relay is off") {
+		t.Fatalf("details %v", h12.Details)
+	}
+	mustNot(t, fs, "H11", "LAPTOP-DANI")
+	mustNot(t, fs, "H7", "LAPTOP-DANI")
+
+	// Connected to one server again (also without the relay): no H12.
+	sol.Connections[pcID] = &model.Connection{Connected: true, Type: "tcp-client"}
+	mustNot(t, run(t, c, akka, sol), "H12", "")
+	// The connection of a server that is down is old data.
+	sol.Status = model.StatusDown
+	mustFind(t, run(t, c, akka, sol), "H12", "LAPTOP-DANI")
+	// A device that was never seen gets no H12 (C2 reports it).
+	sol.Status = model.StatusUp
+	sol.Connections[pcID].Connected = false
+	akka.Devices[pcID].LastSeen, sol.Devices[pcID].LastSeen = time.Time{}, time.Time{}
+	mustNot(t, run(t, c, akka, sol), "H12", "")
+	// Without the flag: no H12.
+	akka.Devices[pcID].LastSeen = last
+	c.Devices = nil
+	mustNot(t, run(t, c, akka, sol), "H12", "")
+}
+
+// W-047 (b): H12 for a server whose relay listener has no connection to the
+// relay, after relay_lost. A connected listener or a server that is down
+// gives none.
+func TestRelayListener(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	since := now.Add(-31 * time.Minute)
+	refused := "dial tcp 10.115.1.60:22067: connect: connection refused"
+	akka.RelayListeners = []model.RelayListener{
+		{URI: "relay://10.115.1.60:22067", Error: refused, Since: since},
+		{URI: "dynamic+https://relays.syncthing.net/endpoint", Connected: true, Since: since},
+	}
+	fs := run(t, c, akka)
+	h12 := mustFind(t, fs, "H12", "10.115.1.60:22067 on AKKA")
+	if count(fs, "H12") != 1 || h12.Message != "Server AKKA has no connection to its relay 10.115.1.60:22067: "+refused {
+		t.Fatalf("H12:\n%s", dump(fs))
+	}
+	if h12.ID != model.FindingID("H12", "akka", "relay-listener:relay://10.115.1.60:22067") || h12.Server != "akka" || !h12.Since.Equal(since) ||
+		h12.MinDuration != 30*time.Minute || h12.Urgent || h12.Severity != model.Warn {
+		t.Fatalf("H12 %+v", h12)
+	}
+	if h12.DetailValue("Relay") != "relay://10.115.1.60:22067" || h12.DetailValue("Error") != refused || !strings.Contains(h12.DetailValue("Possible causes"), "Devices that connect only through this relay cannot sync") {
+		t.Fatalf("details %v", h12.Details)
+	}
+	// The dynamic relay pool, without an error text.
+	akka.RelayListeners[1].Connected = false
+	if d := mustFind(t, run(t, c, akka), "H12", "relays.syncthing.net on AKKA"); d.Message != "Server AKKA has no connection to its relay relays.syncthing.net" {
+		t.Fatalf("dynamic: %s", d.Message)
+	}
+	// Connected: none.
+	akka.RelayListeners = []model.RelayListener{{URI: "relay://10.115.1.60:22067", Connected: true, Since: since}}
+	mustNot(t, run(t, c, akka), "H12", "")
+	// The listener state of a server that is down is old data.
+	akka.RelayListeners[0].Connected = false
+	akka.Status, akka.LastError = model.StatusDown, "timeout"
+	mustNot(t, run(t, c, akka), "H12", "")
+}
