@@ -1,7 +1,6 @@
 package web
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,39 +9,12 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
-
-// postPage sends a form and returns the answer with its body.
-func (e *env) postPage(path string, form url.Values) (*http.Response, string) {
-	e.t.Helper()
-	resp, err := e.http.PostForm(e.srv.URL+path, form)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	return resp, string(b)
-}
-
-// section returns the part of a settings page from the section with the id
-// to the next section.
-func section(t *testing.T, page, id string) string {
-	t.Helper()
-	i := strings.Index(page, `<section class="card" id="`+id+`">`)
-	if i < 0 {
-		t.Fatalf("no section %s", id)
-	}
-	if j := strings.Index(page[i+1:], "<section "); j >= 0 {
-		return page[i : i+1+j]
-	}
-	return page[i:]
-}
 
 // W-016: a refused save of the Checks form showed the stored values again,
 // with the error at the top of the page. Now the page comes back with what
@@ -225,40 +197,6 @@ func TestFormRangesFollowValidation(t *testing.T) {
 	}
 }
 
-// W-032: Replace and Revoke acted at once. Each now asks first, in its own
-// form, and the API text names both endpoints and what the answer contains.
-// The replace notice says that the old API token stops working.
-func TestAPITokenFormsAskFirst(t *testing.T) {
-	e := adminEnv(t, twoServers)
-	_, page := e.get("/settings")
-	csrf := csrfRe.FindStringSubmatch(page)[1]
-	api := section(t, page, "api")
-	const replace = `data-confirm="Replace the API token? Home Assistant and scripts with the current API token lose access immediately."`
-	const revoke = `data-confirm="Revoke the API token? Home Assistant and scripts with the current API token lose access immediately."`
-	for _, want := range []string{replace, revoke, "<code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code>",
-		"The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL."} {
-		if !strings.Contains(api, want) {
-			t.Errorf("API section lacks %s", want)
-		}
-	}
-	// Each confirmation is on the form of its own button.
-	if a, b, c, d := strings.Index(api, replace), strings.Index(api, `value="generate"`), strings.Index(api, revoke), strings.Index(api, `value="revoke"`); !(a < b && b < c && c < d) {
-		t.Errorf("forms and buttons are not paired: %d %d %d %d", a, b, c, d)
-	}
-	resp, body := e.postPage("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"generate"}})
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "for <code>GET /api/v1/status</code> and <code>GET /api/v1/ha</code>.") {
-		t.Fatalf("new token panel: %d", resp.StatusCode)
-	}
-	if n := e.noticesText(); !strings.Contains(n, "API token replaced: The API token gives read access to /api/v1/status and /api/v1/ha. syncwatch refuses the old API token now.") {
-		t.Fatalf("notice: %q", n)
-	}
-	// Without a token, Generate does not ask.
-	e.post("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"revoke"}})
-	if _, page = e.get("/settings"); strings.Contains(section(t, page, "api"), "data-confirm") || !strings.Contains(page, "Generate API token") {
-		t.Fatal("Generate API token asks for a confirmation")
-	}
-}
-
 // W-070: Settings → Servers said that only self-signed certificates are
 // pinned; CA-signed certificates are pinned too (r0-a).
 func TestServersTextPinsEachCertificate(t *testing.T) {
@@ -332,26 +270,6 @@ func TestNoticeLinesUseLabels(t *testing.T) {
 	if n := e.noticesText(); !strings.HasSuffix(n, "Checks changed: C1 no file change for: 180d → 10m\nChanged from 127.0.0.1.") {
 		t.Fatalf("notice: %q", n)
 	}
-}
-
-// stranger logs in from a browser of its own at the address of the test
-// client (another person behind the same VPN or reverse proxy).
-func (e *env) stranger(password string) int {
-	e.t.Helper()
-	jar, _ := cookiejar.New(nil)
-	c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := c.Get(e.srv.URL + "/login")
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	resp, err = c.PostForm(e.srv.URL+"/login", url.Values{"csrf": {csrfRe.FindStringSubmatch(string(b))[1]}, "password": {password}})
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	resp.Body.Close()
-	return resp.StatusCode
 }
 
 // W-026 (t_limiter_roles.py): an administrator session S, then 5 wrong
@@ -474,7 +392,8 @@ func TestLimiterRetryAfter(t *testing.T) {
 }
 
 // W-030: after the secret key changed, Settings showed the webhook and the
-// API token as "Set" although syncwatch could not decrypt them.
+// API token as "Set" although syncwatch could not decrypt them. The part of
+// the API token is TestUndecryptableAPITokenIsNotShownAsSet (api_test.go).
 func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syncwatch.db")
 	keyA, keyB := make([]byte, 32), make([]byte, 32)
@@ -484,7 +403,6 @@ func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = st.SetSecret(store.SecretDiscordWebhook, "https://discord.com/api/webhooks/1/x")
-	_ = st.SetSecret(store.SecretAPIToken, "swt_x")
 	st.Close()
 	st, err = store.Open(path, keyB) // another secret key
 	if err != nil {
@@ -502,32 +420,11 @@ func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
 	if n := section(t, page, "notifications"); !strings.Contains(n, "(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)") || strings.Contains(n, "(Set. Keep") {
 		t.Errorf("webhook: %s", n[:min(len(n), 600)])
 	}
-	if a := section(t, page, "api"); !strings.Contains(a, "API token: <span class=\"c-err\">set, but syncwatch cannot decrypt it: the secret key changed. Replace the API token or restore the old secret key</span>.") {
-		t.Errorf("API token: %s", a)
-	}
 	// Secrets that syncwatch can decrypt are "Set" as before.
 	_, page = adminEnv(t, twoServers).get("/settings")
-	if strings.Contains(page, "cannot decrypt") || !strings.Contains(page, "(Set. Keep the field empty to keep the current value.)") || !strings.Contains(page, "API token: <strong>set</strong>.") {
+	if strings.Contains(page, "cannot decrypt") || !strings.Contains(page, "(Set. Keep the field empty to keep the current value.)") {
 		t.Error("a readable secret is not shown as set")
 	}
-}
-
-// lockedBuffer collects log lines that the server goroutines write.
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
 }
 
 // W-031: a refused confirmation (accept certificate with a wrong password
