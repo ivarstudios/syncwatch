@@ -53,6 +53,17 @@
 
 {{define "sev"}}<span class="sev sev-{{.Severity}}" title="{{.SeverityLabel}}">{{.Icon}} {{.SeverityLabel}}</span>{{end}}
 
+{{/* The site filter of the Overview and the Folders page (C11): the sites, 2 or more. app.js applies it and remembers it. */}}
+{{define "site-filter"}}<label class="site-filter">Site
+    <select id="site-filter" autocomplete="off">
+      <option value="">All sites</option>
+      {{range .}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>{{end}}
+
+{{/* The sites of an element for the site filter: data-site for 1 site, data-sites (1 site on each line) for more, nothing for none (always shown). */}}
+{{define "site-attr"}}{{if eq (len .) 1}} data-site="{{index . 0}}"{{else if .}} data-sites="{{join . "\n"}}"{{end}}{{end}}
+
 {{define "error"}}{{template "head" .}}
 <section class="card narrow">
   <h1>{{.Data.Title}}</h1>
