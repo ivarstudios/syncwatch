@@ -235,11 +235,21 @@ func (z *freezer) anyPresentStale(ids []string) bool {
 	return false
 }
 
-// absenceCheck reports whether a check says that a device is absent: H7
-// (PC offline) and C2 (inactive device). A server that cannot be reached
-// can still have the device connected, so such a finding can only be
-// judged while every server that has the device configured is reachable.
-func absenceCheck(check string) bool { return check == "H7" || check == "C2" }
+// absenceCheck reports whether a finding says that a device is absent: H7
+// (PC offline), C2 (inactive device) and H12 for a device that always
+// connects through a relay (no server: the device has no connection). A
+// server that cannot be reached can still have the device connected, so
+// such a finding can only be judged while every server that has the device
+// configured is reachable.
+func absenceCheck(f model.Finding) bool {
+	switch f.Check {
+	case "H7", "C2":
+		return true
+	case "H12":
+		return f.Server == ""
+	}
+	return false
+}
 
 // gone reports whether the servers a finding depends on have left the
 // configuration (removed or disabled): it can't be judged again, and there
@@ -289,7 +299,7 @@ func (z *freezer) frozen(f model.Finding) bool {
 		return z.unknown[f.Server]
 	}
 	if f.Server == "" {
-		if absenceCheck(f.Check) && z.anyPresentStale(f.Related) {
+		if absenceCheck(f) && z.anyPresentStale(f.Related) {
 			return true
 		}
 		// Other cross-server findings are judged on whichever related
@@ -375,6 +385,8 @@ func (e *Engine) Evaluate() {
 	now := e.now()
 	snap.At = now
 	snap.Disabled = e.disabledServers(cfg)
+	snap.Links = snap.ServerLinks()
+	snap.SiteLinks = model.SiteLinks(snap.Links, cfg.SiteOf, serverOrder(cfg))
 	conflicts, err := e.st.ConflictsSince(now.Add(-cfg.Thresholds.ConflictWindow.D()))
 	if err != nil {
 		e.log.Warn("cannot read the conflict history", "err", err)
@@ -553,17 +565,28 @@ func (e *Engine) disabledServers(cfg *config.Config) []model.DisabledServer {
 	return out
 }
 
+// serverOrder lists the server IDs in configuration order, disabled servers
+// included (the order of the sites follows their first server).
+func serverOrder(cfg *config.Config) []string {
+	ids := make([]string, len(cfg.Servers))
+	for i, s := range cfg.Servers {
+		ids[i] = s.ID
+	}
+	return ids
+}
+
 func (e *Engine) save(r *store.Record) {
 	if err := e.st.SaveRecord(r); err != nil {
 		e.log.Error("cannot save the finding", "id", r.ID, "err", err)
 	}
 }
 
-// sameContent compares the parts of a finding that matter to viewers.
+// sameContent compares the parts of a finding that matter to viewers, and
+// the sentence of its resolved message.
 func sameContent(a, b model.Finding) bool {
 	return a.Check == b.Check && a.Severity == b.Severity && a.Subject == b.Subject && a.Message == b.Message &&
 		a.Urgent == b.Urgent && a.Link == b.Link && slices.Equal(a.Checks, b.Checks) && slices.Equal(a.Paths, b.Paths) &&
-		slices.Equal(a.Related, b.Related) && reflect.DeepEqual(a.Details, b.Details)
+		slices.Equal(a.Related, b.Related) && reflect.DeepEqual(a.Details, b.Details) && a.ResolvedText == b.ResolvedText
 }
 
 // visibleFingerprint hashes what the dashboard shows of the snapshot (server
@@ -576,6 +599,13 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 	}
 	for _, ds := range snap.Disabled {
 		w("disabled", ds.ID, ds.Name, ds.MyID)
+	}
+	// The connection rows show the state and its start time.
+	for _, l := range snap.Links {
+		w("link", l.A, l.B, l.State, l.Since.Unix())
+	}
+	for _, l := range snap.SiteLinks {
+		w("site link", l.A, l.B, l.State, l.Since.Unix())
 	}
 	for _, sv := range snap.Servers {
 		w(sv.ID, sv.Status, sv.Version, sv.LastError, sv.Loaded, sv.Mode, sv.Cert.NotAfter.Unix())

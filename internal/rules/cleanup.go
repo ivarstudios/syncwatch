@@ -14,7 +14,13 @@ func (e *evaluator) cleanup() {
 	e.deadShares()
 }
 
+// firstSeenBasis is the basis of C1 for a folder without a pulled file and
+// without a local change that syncwatch saw.
+const firstSeenBasis = "the time when syncwatch first saw the folder"
+
 // C1: no file change for a long time, across every server holding the folder.
+// The age of the finding counts from its opening (Since is zero): the time
+// without a change is in the message.
 func (e *evaluator) inactiveProjects() {
 	type agg struct {
 		label   string
@@ -22,6 +28,7 @@ func (e *evaluator) inactiveProjects() {
 		basis   string
 		servers []string
 		ids     []string
+		first   time.Time // the earliest time when syncwatch saw the folder on a server
 	}
 	latest := map[string]*agg{}
 	lastAt := map[string]time.Time{}
@@ -47,30 +54,45 @@ func (e *evaluator) inactiveProjects() {
 				lastAt[f.ID] = f.LastLocalChange
 				a.last, a.basis = "", "the last local change that syncwatch saw"
 			}
+			if !f.FirstSeen.IsZero() && (a.first.IsZero() || f.FirstSeen.Before(a.first)) {
+				a.first = f.FirstSeen
+			}
 		}
 	}
 	th := e.Config.Thresholds.InactiveProject.D()
+	loc := e.Config.Location()
 	for _, id := range sortedKeys(latest) {
+		a := latest[id]
 		last, ok := lastAt[id]
 		if !ok {
-			continue // no change recorded yet: unknown
+			// A project that nobody changed after the copy: no pulled file
+			// and no local change. The collector keeps the time when
+			// syncwatch first saw the folder, also over a restart.
+			if a.first.IsZero() {
+				continue // unknown
+			}
+			last, a.basis = a.first, firstSeenBasis
 		}
 		idle := e.Now.Sub(last)
 		if idle < th {
 			continue
 		}
-		a := latest[id]
 		details := []model.Detail{detail("Folder ID", id), timeDetail("Last change", last), detail("Based on", a.basis)}
 		if a.last != "" {
 			details = append(details, detail("Last file", a.last))
 		}
 		details = append(details, detail("On servers", strings.Join(a.servers, ", ")))
+		when := last.In(loc).Format("2006-01-02 15:04")
+		msg := fmt.Sprintf("No file in folder %s changed in the last %s (%s was on %s). You can archive it", a.label, Ago(idle), a.basis, when)
+		if a.basis == firstSeenBasis {
+			msg = fmt.Sprintf("No file in folder %s changed in the last %s (syncwatch first saw the folder on %s). You can archive it", a.label, Ago(idle), when)
+		}
 		e.add("C1", "", "folder:"+id, model.Finding{
-			Subject: a.label,
-			Message: fmt.Sprintf("No file in folder %s changed in the last %s (%s was on %s). You can archive it", a.label, Ago(idle), a.basis, last.Format("2006-01-02")),
-			Since:   last,
-			Related: a.ids,
-			Details: details,
+			Subject:      a.label,
+			Message:      msg,
+			Related:      a.ids,
+			Details:      details,
+			ResolvedText: fmt.Sprintf("Folder %s is not inactive now.", a.label),
 		})
 	}
 }
@@ -83,9 +105,10 @@ func (e *evaluator) oldDevices() {
 			continue
 		}
 		f := model.Finding{
-			Subject: dv.Name,
-			Related: dv.SeenBy,
-			Details: []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
+			Subject:      dv.Name,
+			Related:      dv.SeenBy,
+			ResolvedText: fmt.Sprintf("Device %s is not inactive now.", dv.Name),
+			Details:      []model.Detail{detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen), detail("Configured on", strings.Join(e.names(dv.SeenBy), ", "))},
 		}
 		if dv.LastSeen.IsZero() {
 			// Opens once the device has been watched for the threshold.
@@ -138,10 +161,11 @@ func (e *evaluator) deadShares() {
 					continue
 				}
 				e.add("C3", sv.ID, "dead:"+fid+":"+dev, model.Finding{
-					Subject:     fmt.Sprintf("%s → %s", f.DisplayName(), dn),
-					Message:     msg + ". You can remove the device from the folder",
-					MinDuration: th,
-					Details:     []model.Detail{detail("Folder ID", fid), detail("Device ID", dev)},
+					Subject:      fmt.Sprintf("%s → %s", f.DisplayName(), dn),
+					Message:      msg + ". You can remove the device from the folder",
+					MinDuration:  th,
+					Details:      []model.Detail{detail("Folder ID", fid), detail("Device ID", dev)},
+					ResolvedText: fmt.Sprintf("Device %s uses folder %s, or the folder is not shared with it now.", dn, f.DisplayName()),
 				})
 			}
 		}
