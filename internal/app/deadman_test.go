@@ -264,6 +264,29 @@ func TestDeadmanRedirectAndTimeout(t *testing.T) {
 	noSecrets(t, logs2.String())
 }
 
+// At the stop the database ping of Ready fails because its context ends:
+// that is no unhealthy state, and the pusher logs nothing.
+func TestDeadmanQuietAtStop(t *testing.T) {
+	m := newMonitor(t)
+	logs := &lockedLog{}
+	ready := func(ctx context.Context) []string {
+		if ctx.Err() != nil {
+			return []string{"database not available"}
+		}
+		return nil
+	}
+	d, err := newDeadman(m.srv.URL+deadmanSecret, ready, "test", slog.New(slog.NewTextHandler(logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.try(ctx)
+	if logs.String() != "" || m.count() != 0 {
+		t.Fatalf("a try at the stop: %d calls, log:\n%s", m.count(), logs)
+	}
+}
+
 // SYNCWATCH_DEADMAN_URL is an http or https URL with a host and without a
 // user name or password. The error does not repeat the value.
 func TestParseDeadmanURL(t *testing.T) {

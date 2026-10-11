@@ -120,7 +120,11 @@ func (d *deadman) run(ctx context.Context) {
 
 // try calls the URL when syncwatch is healthy, and logs the changes.
 func (d *deadman) try(ctx context.Context) {
-	if reasons := d.ready(ctx); len(reasons) > 0 {
+	reasons := d.ready(ctx)
+	if ctx.Err() != nil {
+		return // syncwatch stops: the database ping of ready failed for that reason
+	}
+	if len(reasons) > 0 {
 		if !d.unready {
 			d.unready = true
 			d.log.Info("dead-man URL not called: syncwatch is not healthy", "reasons", strings.Join(reasons, ", "))
