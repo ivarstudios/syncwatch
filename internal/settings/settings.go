@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/store"
@@ -38,10 +39,18 @@ func Save(st *store.Store, c *config.Config) error {
 
 // ImportSecrets moves any secrets present in an imported configuration into
 // the encrypted secret store and clears them from c. API keys are bound to
-// their server's URL. Secrets that are absent from the import are left as
-// they are, but a kept API key is only used while the server's URL matches
-// the one it was entered for (see NeedKey).
+// their server's URL. The API token of the file (api.token) becomes the value
+// of the API token named "API token": its scope stays, or syncwatch adds it
+// with the scope full (see importToken). Secrets that are absent from the
+// import are left as they are, but a kept API key is only used while the
+// server's URL matches the one it was entered for (see NeedKey).
 func ImportSecrets(st *store.Store, c *config.Config) (int, error) {
+	// Checked before a secret of the file is stored: an API token that
+	// syncwatch cannot add refuses the whole import.
+	token, err := importToken(st, c.API.Token)
+	if err != nil {
+		return 0, err
+	}
 	n := 0
 	set := func(name, v string) error {
 		if v == "" {
@@ -66,11 +75,53 @@ func ImportSecrets(st *store.Store, c *config.Config) (int, error) {
 	if err := set(store.SecretNoticesWebhook, c.Notify.DiscordNoticesWebhook); err != nil {
 		return n, err
 	}
-	if err := set(store.SecretAPIToken, c.API.Token); err != nil {
-		return n, err
+	if c.API.Token != "" {
+		n++
+		if err := token(); err != nil {
+			return n, err
+		}
 	}
 	c.Notify.DiscordWebhook, c.Notify.DiscordNoticesWebhook, c.API.Token = "", "", ""
 	return n, nil
+}
+
+// importToken checks the API token of an imported file (api.token) and
+// returns the function that stores it: the new value of the API token named
+// store.LegacyTokenName (the single API token of an older version; its scope
+// stays), or that API token with the scope full when it does not exist. It
+// refuses the value of another API token, and a new API token when there are
+// store.MaxAPITokens already.
+func importToken(st *store.Store, value string) (func() error, error) {
+	nothing := func() error { return nil }
+	if value == "" {
+		return nothing, nil
+	}
+	legacy, err := st.APITokenByName(store.LegacyTokenName)
+	if err != nil {
+		return nil, err
+	}
+	same, err := st.APITokenByValue(value)
+	switch {
+	case err != nil:
+		return nil, err
+	case same != nil && legacy != nil && same.ID == legacy.ID:
+		return nothing, nil // the API token has this value already
+	case same != nil:
+		return nil, fmt.Errorf("The API token of the file (api.token) has the value of the API token \"%s\". Use a different value.", same.Name)
+	case legacy != nil:
+		return func() error { return st.ReplaceAPIToken(legacy.ID, value, time.Now()) }, nil
+	}
+	list, err := st.APITokens()
+	if err != nil {
+		return nil, err
+	}
+	if len(list) >= store.MaxAPITokens {
+		return nil, fmt.Errorf("There are %d API tokens. syncwatch cannot add the API token of the file (api.token). Revoke an API token first.", store.MaxAPITokens)
+	}
+	return func() error {
+		_, err := st.AddAPIToken(store.LegacyTokenName, store.ScopeFull, value, time.Now())
+		return err
+	}, nil
 }
 
 // SetServerKey stores a server's API key bound to url. A key entered for a

@@ -197,6 +197,23 @@ func (s *Store) APITokenByValue(token string) (*APIToken, error) {
 	return &t, nil
 }
 
+// APITokenByName returns the API token with the name, compared without
+// regard to case as AddAPIToken does, or nil and no error when no API token
+// has this name.
+func (s *Store) APITokenByName(name string) (*APIToken, error) {
+	list, err := s.APITokens()
+	if err != nil {
+		return nil, err
+	}
+	name = strings.TrimSpace(name)
+	for _, t := range list {
+		if strings.EqualFold(t.Name, name) {
+			return &t, nil
+		}
+	}
+	return nil, nil
+}
+
 // TouchAPIToken records that an API token was used at at.
 func (s *Store) TouchAPIToken(id string, at time.Time) error {
 	return oneRow(s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE id=?`, ms(at), id))
