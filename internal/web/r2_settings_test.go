@@ -344,6 +344,29 @@ func TestImportPreviewIsBoundToSessionAndTime(t *testing.T) {
 	}
 }
 
+// A second confirmation of the same preview while the first one runs (a
+// double click) does not apply the file again.
+func TestImportConfirmationRunsOnce(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	_, _, id := impPreview(e, csrf, "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\nthresholds: {paused: 1d}\n")
+	imports := e.web.pendingImports()
+	imports.mu.Lock()
+	key := imports.items[len(imports.items)-1].key
+	imports.mu.Unlock()
+	if imports.claim(id, key, time.Now()) == nil { // the first confirmation runs
+		t.Fatal("no pending import")
+	}
+	if msg, isErr := flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "import_id": {id}})); !isErr ||
+		msg != "The preview of the import expired. Select the file again." || e.cfg.Get().Thresholds.Paused.String() != "3d" {
+		t.Fatalf("second confirmation: %q %v", msg, isErr)
+	}
+	imports.release(id)
+	if msg, isErr := flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "import_id": {id}})); isErr || e.cfg.Get().Thresholds.Paused.String() != "1d" {
+		t.Fatalf("confirmation after the release: %q %v", msg, isErr)
+	}
+}
+
 // The step 1 form has no data-confirm any more (the preview replaces it) and
 // no password input; the card names the notices webhook as a secret.
 func TestImportCardTexts(t *testing.T) {

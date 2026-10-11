@@ -29,11 +29,12 @@ const (
 
 // pendingImport is a file that waits for the confirmation of its preview.
 type pendingImport struct {
-	id   string
-	data []byte    // the file as it was sent, with its secrets
-	rev  string    // configRev of the configuration that the preview compared
-	key  string    // confirmKey of the session that sent the file
-	at   time.Time // when the file was sent
+	id    string
+	data  []byte    // the file as it was sent, with its secrets
+	rev   string    // configRev of the configuration that the preview compared
+	key   string    // confirmKey of the session that sent the file
+	at    time.Time // when the file was sent
+	inUse bool      // a confirmation of it runs now (claim)
 }
 
 // pendingImports holds the files of the previews of one web server.
@@ -64,20 +65,36 @@ func (p *pendingImports) add(data []byte, rev, key string, now time.Time) string
 	return id
 }
 
-// get returns a copy of the pending import id of the session key, or nil
-// when it does not exist, expired or belongs to another session.
-func (p *pendingImports) get(id, key string, now time.Time) *pendingImport {
+// claim returns a copy of the pending import id of the session key and marks
+// it as in use, thus a second confirmation of the same preview (a double
+// click) does not apply the file again. It returns nil when the pending
+// import does not exist, expired, belongs to another session or is in use.
+// The caller removes it, or releases it to keep it for a corrected
+// confirmation.
+func (p *pendingImports) claim(id, key string, now time.Time) *pendingImport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.expire(now)
 	for _, it := range p.items {
-		if subtle.ConstantTimeCompare([]byte(it.id), []byte(id)) == 1 && it.key == key {
+		if subtle.ConstantTimeCompare([]byte(it.id), []byte(id)) == 1 && it.key == key && !it.inUse {
+			it.inUse = true
 			cp := *it
 			cp.data = slices.Clone(it.data)
 			return &cp
 		}
 	}
 	return nil
+}
+
+// release ends the claim of the pending import id.
+func (p *pendingImports) release(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, it := range p.items {
+		if it.id == id {
+			it.inUse = false
+		}
+	}
 }
 
 // remove deletes the pending import id.

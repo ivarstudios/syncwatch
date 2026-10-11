@@ -62,7 +62,8 @@ notifications:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"site: IVAR Office\n", "    site: Branch office\n", "devices:\n", "relay: true", "relay_lost: 45m", "repeat_urgent: 2h"} {
+	for _, want := range []string{"site: IVAR Office\n", "    site: Branch office\n", "devices:\n", "relay: true", "relay_lost: 45m", "repeat_urgent: 2h",
+		"# syncwatch configuration export. The file does not contain the API keys, the webhook URLs or the API token.\n"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("export lacks %q:\n%s", want, out)
 		}

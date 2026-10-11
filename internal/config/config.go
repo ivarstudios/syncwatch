@@ -809,7 +809,7 @@ func ParseYAML(b []byte) (*Config, error) {
 func (c *Config) ExportYAML() ([]byte, error) {
 	r := c.Redacted()
 	var buf bytes.Buffer
-	buf.WriteString("# syncwatch configuration export. The file does not contain the API keys, the webhook URL or the API token.\n")
+	buf.WriteString("# syncwatch configuration export. The file does not contain the API keys, the webhook URLs or the API token.\n")
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(r); err != nil {

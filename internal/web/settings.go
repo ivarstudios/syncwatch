@@ -1464,7 +1464,7 @@ func (s *Server) locksEveryoneOut(w http.ResponseWriter, r *http.Request, c *con
 // shows the preview again with the reason, and the pending import stays.
 func (s *Server) confirmImport(w http.ResponseWriter, r *http.Request, info requestInfo, id string) {
 	imports := s.pendingImports()
-	p := imports.get(id, confirmKey(r, info), s.now())
+	p := imports.claim(id, confirmKey(r, info), s.now())
 	if p == nil {
 		s.redirect(w, r, "/settings#import", "The preview of the import expired. Select the file again.", true)
 		return
@@ -1491,6 +1491,7 @@ func (s *Server) confirmImport(w http.ResponseWriter, r *http.Request, info requ
 		return
 	}
 	refuse := func(msg string) {
+		imports.release(id) // the pending import stays for a corrected confirmation
 		pv := s.buildImportPreview(p.data, old, c)
 		pv.ID, pv.Error = id, msg
 		s.render(w, r, http.StatusUnprocessableEntity, "settings", info, s.settingsData(info, map[string]any{"ImportPreview": pv}))
