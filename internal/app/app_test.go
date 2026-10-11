@@ -453,6 +453,46 @@ func TestCLIChangesAnnounced(t *testing.T) {
 	}
 }
 
+// The settings notice of a certificate that the collector pinned without an
+// administrator: at the first contact, and for a CA-signed renewal. Both are
+// security notices with the API URL of the configuration and the short
+// fingerprint.
+func TestPinNotice(t *testing.T) {
+	cfg := config.Default()
+	cfg.Servers = []config.Server{{ID: "sol", Name: "SOL", URL: "https://sol.lan.invalid:8384"}}
+	fp := "abcdef0123456789" + strings.Repeat("0", 48)
+	first := pinNotice(cfg, "sol", fp, false)
+	if first != (notify.Notice{Title: "Server SOL: certificate pinned", Security: true,
+		Summary: "syncwatch pinned the certificate AB:CD:EF:01:23:45:67:89 of https://sol.lan.invalid:8384 at the first contact."}) {
+		t.Fatalf("first contact: %+v", first)
+	}
+	renewal := pinNotice(cfg, "sol", fp, true)
+	if renewal != (notify.Notice{Title: "Server SOL: new CA-signed certificate", Security: true,
+		Summary: "The certificate of https://sol.lan.invalid:8384 changed to a certificate from a certificate authority for the same host name. syncwatch pinned it: AB:CD:EF:01:23:45:67:89."}) {
+		t.Fatalf("renewal: %+v", renewal)
+	}
+	// A server that the configuration does not have any more.
+	if n := pinNotice(cfg, "akka", fp, false); n.Title != "Server akka: certificate pinned" || !strings.Contains(n.Summary, " of the server at the first contact.") {
+		t.Fatalf("unknown server: %+v", n)
+	}
+	// The function for Manager.OnPin reads the configuration of the call.
+	holder, err := config.NewHolder(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []notify.Notice
+	onPin := pinNotices(holder, func(n notify.Notice) { sent = append(sent, n) })
+	c := cfg.Clone()
+	c.Servers[0].URL = "https://sol2.lan.invalid:8384"
+	if err := holder.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	onPin("sol", fp, false)
+	if len(sent) != 1 || !strings.Contains(sent[0].Summary, "https://sol2.lan.invalid:8384") {
+		t.Fatalf("sent %+v", sent)
+	}
+}
+
 // A lost secret.key (or a changed SYNCWATCH_SECRET_KEY) makes the stored
 // secrets unreadable. syncwatch still starts and still makes a new key, but
 // the log says why at start. SYNCWATCH_SECRET_KEY next to a secret.key gets

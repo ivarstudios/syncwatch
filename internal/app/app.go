@@ -27,6 +27,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/settings"
+	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/store"
 	"github.com/ivarstudios/syncwatch/internal/web"
 )
@@ -54,6 +55,8 @@ type Options struct {
 	Version    string
 	Log        *slog.Logger
 	OnListen   func(addr string) // for tests
+	// onManager gets the collector manager after Run wired it (for tests).
+	onManager func(*collector.Manager)
 }
 
 // evalLimit is how long syncwatch can be without an evaluation of the checks
@@ -292,6 +295,35 @@ func RecordPasswordReset(st *store.Store) error {
 	return recordCLINotice(st, titleCLIReset, []string{"The new administrator password is set. syncwatch logged out all sessions."})
 }
 
+// pinNotice words the settings notice for a certificate that the collector
+// pinned without an administrator: at the first contact with the server, or
+// a CA-signed certificate that replaced the pinned one for the same host
+// name (renewal). The URL is the API URL of the configuration.
+func pinNotice(cfg *config.Config, serverID, fingerprint string, renewal bool) notify.Notice {
+	name, where := serverID, "the server"
+	for _, sv := range cfg.Servers {
+		if sv.ID == serverID {
+			name, where = sv.Name, sv.URL
+			break
+		}
+	}
+	fp := stclient.ShortFP(fingerprint)
+	if renewal {
+		return notify.Notice{Title: "Server " + name + ": new CA-signed certificate", Security: true,
+			Summary: "The certificate of " + where + " changed to a certificate from a certificate authority for the same host name. syncwatch pinned it: " + fp + "."}
+	}
+	return notify.Notice{Title: "Server " + name + ": certificate pinned", Security: true,
+		Summary: "syncwatch pinned the certificate " + fp + " of " + where + " at the first contact."}
+}
+
+// pinNotices returns the function for collector.Manager.OnPin: a settings
+// notice through send for each certificate that the collector pins.
+func pinNotices(holder *config.Holder, send func(notify.Notice)) func(serverID, fingerprint string, renewal bool) {
+	return func(serverID, fingerprint string, renewal bool) {
+		send(pinNotice(holder.Get(), serverID, fingerprint, renewal))
+	}
+}
+
 // configCheckInterval is how often a running server looks for a
 // configuration saved by another process.
 const configCheckInterval = 10 * time.Second
@@ -481,6 +513,9 @@ func Run(ctx context.Context, o Options) error {
 	ntf := notify.New(eng, st, holder, log)
 	eng.OnEvaluate(ntf.Wake)
 	mgr := collector.NewManager(hub, st, holder, log)
+	// A certificate that the collector pins without an administrator (first
+	// contact, CA-signed renewal) gets a settings notice.
+	mgr.OnPin = pinNotices(holder, ntf.Notice)
 	holder.OnChange(func() {
 		mgr.Sync()
 		eng.Trigger()
@@ -533,6 +568,9 @@ func Run(ctx context.Context, o Options) error {
 		eng.OnEvaluate(dm.Wake)
 		workerFuncs = append(workerFuncs, dm.run)
 		deadmanAt = dm.target()
+	}
+	if o.onManager != nil {
+		o.onManager(mgr)
 	}
 
 	tc, err := tlsConfig(o, holder.Get(), log)

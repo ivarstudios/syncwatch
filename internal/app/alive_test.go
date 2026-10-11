@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/collector"
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -117,7 +118,8 @@ func (f *fakeDiscord) has(s string) bool {
 
 // Run wires the parts of wave 3: the gap and the heartbeat (also at a clean
 // stop), the dead-man URL (called after the first evaluation, the log names
-// the host only), the health rules of /healthz and the trusted proxies.
+// the host only), the health rules of /healthz, the trusted proxies, and the
+// settings notice of a certificate that the collector pins (OnPin).
 func TestRunWiring(t *testing.T) {
 	config.AllowAnyWebhook = true
 	t.Cleanup(func() { config.AllowAnyWebhook = false })
@@ -142,13 +144,14 @@ func TestRunWiring(t *testing.T) {
 
 	logs := &lockedLog{}
 	addr := make(chan string, 1)
+	mgr := make(chan *collector.Manager, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(ctx, Options{DataDir: dir, Listen: "127.0.0.1:0", ConfigFile: boot, Log: slog.New(slog.NewTextHandler(logs, nil)),
 			TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, NotifyLimit: 15 * time.Minute, DeadmanURL: mon.srv.URL + deadmanSecret,
-			OnListen: func(a string) { addr <- a }})
+			OnListen: func(a string) { addr <- a }, onManager: func(m *collector.Manager) { mgr <- m }})
 	}()
 	var a string
 	select {
@@ -177,6 +180,13 @@ func TestRunWiring(t *testing.T) {
 		}
 	}
 	noSecrets(t, logs.String())
+
+	// The collector pins a certificate at the first contact: a settings
+	// notice goes to Discord.
+	(<-mgr).OnPin("sol", strings.Repeat("ab", 32), false)
+	waitFor(t, "the settings notice of the pinned certificate", func() bool {
+		return discord.has("Server SOL: certificate pinned\nsyncwatch pinned the certificate AB:AB:AB:AB:AB:AB:AB:AB of https://127.0.0.1:1 at the first contact.")
+	})
 
 	time.Sleep(50 * time.Millisecond)
 	stopAt := time.Now()
