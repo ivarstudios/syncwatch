@@ -16,7 +16,7 @@ type Record struct {
 	OpenedAt           time.Time // when the monitor opened it
 	LastSeen           time.Time
 	ResolvedAt         time.Time // zero while open
-	Stale              bool      // frozen because a server it depends on is unreachable
+	Stale              bool      // frozen (a server it depends on is unreachable) or held (r1: a device that is away)
 	UrgentSince        time.Time // when it became urgent (zero while it isn't)
 	PingedAt           time.Time // urgent message sent
 	ResolvedNotifiedAt time.Time // "resolved" message sent

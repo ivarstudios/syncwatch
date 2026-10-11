@@ -57,7 +57,7 @@
       <li class="sev-row-{{.Severity}}">
         {{template "sev" .}} <span class="chk">{{.Checks}}</span>
         {{if .Urgent}}<span class="tag urgent" title="Sends urgent messages">urgent</span>{{end}}
-        {{if .Stale}}<span class="tag stale" title="Server unreachable: last known state">stale</span>{{end}}
+        {{if .Stale}}<span class="tag stale" title="No current data: last known state">stale</span>{{end}}
         <a class="plain" href="/problems#f-{{.ID}}">{{.Message}}</a>
         <span class="muted">· open {{.OpenFor}}</span>
       </li>

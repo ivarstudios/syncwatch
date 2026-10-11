@@ -125,7 +125,7 @@ func findingLine(r *store.Record, url string) string {
 	checks := strings.Join(r.Checks, "+")
 	line := fmt.Sprintf("%s **%s** %s", Icon(r.Severity), checks, escapeMD(clip(r.Message, 280)))
 	if r.Stale {
-		line += " _(server unreachable, last known state)_"
+		line += " _(no current data, last known state)_"
 	}
 	return line + detailsLink(url, r.ID)
 }

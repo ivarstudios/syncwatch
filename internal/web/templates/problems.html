@@ -50,7 +50,7 @@
         <summary>
           {{template "sev" .}} <span class="chk" title="{{.Title}}">{{.Checks}}</span>
           {{if .Urgent}}<span class="tag urgent" title="Sends urgent messages">urgent</span>{{end}}
-          {{if .Stale}}<span class="tag stale" title="Server unreachable: last known state">stale</span>{{end}}
+          {{if .Stale}}<span class="tag stale" title="No current data: last known state">stale</span>{{end}}
           {{if .Snoozed}}<span class="tag snoozed">{{.SnoozeLabel}}</span>{{end}}
           <span class="msg">{{.Message}}</span>
           <span class="muted nowrap">· open {{.OpenFor}}</span>
