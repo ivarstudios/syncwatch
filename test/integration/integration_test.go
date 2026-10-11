@@ -303,7 +303,19 @@ func (s *suite) shareRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.waitFinding(90*time.Second, "S2", "SIRIUS-LIVE-2PROJECTFILES on SIRIUS")
-	s.waitFinding(30*time.Second, "S1", "LIVE-EPSILON-2PROJECTFILES inside whole PROJECTFILES share")
+	// r2 (W-046): the Syncthing folders inside the share root are rows of
+	// S2, not S1 findings.
+	f := s.waitFinding(30*time.Second, "S2", "other Syncthing folder")
+	inside := false
+	for _, d := range f.Details {
+		inside = inside || (d.Key == "Syncthing folder inside" && strings.Contains(d.Value, "LIVE-EPSILON-2PROJECTFILES"))
+	}
+	if !inside {
+		t.Fatalf("S2 does not list LIVE-EPSILON-2PROJECTFILES: %+v", f.Details)
+	}
+	if st, err := s.sw.Status(); err != nil || st.Find("S1", "inside whole PROJECTFILES share") != nil {
+		t.Fatalf("no S1 for a folder inside the share-root folder (W-046): %v", err)
+	}
 	s.waitDiscord(since, 60*time.Second, "urgent S2 ping", mentionsCheck("Share root"))
 }
 
