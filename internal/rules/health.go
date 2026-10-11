@@ -290,14 +290,15 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 		} else if !dbFull && (busyStates[f.State] || f.NeedItems > 0) {
 			// A folder that Syncthing stopped for its database is in the H4
 			// of the server, not stuck.
+			p := e.progressOf(sv.Progress[f.ID][""], f.NeedBytes, f.GlobalBytes)
 			e.add("H5", sv.ID, "folder:"+f.ID, model.Finding{
 				Subject:     subject,
-				Message:     fmt.Sprintf("Folder %s on %s did not finish the sync in %s (%s, %s)", name, sv.Name, Ago(e.Config.Thresholds.StuckSync.D()), f.State, Plural(int(f.NeedItems), "remaining item", "remaining items")),
+				Message:     fmt.Sprintf("Folder %s on %s did not finish the sync in %s (%s, %s%s)", name, sv.Name, Ago(e.Config.Thresholds.StuckSync.D()), f.State, Plural(int(f.NeedItems), "remaining item", "remaining items"), p.suffix()),
 				MinDuration: e.Config.Thresholds.StuckSync.D(),
-				Details: []model.Detail{
+				Details: append([]model.Detail{
 					detail("Folder ID", f.ID), detail("State", f.State),
 					detail("Items left", fmt.Sprint(f.NeedItems)), detail("Bytes left", fmt.Sprint(f.NeedBytes)),
-				},
+				}, p.details()...),
 			})
 		}
 
@@ -364,9 +365,16 @@ func (e *evaluator) stuckDevice(sv *model.Server, f *model.Folder, dev string, c
 	if nl, ok := sv.NeedLists[f.ID][dev]; ok && len(nl.Names) > 0 {
 		details = append(details, detail("Needed files", e.neededFiles(nl, c)))
 	}
+	// A device that is away receives nothing: no speed for it.
+	var samples []model.ProgressSample
+	if !held {
+		samples = sv.Progress[f.ID][dev]
+	}
+	p := e.progressOf(samples, c.NeedBytes, c.GlobalBytes)
+	details = append(details, p.details()...)
 	e.add("H5", sv.ID, "device:"+f.ID+":"+dev, model.Finding{
 		Subject:     fmt.Sprintf("%s on %s", name, dn),
-		Message:     fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), sv.Name),
+		Message:     fmt.Sprintf("Device %s is stuck at %s%% of folder %s for more than %s (%s%s, seen from %s)", dn, pct, name, Ago(e.Config.Thresholds.StuckSync.D()), Plural(int(c.NeedItems), "remaining item", "remaining items"), p.suffix(), sv.Name),
 		MinDuration: e.Config.Thresholds.StuckSync.D(),
 		Held:        held,
 		Details:     details,

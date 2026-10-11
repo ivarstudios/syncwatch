@@ -384,3 +384,111 @@ func TestStuckDeviceNamesNeededFiles(t *testing.T) {
 		t.Fatalf("held: %+v", h5)
 	}
 }
+
+// samplesAt gives a folder and device the progress samples of a sync that
+// needs need bytes now and received perMinute bytes each minute for the
+// last minutes.
+func samplesAt(sv *model.Server, folderID, dev string, need, global, perMinute int64, minutes int) {
+	for i := minutes; i >= 0; i-- {
+		sv.AddProgress(folderID, dev, model.ProgressSample{At: now.Add(-time.Duration(i) * time.Minute), NeedBytes: need + int64(i)*perMinute, GlobalBytes: global})
+	}
+}
+
+// W-059 (b): H5 keeps its time rule and shows the progress of the sync:
+// the bytes received, the speed over the last 10 minutes and the time left.
+// The values are rounded, thus 2 evaluations 30 seconds apart give the same
+// message.
+func TestStuckSyncShowsProgress(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	// AKKA receives 2.15 GB at 2.4 MB each second: 590 MB are left.
+	f := folder("n", "LIVE-NORRSKEN-2PROJECTFILES", "/s/AKKA-LIVE-2PROJECTFILES/LIVE-NORRSKEN-2PROJECTFILES")
+	f.State, f.NeedItems, f.NeedBytes, f.GlobalBytes = "syncing", 1, 590_000_000, 2_150_000_000
+	akka.Folders["n"] = f
+	samplesAt(akka, "n", "", 590_000_000, 2_150_000_000, 144_000_000, 10)
+	h5 := mustFind(t, run(t, c, akka), "H5", "Folder LIVE-NORRSKEN-2PROJECTFILES on AKKA")
+	want := "Folder LIVE-NORRSKEN-2PROJECTFILES on AKKA did not finish the sync in 24 hours (syncing, 1 remaining item, 1.6 of 2.1 GB received, approximately 4 minutes remaining)"
+	if h5.Message != want {
+		t.Fatalf("message\n got %s\nwant %s", h5.Message, want)
+	}
+	if h5.DetailValue("Received") != "1.6 of 2.1 GB" || h5.DetailValue("Speed") != "2.4 MB each second" || h5.DetailValue("Time left") != "approximately 4 minutes" {
+		t.Fatalf("rows %v", h5.Details)
+	}
+	if h5.DetailValue("Bytes left") != "590000000" || h5.DetailValue("Items left") != "1" || h5.MinDuration != 24*time.Hour {
+		t.Fatalf("the time rule and the machine values stay: %+v", h5)
+	}
+	// 30 seconds later 72 MB more arrived (no new sample in less than 1 minute).
+	f.NeedBytes = 518_000_000
+	later := Evaluate(Input{Snapshot: &model.Snapshot{At: now.Add(30 * time.Second), Servers: []*model.Server{akka}}, Config: c, Now: now.Add(30 * time.Second)})
+	h5b := mustFind(t, later, "H5", "Folder LIVE-NORRSKEN-2PROJECTFILES on AKKA")
+	if h5b.Message != h5.Message || h5b.DetailValue("Speed") != h5.DetailValue("Speed") || h5b.DetailValue("Time left") != h5.DetailValue("Time left") || h5b.DetailValue("Received") != h5.DetailValue("Received") {
+		t.Fatalf("30 seconds later:\n%s %v\n%s %v", h5.Message, h5.Details, h5b.Message, h5b.Details)
+	}
+
+	// The PC view: the completion of the device and its samples.
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "LAPTOP-DANI", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true, Type: "relay-client"}
+	g := folder("g", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	g.Completion[pcID] = &model.Completion{Percent: 72.55, NeedItems: 3, NeedBytes: 59_000_000_000, GlobalBytes: 215_000_000_000, RemoteState: "valid"}
+	akka.Folders["g"] = g
+	samplesAt(akka, "g", pcID, 59_000_000_000, 215_000_000_000, 30_000_000, 15) // 0.5 MB each second
+	h5 = mustFind(t, run(t, c, akka), "H5", "on LAPTOP-DANI")
+	want = "Device LAPTOP-DANI is stuck at 72.5% of folder LIVE-FJORD-4FINALS for more than 24 hours (3 remaining items, 160 of 220 GB received, approximately 33 hours remaining, seen from AKKA)"
+	if h5.Message != want {
+		t.Fatalf("device message\n got %s\nwant %s", h5.Message, want)
+	}
+	if h5.DetailValue("Speed") != "0.5 MB each second" || h5.DetailValue("Time left") != "approximately 33 hours" || h5.DetailValue("Received") != "160 of 220 GB" {
+		t.Fatalf("device rows %v", h5.Details)
+	}
+	// Away: the held H5 shows what it received, but no speed.
+	akka.Connections[pcID].Connected = false
+	g.Completion[pcID].RemoteState = "unknown"
+	akka.LastCompletions = map[string]map[string]model.Completion{"g": {pcID: {Percent: 72.55, NeedItems: 3, NeedBytes: 59_000_000_000, GlobalBytes: 215_000_000_000, RemoteState: "valid"}}}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on LAPTOP-DANI"); !h5.Held || h5.DetailValue("Speed") != "" || h5.DetailValue("Time left") != "" || h5.DetailValue("Received") != "160 of 220 GB" || strings.Contains(h5.Message, "remaining,") {
+		t.Fatalf("held: %s %v", h5.Message, h5.Details)
+	}
+
+	// No data arrived for 12 minutes (no progress events while the sync
+	// waits): speed 0 and no time left.
+	f.NeedBytes = 590_000_000
+	stalled := Evaluate(Input{Snapshot: &model.Snapshot{At: now.Add(12 * time.Minute), Servers: []*model.Server{akka}}, Config: c, Now: now.Add(12 * time.Minute)})
+	h5 = mustFind(t, stalled, "H5", "Folder LIVE-NORRSKEN-2PROJECTFILES on AKKA")
+	if h5.DetailValue("Speed") != "0 (no data arrived in the last 10 minutes)" || h5.DetailValue("Time left") != "" || !strings.HasSuffix(h5.Message, "(syncing, 1 remaining item, 1.6 of 2.1 GB received)") {
+		t.Fatalf("stalled: %s %v", h5.Message, h5.Details)
+	}
+
+	// Samples of less than 10 minutes: no speed. No size: no Received.
+	akka.Progress = nil
+	samplesAt(akka, "n", "", 518_000_000, 2_150_000_000, 144_000_000, 5)
+	f.GlobalBytes = 0
+	h5 = mustFind(t, run(t, c, akka), "H5", "Folder LIVE-NORRSKEN-2PROJECTFILES on AKKA")
+	if h5.DetailValue("Speed") != "" || h5.DetailValue("Time left") != "" || h5.DetailValue("Received") != "" || h5.Message != "Folder LIVE-NORRSKEN-2PROJECTFILES on AKKA did not finish the sync in 24 hours (syncing, 1 remaining item)" {
+		t.Fatalf("no speed, no size: %s %v", h5.Message, h5.Details)
+	}
+}
+
+// The rounding of the progress texts of H5.
+func TestProgressTexts(t *testing.T) {
+	for _, tc := range []struct {
+		v    float64
+		want string
+	}{{2.4, "2.4"}, {2.15, "2.1"}, {1.56, "1.6"}, {0.59, "0.59"}, {9.96, "10"}, {12.3, "12"}, {590, "590"}, {1234, "1200"}, {1, "1"}, {0.0512, "0.051"}, {0, "0"}} {
+		if got := sig2(tc.v); got != tc.want {
+			t.Errorf("sig2(%v) = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		secs float64
+		want string
+	}{{10, "less than 1 minute"}, {60, "approximately 1 minute"}, {245.8, "approximately 4 minutes"}, {7100, "approximately 118 minutes"}, {7200, "approximately 2 hours"}, {47 * 3600, "approximately 47 hours"}, {3 * 86400, "approximately 3 days"}} {
+		if got := timeLeft(tc.secs); got != tc.want {
+			t.Errorf("timeLeft(%v) = %q, want %q", tc.secs, got, tc.want)
+		}
+	}
+	if got := sizeOf(12_000_000, 590_000_000); got != "12 of 590 MB" {
+		t.Errorf("sizeOf: %q", got)
+	}
+	if got := rate(16_384); got != "0.016 MB each second" {
+		t.Errorf("rate: %q", got)
+	}
+}
