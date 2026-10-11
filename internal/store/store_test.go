@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -240,6 +241,44 @@ func TestRecordsAndHistory(t *testing.T) {
 	h, _ := s.HistoryBetween(now.Add(-time.Hour), now.Add(time.Hour))
 	if len(h) != 1 || h[0].ResolvedAt.IsZero() {
 		t.Fatalf("history %+v", h)
+	}
+}
+
+// The time of the last repeat and the text of the resolved message are in
+// the data column (repeated_at in Unix ms, resolved_text): no column of the
+// findings table changes, and an older syncwatch ignores the keys.
+func TestRecordRepeatedAtAndResolvedText(t *testing.T) {
+	s := testStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+	r := &Record{Finding: model.Finding{ID: "x", Check: "H1", Severity: model.Error, Category: "health", Server: "sol", Subject: "SOL",
+		Message: "Server SOL is unreachable", ResolvedText: "Server SOL can be reached again.", Urgent: true},
+		OpenedAt: now, LastSeen: now, PingedAt: now, RepeatedAt: now.Add(2 * time.Hour)}
+	if err := s.SaveRecord(r); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Record("x")
+	if err != nil || got == nil || !got.RepeatedAt.Equal(r.RepeatedAt) || got.ResolvedText != r.ResolvedText || !got.PingedAt.Equal(now) {
+		t.Fatalf("got %+v %v", got, err)
+	}
+	var data string
+	if err := s.db.QueryRow(`SELECT data FROM findings WHERE id='x'`).Scan(&data); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"repeated_at":` + strconv.FormatInt(r.RepeatedAt.UnixMilli(), 10), `"resolved_text":"Server SOL can be reached again."`} {
+		if !strings.Contains(data, want) {
+			t.Errorf("data %s lacks %s", data, want)
+		}
+	}
+	// A record without them: no keys, zero values.
+	r.ID, r.RepeatedAt, r.ResolvedText = "y", time.Time{}, ""
+	if err := s.SaveRecord(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT data FROM findings WHERE id='y'`).Scan(&data); err != nil || strings.Contains(data, "repeated_at") || strings.Contains(data, "resolved_text") {
+		t.Fatalf("data %s %v", data, err)
+	}
+	if got, _ := s.Record("y"); !got.RepeatedAt.IsZero() || got.ResolvedText != "" {
+		t.Fatalf("got %+v", got)
 	}
 }
 

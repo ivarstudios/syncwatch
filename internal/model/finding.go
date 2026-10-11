@@ -83,6 +83,9 @@ type Finding struct {
 	Details  []Detail `json:"details,omitempty"`
 	Paths    []string `json:"paths,omitempty"` // up to 5 failing file paths
 	Link     string   `json:"link,omitempty"`  // Open in Syncthing
+	// ResolvedText is one sentence for the resolved message, for example
+	// "Server SOL can be reached again."; "" when the rule sets none.
+	ResolvedText string `json:"resolved_text,omitempty"`
 
 	// MinDuration is how long the condition must hold before the finding opens.
 	MinDuration time.Duration `json:"-"`
