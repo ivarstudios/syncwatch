@@ -90,6 +90,7 @@ label { display: block; font-size: .9rem; color: var(--muted); }
 label.check { display: flex; gap: .4rem; align-items: center; color: var(--text); }
 input, select, textarea, button { font: inherit; color: inherit; }
 input:not([type=checkbox]):not([type=file]), select, textarea { display: block; width: 100%; margin-top: .2rem; padding: .45rem .55rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
+input:not([type=checkbox]):not([type=file])[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--err); }
 .toolbar input:not([type=checkbox]), .toolbar select, form.inline input:not([type=checkbox]) { width: auto; min-width: 9rem; display: inline-block; }
 .toolbar label.check { padding-bottom: .5rem; }
 a.plain { color: var(--text); text-decoration: none; }
