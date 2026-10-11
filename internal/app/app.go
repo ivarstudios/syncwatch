@@ -195,38 +195,83 @@ func saveConfig(st *store.Store, c *config.Config) (int64, error) {
 	return st.BumpConfigRevision()
 }
 
+// Imported is the result of ImportFile.
+type Imported struct {
+	Config  *config.Config
+	Secrets int      // the secrets that the file had
+	Removed []string // the names of the servers that the file removed, with their API keys and pinned certificates
+}
+
 // ImportFile replaces the stored configuration with a YAML file. A running
 // server applies it within configCheckInterval and sends a settings notice.
-func ImportFile(st *store.Store, path string) (*config.Config, int, error) {
+// The command line asks for no confirmation: a person who can run it can
+// also change the database.
+func ImportFile(st *store.Store, path string) (*Imported, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	c, err := config.ParseYAML(b)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	old, err := settings.Load(st)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
+	removed := removedServers(old, c)
 	changes := importChanges(st, old, c)
+	if line := RemovedLine(removed); line != "" {
+		changes = append(changes, line)
+	}
 	n, err := settings.ImportSecrets(st, c)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	// Recorded before the revision changes: the server that runs sends the
 	// notice to the channels of the configuration that it has, thus a
 	// webhook that the file replaces also gets it.
 	if len(changes) > 0 {
 		if err := recordCLINotice(st, titleCLIImport, append([]string{"syncwatch import-config replaced the configuration."}, changes...)); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 	}
 	if _, err := saveConfig(st, c); err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return c, n, settings.DropRemovedServers(st, old, c)
+	return &Imported{Config: c, Secrets: n, Removed: removed}, settings.DropRemovedServers(st, old, c)
+}
+
+// removedServers returns the names of the servers of old that c does not
+// have (settings.DropRemovedServers deletes their API keys and pinned
+// certificates).
+func removedServers(old, c *config.Config) []string {
+	if old == nil {
+		return nil
+	}
+	keep := map[string]bool{}
+	for _, sv := range c.Servers {
+		keep[sv.ID] = true
+	}
+	var out []string
+	for _, sv := range old.Servers {
+		if !keep[sv.ID] {
+			out = append(out, sv.Name)
+		}
+	}
+	return out
+}
+
+// RemovedLine words the servers that an import removed, for the settings
+// notice and the output of import-config.
+func RemovedLine(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return "The import removed the server " + names[0] + " and deleted its API key and pinned certificate."
+	}
+	return "The import removed the servers " + strings.Join(names, ", ") + " and deleted their API keys and pinned certificates."
 }
 
 // importChanges words what an import changes, for its settings notice: the
@@ -255,10 +300,30 @@ func importChanges(st *store.Store, old, c *config.Config) []string {
 	if c.Notify.DiscordWebhook != "" {
 		secret(st.HasSecret(store.SecretDiscordWebhook), "Discord webhook")
 	}
+	if c.Notify.DiscordNoticesWebhook != "" {
+		secret(st.HasSecret(store.SecretNoticesWebhook), "Discord webhook for settings notices")
+	}
 	if c.API.Token != "" {
-		secret(st.HasSecret(store.SecretAPIToken), "API token")
+		// The API token of the file replaces the value of the API token with
+		// the name of the single API token of an older version, or adds it.
+		secret(hasLegacyToken(st), `API token "`+store.LegacyTokenName+`"`)
 	}
 	return out
+}
+
+// hasLegacyToken reports whether an API token has the name of the single API
+// token of an older version (names are unique without regard to case).
+func hasLegacyToken(st *store.Store) bool {
+	tokens, err := st.APITokens()
+	if err != nil {
+		return false
+	}
+	for _, t := range tokens {
+		if strings.EqualFold(t.Name, store.LegacyTokenName) {
+			return true
+		}
+	}
+	return false
 }
 
 // keyCLINotice is the prefix of the settings that keep a settings notice for
@@ -399,7 +464,10 @@ func (w *configWatcher) sendCLINotices() {
 			}
 			w.log.Warn("settings changed", "change", n.Title, "detail", summary, "source", "command line")
 			if w.notice != nil {
-				w.notice(notify.Notice{Title: n.Title, Summary: summary})
+				// The commands change the administrator password or import a
+				// configuration: security notices (kept until a channel
+				// accepts them).
+				w.notice(notify.Notice{Title: n.Title, Summary: summary, Security: true})
 			}
 		}
 		if err := w.st.DeleteSetting(key); err != nil {

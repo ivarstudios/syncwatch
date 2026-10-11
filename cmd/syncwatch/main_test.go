@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -261,6 +262,53 @@ func TestHealthcheckGivesTheReason(t *testing.T) {
 		if (c.want == "" && err != nil) || (c.want != "" && (err == nil || err.Error() != c.want)) {
 			t.Errorf("HTTP %d %q: %v, want %q", c.status, c.body, err, c.want)
 		}
+	}
+}
+
+// import-config says which servers the file removes (with their API keys and
+// pinned certificates). It asks for no confirmation: a person who can run
+// it can also change the database.
+func TestImportConfigNamesRemovedServers(t *testing.T) {
+	t.Setenv("SYNCWATCH_SECRET_KEY", "")
+	dir := t.TempDir()
+	st, err := app.OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	write := func(yaml string) string {
+		p := filepath.Join(t.TempDir(), "new.yaml")
+		if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	run := func(file string) string {
+		t.Helper()
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stderr := os.Stderr
+		os.Stderr = w
+		err = importConfig([]string{"--data", dir, file})
+		os.Stderr = stderr
+		w.Close()
+		out, _ := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	run(write("servers:\n  - name: AKKA\n    url: https://akka.invalid:8384\n    api_key: k1\n  - name: SOL\n    url: https://sol.invalid:8384\n  - name: SIRIUS\n    url: https://sirius.invalid:8384\n"))
+	if out := run(write("servers:\n  - name: SIRIUS\n    url: https://sirius.invalid:8384\n")); !strings.Contains(out, "The import removed the servers AKKA, SOL and deleted their API keys and pinned certificates.\n") {
+		t.Fatalf("output:\n%s", out)
+	}
+	if out := run(write("servers: []\n")); !strings.Contains(out, "The import removed the server SIRIUS and deleted its API key and pinned certificate.\n") {
+		t.Fatalf("output:\n%s", out)
+	}
+	if out := run(write("servers: []\n")); strings.Contains(out, "removed") {
+		t.Fatalf("output without a removed server:\n%s", out)
 	}
 }
 

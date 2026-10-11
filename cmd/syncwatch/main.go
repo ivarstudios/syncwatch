@@ -420,15 +420,20 @@ func importConfig(args []string) error {
 		return err
 	}
 	defer st.Close()
-	c, n, err := app.ImportFile(st, fs.Arg(0))
+	// No confirmation: a person who can run this command can also change the
+	// database. The output says what the import removed.
+	imp, err := app.ImportFile(st, fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "syncwatch imported %s and %s. A syncwatch that runs uses the new configuration in less than 10 seconds. If syncwatch does not run, it uses the new configuration on the next start.\n", plural(len(c.Servers), "server", "servers"), plural(n, "secret", "secrets"))
-	if n > 0 {
+	fmt.Fprintf(os.Stderr, "syncwatch imported %s and %s. A syncwatch that runs uses the new configuration in less than 10 seconds. If syncwatch does not run, it uses the new configuration on the next start.\n", plural(len(imp.Config.Servers), "server", "servers"), plural(imp.Secrets, "secret", "secrets"))
+	if line := app.RemovedLine(imp.Removed); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
+	if imp.Secrets > 0 {
 		fmt.Fprintf(os.Stderr, "syncwatch stores the secrets encrypted. The file %s still contains them unencrypted. Delete the file.\n", fs.Arg(0))
 	}
-	if need := settings.NeedKey(st, c); len(need) > 0 {
+	if need := settings.NeedKey(st, imp.Config); len(need) > 0 {
 		fmt.Fprintf(os.Stderr, "Type the API key again for %s. syncwatch sends an API key only to the URL that you typed it for.\n", strings.Join(need, ", "))
 	}
 	return nil
