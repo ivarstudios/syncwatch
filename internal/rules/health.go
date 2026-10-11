@@ -114,9 +114,63 @@ var busyStates = map[string]bool{
 // reported; the folder keeps syncing through its periodic scans meanwhile.
 const watcherGrace = time.Hour
 
+// databaseFull reports whether a folder error says that the disk of
+// Syncthing's database is full (minHomeDiskFree): Syncthing then stops every
+// folder of the server with this error.
+func databaseFull(err string) bool {
+	return strings.Contains(strings.ToLower(err), "insufficient space on disk for database")
+}
+
+// noSpace reports whether an error says that a disk is full.
+func noSpace(err string) bool {
+	low := strings.ToLower(err)
+	return strings.Contains(low, "free space") || strings.Contains(low, "insufficient space") || strings.Contains(low, "no space left")
+}
+
+// H4 for a full database disk: one finding for the server lists the folders
+// that Syncthing stopped. These folders get no H4 for this error.
+func (e *evaluator) databaseDisk(sv *model.Server, ids []string) {
+	var stopped []*model.Folder
+	for _, id := range ids {
+		if f := sv.Folders[id]; !f.Paused && databaseFull(f.Error) {
+			stopped = append(stopped, f)
+		}
+	}
+	if len(stopped) == 0 {
+		return
+	}
+	var since time.Time
+	var labels, fids []string
+	for i, f := range stopped {
+		if f.State == "error" && !f.StateChanged.IsZero() && (since.IsZero() || f.StateChanged.Before(since)) {
+			since = f.StateChanged
+		}
+		if i < maxListed {
+			labels = append(labels, f.DisplayName())
+		}
+		fids = append(fids, f.ID)
+	}
+	if n := len(stopped) - maxListed; n > 0 {
+		labels = append(labels, fmt.Sprintf("…and %d more", n))
+	}
+	err := stopped[0].Error
+	e.add("H4", sv.ID, "database-disk", model.Finding{
+		Subject: "Syncthing database on " + sv.Name,
+		Message: fmt.Sprintf("Syncthing on %s stopped %s: the disk of its database is full (%s)", sv.Name, Plural(len(stopped), "folder", "folders"), err),
+		Since:   since,
+		Details: []model.Detail{
+			detail("Error", err),
+			detail("Stopped folders", strings.Join(labels, ", ")),
+			detail("Folder IDs", strings.Join(fids, ", ")),
+		},
+		ResolvedText: fmt.Sprintf("Syncthing on %s has space for its database again.", sv.Name),
+	})
+}
+
 // H4, H5, H6 (folders), H5 (devices), H6 (remote paused)
 func (e *evaluator) folderHealth(sv *model.Server) {
 	ids := sortedFolderIDs(sv)
+	e.databaseDisk(sv, ids)
 	for _, id := range ids {
 		f := sv.Folders[id]
 		name := f.DisplayName()
@@ -131,12 +185,19 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 			continue
 		}
 
+		// The error of a full database disk belongs to the H4 of the server.
+		dbFull := databaseFull(f.Error)
 		var reasons []string
-		lowErr := strings.ToLower(f.Error + " " + f.WatchError)
-		if strings.Contains(lowErr, "free space") || strings.Contains(lowErr, "insufficient space") || strings.Contains(lowErr, "no space left") {
+		space := noSpace(f.WatchError) || (!dbFull && noSpace(f.Error))
+		for _, fe := range f.FileErrors {
+			// A pull that Syncthing refuses for lack of space in the folder
+			// (minDiskFree) stops the sync as a full disk does: no wait.
+			space = space || noSpace(fe.Error)
+		}
+		if space {
 			reasons = append(reasons, "out of space")
 		}
-		if f.State == "error" || f.Error != "" {
+		if !dbFull && (f.State == "error" || f.Error != "") {
 			r := "folder error"
 			if f.Error != "" {
 				r += ": " + f.Error
@@ -175,7 +236,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				paths = append(paths, fe.Path+": "+fe.Error)
 			}
 			var since time.Time
-			if f.State == "error" {
+			if f.State == "error" && !dbFull {
 				since = f.StateChanged
 			}
 			// Single failing files are common and often fix themselves (a
@@ -197,7 +258,9 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 					detail("Failing items", fmt.Sprint(nErr)),
 				},
 			})
-		} else if busyStates[f.State] || f.NeedItems > 0 {
+		} else if !dbFull && (busyStates[f.State] || f.NeedItems > 0) {
+			// A folder that Syncthing stopped for its database is in the H4
+			// of the server, not stuck.
 			e.add("H5", sv.ID, "folder:"+f.ID, model.Finding{
 				Subject:     subject,
 				Message:     fmt.Sprintf("Folder %s on %s did not finish the sync in %s (%s, %s)", name, sv.Name, Ago(e.Config.Thresholds.StuckSync.D()), f.State, Plural(int(f.NeedItems), "remaining item", "remaining items")),

@@ -182,9 +182,13 @@ func TestOverlapAndShareRoot(t *testing.T) {
 	akka.Folders["p"] = folder("p", "LIVE-P", sh+"/LIVE-P")
 	akka.Folders["sub"] = folder("sub", "LIVE-P sub", sh+"/LIVE-P/sub")
 	fs := run(t, c, akka)
-	mustFind(t, fs, "S2", "AKKA-LIVE-2PROJECTFILES on AKKA")
+	s2 := mustFind(t, fs, "S2", "AKKA-LIVE-2PROJECTFILES on AKKA")
 	mustFind(t, fs, "S1", "LIVE-P sub inside LIVE-P")
-	mustFind(t, fs, "S1", "LIVE-P inside whole share")
+	// r2 (W-046): the folders inside the share-root folder are rows of S2.
+	mustNot(t, fs, "S1", "inside whole share")
+	if !strings.Contains(s2.Message, "It contains 2 other Syncthing folders") {
+		t.Fatalf("S2: %s", s2.Message)
+	}
 	if f := find(fs, "S2", ""); !f.Urgent {
 		t.Fatal("S2 urgent by default")
 	}
@@ -228,8 +232,11 @@ func TestShareRootWithoutRules(t *testing.T) {
 	a.Folders["root"] = folder("root", "root", "/data/share")
 	a.Folders["p"] = folder("p", "p", "/data/share/proj")
 	fs := run(t, c, a)
-	mustFind(t, fs, "S2", "share on A")
-	mustFind(t, fs, "S1", "p inside root")
+	s2 := mustFind(t, fs, "S2", "share on A")
+	mustNot(t, fs, "S1", "p inside root")
+	if got := s2.DetailValue("Syncthing folder inside"); got != "p — /data/share/proj" {
+		t.Fatalf("S2 row %q", got)
+	}
 }
 
 func TestServerHealth(t *testing.T) {
