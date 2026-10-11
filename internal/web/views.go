@@ -583,6 +583,7 @@ type serverSettings struct {
 	config.Server
 	HasKey         bool // a key entered for the current URL
 	KeyForOtherURL bool // a key is stored, but it was entered for another URL
+	KeyLost        bool // a key is stored, but the secret key cannot decrypt it
 	Pin            string
 	PinShort       string
 	CertChange     *model.CertChange
@@ -597,7 +598,13 @@ func (s *Server) serverSettings(v *engine.View) []serverSettings {
 	var out []serverSettings
 	for _, sc := range s.cfg.Get().Servers {
 		ss := serverSettings{Server: sc, HasKey: settings.KeyUsable(s.st, sc)}
-		ss.KeyForOtherURL = !ss.HasKey && s.st.HasSecret(store.ServerAPIKeySecret(sc.ID))
+		if s.st.HasSecret(store.ServerAPIKeySecret(sc.ID)) && !ss.HasKey {
+			// Stored but not usable: either syncwatch cannot decrypt it (the
+			// secret key changed, W-030) or it was entered for another URL.
+			_, _, err := s.st.ServerKey(sc.ID)
+			ss.KeyLost = err != nil
+			ss.KeyForOtherURL = err == nil
+		}
 		ss.Pin, _ = s.st.Pin(sc.ID)
 		ss.PinShort = stclient.ShortFP(ss.Pin)
 		if sv := v.Snapshot.Server(sc.ID); sv != nil {

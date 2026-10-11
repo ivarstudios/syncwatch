@@ -1,11 +1,15 @@
 package web
 
 import (
+	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
 // Integration of r1-3 (C4: a disabled server's device is a server), r1-4
@@ -67,5 +71,43 @@ thresholds: {pc_offline: 1h}
 	}
 	if !found {
 		t.Errorf("devices[] has no entry for SIRIUS: %v", devs)
+	}
+}
+
+// W-030 for server API keys (r1-5 request 2, integrator follow-up in the
+// plan): a stored API key that the secret key cannot decrypt is not shown as
+// "for a different URL"; a key entered for another URL still is.
+func TestServerKeyThatCannotBeDecrypted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syncwatch.db")
+	keyA, keyB := make([]byte, 32), make([]byte, 32)
+	keyB[0] = 1
+	st, err := store.Open(path, keyA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.SetServerKey("akka", "secret-key-akka", "https://a:1")
+	st.Close()
+	st, err = store.Open(path, keyB) // another secret key
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	_ = st.SetServerKey("sol", "secret-key-sol", "https://other:1") // readable, another URL
+	e := newEnv(t, twoServers)
+	e.web.st, e.st = st, st
+	h, _ := HashPassword("correct horse battery")
+	_ = st.SetSetting(KeyAdminHash, h)
+	if r := e.post("/login", url.Values{"csrf": {e.csrf("/login")}, "password": {"correct horse battery"}}); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login: %d", r.StatusCode)
+	}
+	_, page := e.get("/settings")
+	sv := section(t, page, "servers")
+	lost := "(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)"
+	other := "(The API key is for a different URL. Type it again.)"
+	if strings.Count(sv, lost) != 1 || strings.Count(sv, other) != 1 {
+		t.Errorf("servers section: %d cannot-decrypt marks and %d other-URL marks, want 1 and 1", strings.Count(sv, lost), strings.Count(sv, other))
+	}
+	if i, j := strings.Index(sv, lost), strings.Index(sv, other); i < 0 || j < 0 || i > j {
+		t.Error("the cannot-decrypt mark is not on AKKA (first) or the other-URL mark is not on SOL")
 	}
 }

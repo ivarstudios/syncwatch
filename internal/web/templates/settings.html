@@ -37,7 +37,7 @@
       <label>Name <input name="name" value="{{.Name}}" required></label>
       <label>API URL <input name="url" value="{{.URL}}" placeholder="https://192.168.1.10:8384" required></label>
       <label>GUI URL for links (optional) <input name="gui_url" value="{{.GUIURL}}"></label>
-      <label>API key {{if .HasKey}}<span class="muted">(Set. Keep the field empty to keep the API key. A new URL needs the API key again.)</span>{{else if .KeyForOtherURL}}<span class="c-err">(The API key is for a different URL. Type it again.)</span>{{else}}<span class="c-err">(not set)</span>{{end}} <input type="password" name="api_key" autocomplete="off"></label>
+      <label>API key {{if .KeyLost}}<span class="c-err">(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)</span>{{else if .HasKey}}<span class="muted">(Set. Keep the field empty to keep the API key. A new URL needs the API key again.)</span>{{else if .KeyForOtherURL}}<span class="c-err">(The API key is for a different URL. Type it again.)</span>{{else}}<span class="c-err">(not set)</span>{{end}} <input type="password" name="api_key" autocomplete="off"></label>
       <p class="small">ID <code>{{.ID}}</code> · certificate {{if .PinShort}}<span class="mono">{{.PinShort}}</span>{{else}}not pinned{{end}}</p>
       <label class="check"><input type="checkbox" name="reset_pin"> Remove the pinned certificate (syncwatch accepts the next certificate on first use)</label>
       <label>To remove the pinned certificate: administrator password or this server's API key <input type="password" name="confirm" autocomplete="off"></label>
