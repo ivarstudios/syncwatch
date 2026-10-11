@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,21 @@ const (
 const (
 	sessionCookie = "sw_session"
 	csrfCookie    = "sw_csrf"
+	// hostPrefix starts the cookie names over HTTPS. A browser keeps a
+	// __Host- cookie only with Secure, Path / and no Domain: a page on
+	// another host name (a subdomain) or on plain HTTP cannot set or replace
+	// it.
+	hostPrefix = "__Host-"
 )
+
+// cookieName is the name of a cookie for a request: with the __Host- prefix
+// over HTTPS (requestScheme), the plain name over HTTP.
+func cookieName(https bool, name string) string {
+	if https {
+		return hostPrefix + name
+	}
+	return name
+}
 
 // argon2id parameters (OWASP minimum: 19 MiB, 2 iterations, 1 thread).
 const (
@@ -119,7 +134,8 @@ func hashToken(t string) string {
 type requestInfo struct {
 	Role    string
 	Session *store.Session
-	CSRF    string
+	CSRF    string // the CSRF token that a form of this request must send
+	HTTPS   bool   // the browser uses HTTPS (requestScheme)
 }
 
 func roleAtLeast(have, need string) bool {
@@ -127,20 +143,27 @@ func roleAtLeast(have, need string) bool {
 	return rank[have] >= rank[need]
 }
 
-// resolve works out the caller's role.
+// resolve works out the caller's role. Over HTTPS it reads only the cookies
+// with the __Host- prefix. A session has its own CSRF token: a CSRF cookie
+// that another page set does not replace it.
 func (s *Server) resolve(r *http.Request) requestInfo {
 	cfg := s.cfg.Get()
-	info := requestInfo{}
-	if c, err := r.Cookie(csrfCookie); err == nil {
+	info := requestInfo{HTTPS: s.requestScheme(r) == "https"}
+	if c, err := r.Cookie(cookieName(info.HTTPS, csrfCookie)); err == nil {
 		info.CSRF = c.Value
 	}
 	if cfg.Access.Mode == config.AccessProxy {
 		info.Role = RoleAdmin
 		return info
 	}
-	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
+	if c, err := r.Cookie(cookieName(info.HTTPS, sessionCookie)); err == nil && c.Value != "" {
 		if z, err := s.st.Session(hashToken(c.Value), s.now()); err == nil && z != nil {
 			info.Role, info.Session = z.Role, z
+			// A session from before the CSRF token of the session (older
+			// version) uses the cookie, as before.
+			if z.CSRF != "" {
+				info.CSRF = z.CSRF
+			}
 			if z.Role == RoleViewer && cfg.Access.Viewer == config.ViewerNone {
 				info.Role = RoleNone
 			}
@@ -212,27 +235,34 @@ func (s *Server) TrustProxies(p []netip.Prefix) {
 	}
 }
 
+// setCSRFCookie sets the CSRF cookie: a cookie of the browser session, which
+// a script of the page cannot read.
+func setCSRFCookie(w http.ResponseWriter, https bool, tok string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: cookieName(https, csrfCookie), Value: tok, Path: "/", HttpOnly: true,
+		SameSite: http.SameSiteLaxMode, Secure: https,
+	})
+}
+
 // ensureCSRF sets the double-submit CSRF cookie if missing and returns its value.
 func (s *Server) ensureCSRF(w http.ResponseWriter, r *http.Request, info *requestInfo) string {
 	if info.CSRF != "" {
 		return info.CSRF
 	}
 	info.CSRF = randomToken(24)
-	http.SetCookie(w, &http.Cookie{
-		Name: csrfCookie, Value: info.CSRF, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteLaxMode, Secure: s.secureCookies(r),
-	})
+	setCSRFCookie(w, info.HTTPS, info.CSRF)
 	return info.CSRF
 }
 
+// errCrossOrigin refuses a form from another page.
+var errCrossOrigin = errors.New("cross-origin request refused")
+
 // checkCSRF validates a state-changing request: the form field or header must
-// match the cookie, and Origin (when sent) must be this host.
+// match the CSRF token of the session (or, without one, the cookie), and
+// Origin (when sent) must be this dashboard.
 func checkCSRF(r *http.Request, info requestInfo) error {
-	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
-		host := r.Host
-		if !strings.HasSuffix(origin, "://"+host) {
-			return errors.New("cross-origin request refused")
-		}
+	if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(origin, r.Host, info.HTTPS) {
+		return errCrossOrigin
 	}
 	tok := r.Header.Get("X-CSRF-Token")
 	if tok == "" {
@@ -244,25 +274,76 @@ func checkCSRF(r *http.Request, info requestInfo) error {
 	return nil
 }
 
+// sameOrigin reports whether the Origin of a form is this dashboard: the
+// host and port of the request, and the scheme https when the browser uses
+// HTTPS. "null" (a sandboxed page, a file, a redirect from another site) is
+// not this dashboard. Behind a reverse proxy that is not trusted syncwatch
+// sees http: then an https Origin is correct too.
+func sameOrigin(origin, host string, https bool) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Opaque != "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if https {
+			return false
+		}
+	default:
+		return false
+	}
+	return u.Host != "" && strings.EqualFold(u.Host, host)
+}
+
+// startSession logs a browser in: a new session with a new CSRF token, in
+// the session and in the CSRF cookie. A CSRF token from before the login is
+// not valid after it.
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, role string) error {
-	tok := randomToken(32)
+	tok, csrf := randomToken(32), randomToken(24)
 	now := s.now()
 	ttl := s.cfg.Get().Access.SessionTTL.D()
-	if err := s.st.CreateSession(store.Session{TokenHash: hashToken(tok), Role: role, CSRF: "", CreatedAt: now, ExpiresAt: now.Add(ttl)}); err != nil {
+	if err := s.st.CreateSession(store.Session{TokenHash: hashToken(tok), Role: role, CSRF: csrf, CreatedAt: now, ExpiresAt: now.Add(ttl)}); err != nil {
 		return err
 	}
+	https := s.secureCookies(r)
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
-		Secure: s.secureCookies(r), Expires: now.Add(ttl), MaxAge: int(ttl.Seconds()),
+		Name: cookieName(https, sessionCookie), Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		Secure: https, Expires: now.Add(ttl), MaxAge: int(ttl.Seconds()),
 	})
+	setCSRFCookie(w, https, csrf)
+	if https {
+		// The cookies of an older version over HTTPS have no prefix:
+		// syncwatch does not read them any more.
+		clearCookies(w, false, true, sessionCookie, csrfCookie)
+	}
 	return nil
 }
 
+// endSession logs a browser out. It clears the session and CSRF cookies in
+// both forms, with and without the __Host- prefix.
 func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.st.DeleteSession(hashToken(c.Value))
+	https := s.secureCookies(r)
+	for _, name := range []string{sessionCookie, hostPrefix + sessionCookie} {
+		if c, err := r.Cookie(name); err == nil && c.Value != "" {
+			_ = s.st.DeleteSession(hashToken(c.Value))
+		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	clearCookies(w, false, https, sessionCookie, csrfCookie)
+	if https {
+		// A browser accepts a __Host- cookie, also an empty one, only over
+		// HTTPS.
+		clearCookies(w, true, true, sessionCookie, csrfCookie)
+	}
+}
+
+// clearCookies tells the browser to delete cookies, with or without the
+// __Host- prefix.
+func clearCookies(w http.ResponseWriter, prefixed, secure bool, names ...string) {
+	for _, name := range names {
+		http.SetCookie(w, &http.Cookie{Name: cookieName(prefixed, name), Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+			SameSite: http.SameSiteLaxMode, Secure: secure})
+	}
 }
 
 // limiter rate-limits failed password attempts. Failures from one client IP
