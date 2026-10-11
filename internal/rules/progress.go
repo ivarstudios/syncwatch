@@ -39,10 +39,11 @@ func (p syncProgress) details() []model.Detail {
 }
 
 // suffix gives the part of the H5 message: ", 1.6 of 2.1 GB received,
-// approximately 4 minutes remaining".
-func (p syncProgress) suffix() string {
+// approximately 4 minutes remaining". The message of a device has its
+// percentage already: without received, it stays at 25 words or less.
+func (p syncProgress) suffix(received bool) string {
 	var s string
-	if p.received != "" {
+	if received && p.received != "" {
 		s += ", " + p.received + " received"
 	}
 	if p.left != "" {

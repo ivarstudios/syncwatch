@@ -433,7 +433,7 @@ func TestStuckSyncShowsProgress(t *testing.T) {
 	akka.Folders["g"] = g
 	samplesAt(akka, "g", pcID, 59_000_000_000, 215_000_000_000, 30_000_000, 15) // 0.5 MB each second
 	h5 = mustFind(t, run(t, c, akka), "H5", "on LAPTOP-DANI")
-	want = "Device LAPTOP-DANI is stuck at 72.5% of folder LIVE-FJORD-4FINALS for more than 24 hours (3 remaining items, 160 of 220 GB received, approximately 33 hours remaining, seen from AKKA)"
+	want = "Device LAPTOP-DANI is stuck at 72.5% of folder LIVE-FJORD-4FINALS for more than 24 hours (3 remaining items, approximately 33 hours remaining, seen from AKKA)"
 	if h5.Message != want {
 		t.Fatalf("device message\n got %s\nwant %s", h5.Message, want)
 	}
