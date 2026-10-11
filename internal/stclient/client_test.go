@@ -66,6 +66,7 @@ func callAll(t *testing.T, c *Client) {
 		"DBStatus":         func() error { _, err := c.DBStatus(ctx, "f"); return err },
 		"FolderErrors":     func() error { _, err := c.FolderErrors(ctx, "f", 5); return err },
 		"Completion":       func() error { _, err := c.Completion(ctx, "f", "D"); return err },
+		"RemoteNeed":       func() error { _, err := c.RemoteNeed(ctx, "f", "D", 20); return err },
 		"PendingDevices":   func() error { _, err := c.PendingDevices(ctx); return err },
 		"PendingFolders":   func() error { _, err := c.PendingFolders(ctx); return err },
 		"Browse":           func() error { _, err := c.Browse(ctx, "/a", "/"); return err },
@@ -135,7 +136,7 @@ func TestOnlyAllowlistedGETs(t *testing.T) {
 func TestAllowlistIsExactly(t *testing.T) {
 	want := []string{
 		"/metrics", "/rest/cluster/pending/devices", "/rest/cluster/pending/folders",
-		"/rest/config/devices", "/rest/config/folders", "/rest/db/completion", "/rest/db/status",
+		"/rest/config/devices", "/rest/config/folders", "/rest/db/completion", "/rest/db/remoteneed", "/rest/db/status",
 		"/rest/events", "/rest/folder/errors", "/rest/noauth/health", "/rest/stats/device",
 		"/rest/stats/folder", "/rest/system/browse", "/rest/system/connections",
 		"/rest/system/status", "/rest/system/version",

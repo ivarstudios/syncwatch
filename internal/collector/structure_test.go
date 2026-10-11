@@ -85,7 +85,7 @@ func startCollector(t *testing.T, h http.Handler, yamlTail string) (*Collector, 
 	hub := model.NewHub(nil)
 	sc := cfg.Servers[0]
 	hub.SetServers([]*model.Server{{ID: sc.ID, Name: sc.Name, URL: sc.URL}})
-	c, err := newCollector(sc, "k", hub, st, holder, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c, err := newCollector(sc, "k", hub, st, holder, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ const (
 	pathBrowse        = "/rest/system/browse"
 	pathDBStatus      = "/rest/db/status"
 	pathCompletion    = "/rest/db/completion"
+	pathRemoteNeed    = "/rest/db/remoteneed"
 	pathFolderErrors  = "/rest/folder/errors"
 )
 
@@ -89,8 +91,20 @@ var queryParams = map[string][]string{
 	pathEvents:       {"since", "timeout", "events"},
 	pathDBStatus:     {"folder"},
 	pathCompletion:   {"folder", "device"},
+	pathRemoteNeed:   {"folder", "device", "page", "perpage"},
 	pathFolderErrors: {"folder", "page", "perpage"},
 }
+
+// Limits of a remoteneed request: syncwatch asks for the first page of 20
+// file names. The answer has no secrets of Syncthing, but each file costs
+// Syncthing a database read, and an invalid device ID is a 500 there.
+const (
+	maxNeedPerPage = 100
+	maxNeedPage    = 1000
+)
+
+// deviceID is the form of a complete Syncthing device ID.
+var deviceID = regexp.MustCompile(`^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$`)
 
 // eventMask is the collector's event subscription, the only one the token
 // may ask for.
@@ -508,8 +522,27 @@ func checkQuery(path, raw string) (url.Values, error) {
 				}
 			}
 		}
+	case pathRemoteNeed:
+		if q.Get("folder") == "" {
+			return nil, errors.New("the parameter folder is necessary")
+		}
+		if !deviceID.MatchString(q.Get("device")) {
+			return nil, errors.New("the parameter device must be a complete device ID")
+		}
+		if !q.Has("perpage") || !inRange(q.Get("perpage"), 1, maxNeedPerPage) {
+			return nil, fmt.Errorf("the parameter perpage must be between 1 and %d", maxNeedPerPage)
+		}
+		if q.Has("page") && !inRange(q.Get("page"), 1, maxNeedPage) {
+			return nil, fmt.Errorf("the parameter page must be between 1 and %d", maxNeedPage)
+		}
 	}
 	return q, nil
+}
+
+// inRange reports whether v is a decimal integer from lo to hi.
+func inRange(v string, lo, hi int) bool {
+	n, err := strconv.Atoi(v)
+	return err == nil && n >= lo && n <= hi
 }
 
 // eventsWait is how long an events long-poll may take: its own timeout

@@ -34,7 +34,7 @@ func (c *Collector) maybeScan(ctx context.Context) {
 		return
 	}
 	c.scanning = true
-	baseline := time.Since(c.lastBase) >= cfg.BaselineInterval.D()
+	baseline := time.Since(c.lastBase) >= c.baselineEvery(cfg)
 	c.lastScan = time.Now()
 	if baseline {
 		c.lastBase = c.lastScan
@@ -49,6 +49,54 @@ func (c *Collector) maybeScan(ctx context.Context) {
 			c.log.Warn("structure scan failed", "err", shortErr(err))
 		}
 	}()
+}
+
+// A baseline scan that took less than fastBaseline makes the next one due
+// after at most dailyBaseline (W-045). Only a baseline scan walks the
+// project folders that Syncthing syncs (in events mode), and on some NAS
+// storage Syncthing's file watcher misses a copied project folder without
+// an error: with a fast baseline scan, syncwatch finds it within a day.
+const (
+	fastBaseline  = 10 * time.Second
+	dailyBaseline = 24 * time.Hour
+)
+
+// baselineEvery is the time from one baseline scan to the next: the
+// baseline interval, or at most a day when the last baseline scan of this
+// collector was fast. The caller holds scanMu.
+func (c *Collector) baselineEvery(cfg config.Collector) time.Duration {
+	every := cfg.BaselineInterval.D()
+	if c.baseKnown && c.baseTook < fastBaseline {
+		every = min(every, dailyBaseline)
+	}
+	return every
+}
+
+// noteBaseline keeps the duration of a completed baseline scan for
+// baselineEvery, and logs the interval of the next baseline scans when it
+// changes. Nothing is logged while the baseline interval is a day or less:
+// then the duration changes nothing.
+func (c *Collector) noteBaseline(took time.Duration) {
+	every := c.cfg.Get().Collector.BaselineInterval
+	c.scanMu.Lock()
+	c.baseTook, c.baseKnown = took, true
+	choice := ""
+	if every.D() > dailyBaseline {
+		choice = every.Words()
+		if took < fastBaseline {
+			choice = "day"
+		}
+	}
+	changed := choice != c.baseChoice
+	c.baseChoice = choice
+	c.scanMu.Unlock()
+	switch {
+	case !changed || choice == "":
+	case choice == "day":
+		c.log.Info("baseline scan every day: the last one took less than 10 seconds", "took", took.Round(time.Millisecond))
+	default:
+		c.log.Info("baseline scan every "+choice+": the last one took 10 seconds or more", "took", took.Round(time.Millisecond))
+	}
 }
 
 // scanTimer starts due structure scans in events mode, where the loop sits
@@ -376,6 +424,9 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	})
 	// Info level: what the scan costs the server is worth seeing.
 	c.log.Info("structure scan done", "baseline", baseline, "shares", len(shares), "listings", listings.Load(), "took", took.Round(time.Millisecond))
+	if baseline {
+		c.noteBaseline(took)
+	}
 	return nil
 }
 

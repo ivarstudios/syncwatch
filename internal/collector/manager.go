@@ -24,7 +24,7 @@ type Manager struct {
 	// OnPin, when set, is called after the collector pinned the certificate
 	// of a server without an administrator: at the first contact (renewal
 	// false) or for a CA-signed renewal for the same host name (renewal true).
-	// Set it before Run.
+	// It runs in its own goroutine, after the pin is saved. Set it before Run.
 	OnPin func(serverID, fingerprint string, renewal bool)
 
 	mu      sync.Mutex
@@ -147,7 +147,7 @@ func (m *Manager) Sync() {
 			})
 			continue
 		}
-		c, err := newCollector(s, key, m.hub, m.st, m.cfg, m.log)
+		c, err := newCollector(s, key, m.hub, m.st, m.cfg, m.log, m.OnPin)
 		if err != nil {
 			m.log.Error("cannot start the collector", "server", s.Name, "err", err)
 			m.hub.Update(id, func(sv *model.Server) {

@@ -9,10 +9,12 @@ import (
 
 // trafficEvery is how often a server's traffic counters are read: one
 // cheap /rest/system/connections call, for the bytes moved per day and week
-// and the current transfer rate.
+// and the current transfer rate. One /rest/system/status call at the same
+// time reads the relay listeners (see sampleListeners).
 var trafficEvery = time.Minute
 
-// trafficLoop reads the traffic counters while the collector runs.
+// trafficLoop reads the traffic counters and the relay listeners while the
+// collector runs.
 func (c *Collector) trafficLoop(ctx context.Context) {
 	t := time.NewTicker(c.trafficEvery)
 	defer t.Stop()
@@ -23,6 +25,7 @@ func (c *Collector) trafficLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		c.sampleTraffic(ctx)
+		c.sampleListeners(ctx)
 	}
 }
 
