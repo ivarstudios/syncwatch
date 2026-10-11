@@ -4,6 +4,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +110,146 @@ func TestHealthzDatabaseAndReasons(t *testing.T) {
 	want := "database not available\nno evaluation of the checks from " + e.web.fmtTime(evaluated) + "\nnotifications fail from " + e.web.fmtTime(evaluated.Add(time.Minute)) + "\n"
 	if code != http.StatusServiceUnavailable || body != want {
 		t.Fatalf("closed database: %d %q, want %q", code, body, want)
+	}
+}
+
+// client is a browser of its own for a dashboard URL: a cookie jar, no
+// redirects followed.
+type client struct {
+	t    *testing.T
+	base string
+	c    *http.Client
+}
+
+func newClient(t *testing.T, base string, c *http.Client) *client {
+	c.Jar, _ = cookiejar.New(nil)
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &client{t: t, base: base, c: c}
+}
+
+// tlsClient serves the dashboard of e over HTTPS (a TLS listener of
+// httptest) and returns a browser for it.
+func tlsClient(t *testing.T, e *env) *client {
+	t.Helper()
+	srv := httptest.NewTLSServer(e.web)
+	t.Cleanup(srv.Close)
+	return newClient(t, srv.URL, srv.Client())
+}
+
+// do sends a request with extra headers and returns the answer with its body.
+func (b *client) do(method, path string, form url.Values, header map[string]string) (*http.Response, string) {
+	b.t.Helper()
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequest(method, b.base+path, body)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	resp, err := b.c.Do(req)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp, string(out)
+}
+
+// token returns the CSRF token of the forms of a page.
+func (b *client) token(path string) string {
+	b.t.Helper()
+	_, body := b.do(http.MethodGet, path, nil, nil)
+	m := csrfRe.FindStringSubmatch(body)
+	if m == nil {
+		b.t.Fatalf("no CSRF token on %s", path)
+	}
+	return m[1]
+}
+
+// login logs in with the administrator password of adminEnv.
+func (b *client) login() {
+	b.t.Helper()
+	if r, _ := b.do(http.MethodPost, "/login", url.Values{"csrf": {b.token("/login")}, "password": {"correct horse battery"}}, nil); r.StatusCode != http.StatusSeeOther {
+		b.t.Fatalf("login: %d", r.StatusCode)
+	}
+}
+
+// cookies returns the cookies that an answer sets, by name.
+func cookies(resp *http.Response) map[string]*http.Cookie {
+	out := map[string]*http.Cookie{}
+	for _, c := range resp.Cookies() {
+		out[c.Name] = c
+	}
+	return out
+}
+
+// sessionOf returns the value of the plain session cookie of e's browser.
+func (e *env) sessionOf() string {
+	e.t.Helper()
+	u, _ := url.Parse(e.srv.URL)
+	for _, c := range e.jar.Cookies(u) {
+		if c.Name == sessionCookie {
+			return c.Value
+		}
+	}
+	e.t.Fatal("no plain session cookie over HTTP")
+	return ""
+}
+
+// X-Forwarded-Proto counts only from a trusted reverse proxy
+// (SYNCWATCH_TRUSTED_PROXIES). From another client a plain HTTP dashboard
+// sets its cookies without Secure, and the forms keep working.
+func TestForwardedProtoOnlyFromTrustedProxies(t *testing.T) {
+	e := newEnv(t, twoServers)
+	h, _ := HashPassword("correct horse battery")
+	_ = e.st.SetSetting(KeyAdminHash, h)
+	b := newClient(t, e.srv.URL, &http.Client{})
+	csrfFor := func(proto string) *http.Cookie {
+		t.Helper()
+		b.c.Jar, _ = cookiejar.New(nil)
+		resp, _ := b.do(http.MethodGet, "/login", nil, map[string]string{"X-Forwarded-Proto": proto})
+		return cookies(resp)[csrfCookie]
+	}
+	for _, trusted := range [][]netip.Prefix{nil, {netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("::1/128")}} {
+		e.web.TrustProxies(trusted)
+		if c := csrfFor("https"); c == nil || c.Name != csrfCookie || c.Secure {
+			t.Fatalf("X-Forwarded-Proto https from an address that is not trusted (%v): %+v", trusted, c)
+		}
+		// The login still works, with plain cookies.
+		resp, _ := b.do(http.MethodPost, "/login", url.Values{"csrf": {b.token("/login")}, "password": {"correct horse battery"}}, map[string]string{"X-Forwarded-Proto": "https"})
+		if c := cookies(resp)[sessionCookie]; resp.StatusCode != http.StatusSeeOther || c == nil || c.Secure {
+			t.Fatalf("login through a proxy that is not trusted: %d %+v", resp.StatusCode, c)
+		}
+	}
+	e.web.TrustProxies([]netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")})
+	if c := csrfFor("https"); c == nil || !c.Secure {
+		t.Fatalf("X-Forwarded-Proto https from a trusted proxy: %+v", c)
+	}
+	for proto, secure := range map[string]bool{"http": false, "": false, "HTTPS": true, "https, http": false, "http,https": true} {
+		if c := csrfFor(proto); c == nil || c.Secure != secure {
+			t.Errorf("X-Forwarded-Proto %q from a trusted proxy: %+v, want Secure %v", proto, c, secure)
+		}
+	}
+
+	// IPv4 clients in IPv6 form, and IPv4 prefixes in IPv6 form.
+	s := e.web
+	s.TrustProxies([]netip.Prefix{netip.MustParsePrefix("::ffff:192.0.2.0/120")})
+	for addr, want := range map[string]string{"192.0.2.7:4000": "https", "[::ffff:192.0.2.7]:4000": "https", "192.0.3.7:4000": "http", "[2001:db8::7]:4000": "http"} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = addr
+		r.Header.Set("X-Forwarded-Proto", "https")
+		if got := s.requestScheme(r); got != want {
+			t.Errorf("client %s: %s, want %s", addr, got, want)
+		}
+	}
+	if r := httptest.NewRequest(http.MethodGet, "/", nil); s.requestScheme(r) != "http" {
+		t.Error("a request without the header is not http")
 	}
 }

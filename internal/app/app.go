@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,6 +42,9 @@ type Options struct {
 	TLSKey        string
 	TLSSelfSigned bool     // serve HTTPS with a self-signed certificate kept in DataDir
 	TLSHosts      []string // extra names for the self-signed certificate
+	// TrustedProxies are the reverse proxies whose X-Forwarded-Proto header
+	// counts (SYNCWATCH_TRUSTED_PROXIES).
+	TrustedProxies []netip.Prefix
 	// NotifyLimit is how long notifications can fail before /healthz
 	// answers 503 (SYNCWATCH_HEALTH_NOTIFY_LIMIT); 0 = this rule is off.
 	NotifyLimit time.Duration
@@ -516,6 +520,7 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	srvWeb.AllowHosts(o.Listen, o.TLSHosts...)
+	srvWeb.TrustProxies(o.TrustedProxies)
 	srvWeb.SetHealth(web.HealthOptions{Started: started, NotifyLimit: o.NotifyLimit, EvalLimit: evalLimit})
 	srvWeb.LogSetupToken(os.Stderr)
 	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run, heartbeat(st, log)}
@@ -569,7 +574,7 @@ func Run(ctx context.Context, o Options) error {
 		notifyLimit = config.Duration(o.NotifyLimit).String()
 	}
 	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers),
-		"health_notify_limit", notifyLimit, "deadman", deadmanAt)
+		"trusted_proxies", proxyList(o.TrustedProxies), "health_notify_limit", notifyLimit, "deadman", deadmanAt)
 
 	var serveErr error
 	select {
@@ -600,4 +605,16 @@ func Run(ctx context.Context, o Options) error {
 		log.Warn("cannot record the heartbeat", "err", err)
 	}
 	return serveErr
+}
+
+// proxyList writes the trusted proxies for the start log line.
+func proxyList(p []netip.Prefix) string {
+	if len(p) == 0 {
+		return "none"
+	}
+	out := make([]string, len(p))
+	for i, x := range p {
+		out[i] = x.String()
+	}
+	return strings.Join(out, ",")
 }

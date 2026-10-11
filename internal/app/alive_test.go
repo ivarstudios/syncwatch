@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,7 +117,7 @@ func (f *fakeDiscord) has(s string) bool {
 
 // Run wires the parts of wave 3: the gap and the heartbeat (also at a clean
 // stop), the dead-man URL (called after the first evaluation, the log names
-// the host only) and the health rules of /healthz.
+// the host only), the health rules of /healthz and the trusted proxies.
 func TestRunWiring(t *testing.T) {
 	config.AllowAnyWebhook = true
 	t.Cleanup(func() { config.AllowAnyWebhook = false })
@@ -146,7 +147,7 @@ func TestRunWiring(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(ctx, Options{DataDir: dir, Listen: "127.0.0.1:0", ConfigFile: boot, Log: slog.New(slog.NewTextHandler(logs, nil)),
-			NotifyLimit: 15 * time.Minute, DeadmanURL: mon.srv.URL + deadmanSecret,
+			TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, NotifyLimit: 15 * time.Minute, DeadmanURL: mon.srv.URL + deadmanSecret,
 			OnListen: func(a string) { addr <- a }})
 	}()
 	var a string
@@ -169,7 +170,7 @@ func TestRunWiring(t *testing.T) {
 	for _, want := range []string{
 		`level=INFO msg="syncwatch did not run" from=`,
 		`msg="syncwatch started"`,
-		`servers=1 health_notify_limit=15m deadman=` + mon.srv.URL + "\n",
+		`trusted_proxies=10.0.0.0/8 health_notify_limit=15m deadman=` + mon.srv.URL + "\n",
 	} {
 		if !strings.Contains(logs.String(), want) {
 			t.Fatalf("no %q in the log:\n%s", want, logs)

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -154,14 +153,64 @@ func (s *Server) resolve(r *http.Request) requestInfo {
 	return info
 }
 
-func (s *Server) secureCookies(r *http.Request) bool {
-	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+// requestScheme returns the scheme that the browser used: "https" for a
+// request over TLS, or from a trusted reverse proxy that reports https in
+// X-Forwarded-Proto; else "http". The header of another client does not
+// count: it could make a plain HTTP dashboard set Secure cookies that the
+// browser then does not send back, and use the HTTPS rules.
+func (s *Server) requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	vals := r.Header.Values("X-Forwarded-Proto")
+	if len(vals) == 0 || !s.fromTrustedProxy(r) {
+		return "http"
+	}
+	// The last value is the value of the trusted proxy: a proxy that adds
+	// its value keeps the value that the client sent before it.
+	last := vals[len(vals)-1]
+	if i := strings.LastIndexByte(last, ','); i >= 0 {
+		last = last[i+1:]
+	}
+	if strings.EqualFold(strings.TrimSpace(last), "https") {
+		return "https"
+	}
+	return "http"
 }
+
+// fromTrustedProxy reports whether the request comes from an address of the
+// trusted reverse proxies (TrustProxies).
+func (s *Server) fromTrustedProxy(r *http.Request) bool {
+	if len(s.trusted) == 0 {
+		return false
+	}
+	a, err := netip.ParseAddr(clientIP(r))
+	if err != nil {
+		return false
+	}
+	a = a.Unmap().WithZone("")
+	for _, p := range s.trusted {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) secureCookies(r *http.Request) bool { return s.requestScheme(r) == "https" }
 
 // TrustProxies sets the addresses of the reverse proxies whose
 // X-Forwarded-Proto header syncwatch believes (SYNCWATCH_TRUSTED_PROXIES).
 // Call it before serving.
-func (s *Server) TrustProxies(p []netip.Prefix) { s.trusted = slices.Clone(p) }
+func (s *Server) TrustProxies(p []netip.Prefix) {
+	s.trusted = nil
+	for _, x := range p {
+		if a := x.Addr(); a.Is4In6() && x.Bits() >= 96 {
+			x = netip.PrefixFrom(a.Unmap(), x.Bits()-96)
+		}
+		s.trusted = append(s.trusted, x.Masked())
+	}
+}
 
 // ensureCSRF sets the double-submit CSRF cookie if missing and returns its value.
 func (s *Server) ensureCSRF(w http.ResponseWriter, r *http.Request, info *requestInfo) string {

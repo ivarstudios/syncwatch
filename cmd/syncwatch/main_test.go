@@ -190,12 +190,39 @@ func TestEnvDeadmanURL(t *testing.T) {
 	}
 }
 
+// SYNCWATCH_TRUSTED_PROXIES: IP addresses and CIDR prefixes, comma-separated.
+func TestEnvTrustedProxies(t *testing.T) {
+	t.Setenv("SYNCWATCH_TRUSTED_PROXIES", "")
+	if p, err := envTrustedProxies(); p != nil || err != nil {
+		t.Fatalf("not set: %v %v", p, err)
+	}
+	t.Setenv("SYNCWATCH_TRUSTED_PROXIES", "172.18.0.2, 10.1.2.3/8,::1,2001:db8::1/32 , ::ffff:192.0.2.7,::ffff:198.51.100.0/120")
+	p, err := envTrustedProxies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, x := range p {
+		got = append(got, x.String())
+	}
+	if want := []string{"172.18.0.2/32", "10.0.0.0/8", "::1/128", "2001:db8::/32", "192.0.2.7/32", "198.51.100.0/24"}; !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for _, bad := range []string{"proxy.lan.invalid", "10.0.0.0/33", "fe80::1%eth0", "10.0.0.1:8080", "*"} {
+		t.Setenv("SYNCWATCH_TRUSTED_PROXIES", "10.0.0.1,"+bad)
+		if _, err := envTrustedProxies(); err == nil || !strings.HasPrefix(err.Error(), "SYNCWATCH_TRUSTED_PROXIES: ") || !strings.Contains(err.Error(), bad) {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+}
+
 // A value that is not valid stops serve before it opens the data directory.
 func TestServeRefusesBadEnvironment(t *testing.T) {
-	for key, val := range map[string]string{"SYNCWATCH_HEALTH_NOTIFY_LIMIT": "soon", "SYNCWATCH_DEADMAN_URL": "ftp://x.invalid/"} {
+	for key, val := range map[string]string{"SYNCWATCH_HEALTH_NOTIFY_LIMIT": "soon", "SYNCWATCH_DEADMAN_URL": "ftp://x.invalid/", "SYNCWATCH_TRUSTED_PROXIES": "proxy.invalid"} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv("SYNCWATCH_HEALTH_NOTIFY_LIMIT", "")
 			t.Setenv("SYNCWATCH_DEADMAN_URL", "")
+			t.Setenv("SYNCWATCH_TRUSTED_PROXIES", "")
 			t.Setenv(key, val)
 			data := filepath.Join(t.TempDir(), "data")
 			if err := serve([]string{"--data", data}); err == nil || !strings.HasPrefix(err.Error(), key+": ") {

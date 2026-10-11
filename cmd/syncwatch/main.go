@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -106,6 +107,43 @@ func envDeadmanURL() (string, error) {
 		return "", fmt.Errorf("SYNCWATCH_DEADMAN_URL: %w", err)
 	}
 	return v, nil
+}
+
+// envTrustedProxies reads SYNCWATCH_TRUSTED_PROXIES: the IP addresses or
+// CIDR prefixes of the reverse proxies whose X-Forwarded-Proto header counts,
+// comma-separated. Not set = no proxy.
+func envTrustedProxies() ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, v := range splitList(os.Getenv("SYNCWATCH_TRUSTED_PROXIES")) {
+		p, ok := parseProxy(v)
+		if !ok {
+			return nil, fmt.Errorf("SYNCWATCH_TRUSTED_PROXIES: %q is not an IP address or a CIDR prefix. Use for example 172.18.0.2 or 172.18.0.0/16.", v)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// parseProxy reads one IP address (a prefix of that address only) or CIDR
+// prefix. An IPv4 address in IPv6 form counts as the IPv4 address, because
+// syncwatch compares the client addresses in that form.
+func parseProxy(v string) (netip.Prefix, bool) {
+	if strings.Contains(v, "/") {
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		if a := p.Addr(); a.Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+		}
+		return p.Masked(), true
+	}
+	a, err := netip.ParseAddr(v)
+	if err != nil || a.Zone() != "" {
+		return netip.Prefix{}, false
+	}
+	a = a.Unmap()
+	return netip.PrefixFrom(a, a.BitLen()), true
 }
 
 func defaultDataDir() string {
@@ -233,6 +271,10 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	proxies, err := envTrustedProxies()
+	if err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, for example 192.168.1.10:8080 (env SYNCWATCH_LISTEN, default loopback only)")
@@ -255,7 +297,7 @@ func serve(args []string) error {
 		DataDir: *data, Listen: *listen, ConfigFile: *cfgFile, SecretKey: secretKey(*key),
 		AdminPassword: os.Getenv("SYNCWATCH_ADMIN_PASSWORD"), Version: version, Log: log,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSSelfSigned: *tlsSelf, TLSHosts: splitList(*tlsHosts),
-		NotifyLimit: notifyLimit, DeadmanURL: deadman,
+		TrustedProxies: proxies, NotifyLimit: notifyLimit, DeadmanURL: deadman,
 	})
 }
 
