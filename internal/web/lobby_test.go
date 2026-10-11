@@ -576,6 +576,19 @@ func TestLobbyFindingsList(t *testing.T) {
 	if page := lobbyHTML(e, lobbyView(e, nil, nil, []*store.Record{}), ""); !strings.Contains(page, "✔ There are no open urgent or ERROR findings.") {
 		t.Error("no text for an empty list")
 	}
+
+	// A long message is cut after 160 characters; a device ID in it is
+	// shortened first, thus no part of it shows.
+	long := "Folder " + strings.Repeat("ä", 140) + " by " + lobbyAnnaID + " cannot sync" // the device ID starts at character 151
+	vm = e.web.lobby(lobbyView(e, nil, nil, []*store.Record{lobbyRecord("l1", "H4", model.Error, "akka", nil, true, long, now)}), "")
+	if m := vm.Findings[0].Message; len([]rune(m)) > lobbyMaxMessage+1 || !strings.HasSuffix(m, "…") || !strings.HasPrefix(m, "Folder ääää") ||
+		!strings.Contains(m, " by WSANNAA…") || strings.Contains(m, "WSANNAA-") || strings.Contains(m, "cannot sync") {
+		t.Errorf("long message: %q", m)
+	}
+	short := "Device " + lobbyAnnaID + " is paused on AKKA"
+	if vm := e.web.lobby(lobbyView(e, nil, nil, []*store.Record{lobbyRecord("l2", "H6", model.Error, "akka", nil, true, short, now)}), ""); vm.Findings[0].Message != "Device WSANNAA… is paused on AKKA" {
+		t.Errorf("short message: %q", vm.Findings[0].Message)
+	}
 }
 
 // The page refreshes through the event stream (and each minute, for the

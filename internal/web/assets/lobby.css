@@ -51,18 +51,19 @@ h1, h2, h3, p { margin: 0; }
 .links li.link-connected { border-left-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
 .links li.link-disconnected { border-left-color: var(--err); background: var(--err-bg); color: var(--err); }
 
-/* One column for each site; the servers of a site side by side when there is space. */
+/* One column for each site. The servers of a site side by side when there is
+   space; a card keeps the width of its column (auto-fill), also when it is alone. */
 .sites { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .8rem 1.2rem; margin-bottom: .8rem; }
 .site { min-width: 0; }
-.site h2 { font-size: 1.3rem; margin-bottom: .2rem; }
+.site h2 { font-size: 1.35rem; margin-bottom: .2rem; }
 .pcs { color: var(--muted); margin-bottom: .4rem; }
 .pcs strong { color: var(--text); }
-.servers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: .5rem; }
+.servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr)); gap: .5rem; }
 .srv { min-width: 0; background: var(--card); border: 1px solid var(--line); border-left: .4rem solid var(--off); border-radius: .5rem; padding: .5rem .8rem; }
 .srv.st-ok { border-left-color: var(--ok); } .srv.st-err { border-left-color: var(--err); }
 .srv header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .2rem .8rem; margin-bottom: .3rem; }
-.srv h3 { font-size: 1.25rem; min-width: 0; }
-.badge { font-weight: 700; padding: .05rem .55rem; border-radius: 99px; background: var(--off-bg); color: var(--off); white-space: nowrap; }
+.srv h3 { font-size: 1.4rem; min-width: 0; }
+.badge { font-size: 1.1rem; font-weight: 700; padding: .05rem .55rem; border-radius: 99px; background: var(--off-bg); color: var(--off); white-space: nowrap; }
 .badge.st-ok { background: var(--ok-bg); color: var(--ok); } .badge.st-err { background: var(--err-bg); color: var(--err); }
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .15rem .8rem; margin: 0; }
 .facts dt { color: var(--muted); } .facts dd { margin: 0; min-width: 0; }

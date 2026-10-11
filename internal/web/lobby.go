@@ -29,6 +29,10 @@ import (
 // lobbyMaxFindings is the most findings that the lobby lists.
 const lobbyMaxFindings = 10
 
+// lobbyMaxMessage is the most characters of a finding message in the list,
+// thus 10 findings fit on a screen. The Findings page has the full message.
+const lobbyMaxMessage = 160
+
 // lobbyOther is the name of the group of the servers without a site, when
 // other servers have a site.
 const lobbyOther = "Other servers"
@@ -272,9 +276,18 @@ func (s *Server) lobby(v *engine.View, site string) lobbyVM {
 			checks = r.Check
 		}
 		vm.Findings = append(vm.Findings, lobbyFinding{Severity: r.Severity.Lower(), SeverityLabel: r.Severity.Label(), Icon: notify.Icon(r.Severity),
-			Checks: checks, Message: showControls(hideDeviceIDs(r.Message)), OpenFor: rules.Ago(now.Sub(since)), Urgent: r.Urgent, Stale: r.Stale})
+			Checks: checks, Message: showControls(lobbyCut(hideDeviceIDs(r.Message))), OpenFor: rules.Ago(now.Sub(since)), Urgent: r.Urgent, Stale: r.Stale})
 	}
 	return vm
+}
+
+// lobbyCut cuts a message after lobbyMaxMessage characters and adds "…".
+func lobbyCut(s string) string {
+	r := []rune(s)
+	if len(r) <= lobbyMaxMessage {
+		return s
+	}
+	return strings.TrimRight(string(r[:lobbyMaxMessage]), " ") + "…"
 }
 
 // lobbyTouches reports whether a finding belongs to one of the servers: its
