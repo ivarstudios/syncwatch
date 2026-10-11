@@ -97,7 +97,7 @@ func TestAPITokens(t *testing.T) {
 func TestAPITokenRules(t *testing.T) {
 	s := testStore(t)
 	now := time.Now()
-	for _, name := range []string{"", "   ", strings.Repeat("x", MaxTokenName+1), "bell\x07", "zero​width", "bad\xffutf8"} {
+	for _, name := range []string{"", "   ", strings.Repeat("x", MaxTokenName+1), "bell\x07", "zero\u200bwidth", "bad\xffutf8"} {
 		if _, err := s.AddAPIToken(name, ScopeHA, "swt_"+name, now); !errors.Is(err, ErrTokenName) {
 			t.Errorf("name %q: %v", name, err)
 		}

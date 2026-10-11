@@ -311,11 +311,12 @@ func TestSettingsKeysReachTheChecks(t *testing.T) {
 // the value is not known (null) or empty.
 func TestAPIKeysOfThePlan(t *testing.T) {
 	e := adminEnv(t, twoServers)
-	for _, r := range e.eng.View().Open {
-		if err := e.eng.Snooze(r.ID, time.Now().Add(time.Hour), "maintenance", "admin"); err != nil {
-			t.Fatal(err)
-		}
-		break
+	open := e.eng.View().Open
+	if len(open) == 0 {
+		t.Fatal("no open findings")
+	}
+	if err := e.eng.Snooze(open[0].ID, time.Now().Add(time.Hour), "maintenance", "admin"); err != nil {
+		t.Fatal(err)
 	}
 	has := func(where string, m map[string]any, keys ...string) {
 		t.Helper()
