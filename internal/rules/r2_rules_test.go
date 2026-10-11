@@ -213,7 +213,7 @@ func TestRelayDevice(t *testing.T) {
 		!h12.Since.Equal(last) || h12.MinDuration != 30*time.Minute || h12.Urgent || h12.Severity != model.Warn || h12.Subject != "LAPTOP-DANI" {
 		t.Fatalf("H12 %+v", h12)
 	}
-	if h12.DetailValue("Device ID") != pcID || h12.DetailValue("Last seen") != "2026-10-05T11:26:00Z" || !strings.Contains(h12.DetailValue("Possible causes"), "The relay is off") {
+	if h12.DetailValue("Device ID") != pcID || h12.DetailValue("Last seen") != "2026-10-05T11:26:00Z" || h12.DetailValue("Possible causes") != "The relay is off or unreachable, or the device is off. H12 for the servers shows a relay that is off." {
 		t.Fatalf("details %v", h12.Details)
 	}
 	mustNot(t, fs, "H11", "LAPTOP-DANI")

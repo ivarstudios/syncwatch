@@ -601,7 +601,7 @@ func (e *evaluator) relayDevices() {
 			Related:     dv.SeenBy,
 			Details: []model.Detail{
 				detail("Device ID", dv.ID), timeDetail("Last seen", dv.LastSeen),
-				detail("Possible causes", "The relay is off or cannot be reached, or the device is off. H12 for the servers shows a relay that is off."),
+				detail("Possible causes", "The relay is off or unreachable, or the device is off. H12 for the servers shows a relay that is off."),
 			},
 			ResolvedText: fmt.Sprintf("Device %s is connected again.", dv.Name),
 		})
