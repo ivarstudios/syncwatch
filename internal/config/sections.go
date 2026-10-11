@@ -16,14 +16,15 @@ func ChangedSections(old, c *Config) []string {
 		r := c.Redacted()
 		return []any{
 			r.Servers,
-			[]any{r.Notify, r.Timezone, r.PublicURL},
+			r.Devices,
+			[]any{r.Notify, r.Timezone, r.PublicURL, r.Site},
 			[]any{r.Checks, r.Thresholds},
 			[]any{r.Structure, r.Shares},
 			r.Collector,
 			r.Access,
 		}
 	}
-	labels := []string{"Servers", "Notifications", "Checks", "Structure rules and shares", "Collector", "Access"}
+	labels := []string{"Servers", "Devices", "Notifications", "Checks", "Structure rules and shares", "Collector", "Access"}
 	was, now := parts(old), parts(c)
 	var out []string
 	for i, label := range labels {
