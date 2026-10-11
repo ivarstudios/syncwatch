@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/rules"
 	"github.com/ivarstudios/syncwatch/internal/settings"
 	"github.com/ivarstudios/syncwatch/internal/stclient"
@@ -57,9 +58,8 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 		"Checks":        checks,
 		"StructureYAML": string(sdoc),
 		"HasWebhook":    s.st.HasSecret(store.SecretDiscordWebhook),
-		"HasToken":      s.st.HasSecret(store.SecretAPIToken),
 		"WebhookLost":   s.undecryptable(store.SecretDiscordWebhook),
-		"TokenLost":     s.undecryptable(store.SecretAPIToken),
+		"API":           s.apiSettings(),
 		"HasViewerPW":   hasViewer,
 		"Log":           log,
 		"Weekdays":      []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "off"},
@@ -188,32 +188,33 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Con
 		return err
 	}
 	if ch := configChanges(old, c); len(ch) > 0 {
-		s.announce(r, title, strings.Join(ch, "\n"))
+		s.announce(r, notify.Notice{Title: title, Summary: strings.Join(ch, "\n")})
 	}
 	s.redirect(w, r, "/settings#"+section, okMsg, false)
 	return nil
 }
 
 // announce logs a security-relevant settings change and sends it as a notice.
-func (s *Server) announce(r *http.Request, title, summary string) {
-	s.announcer(r)(title, summary)
+func (s *Server) announce(r *http.Request, n notify.Notice) {
+	s.announcer(r)(n)
 }
 
 // announcer captures the notification channels configured now and returns a
 // function that announces a change to them. A change that replaces or
 // removes a channel is then still heard by the channel it affects.
-func (s *Server) announcer(r *http.Request) func(title, summary string) {
+func (s *Server) announcer(r *http.Request) func(notify.Notice) {
 	send := s.hooks.Notice
 	if s.hooks.NoticeLater != nil {
 		send = s.hooks.NoticeLater()
 	}
 	ip := clientIP(r)
-	return func(title, summary string) {
-		s.log.Warn("settings changed", "change", title, "detail", summary, "ip", ip)
+	return func(n notify.Notice) {
+		s.log.Warn("settings changed", "change", n.Title, "detail", n.Summary, "ip", ip)
 		if send != nil {
 			// On a line of its own: after the last change line it read as a
 			// part of that change.
-			send(title, summary+"\nChanged from "+ip+".")
+			n.Summary += "\nChanged from " + ip + "."
+			send(n)
 		}
 	}
 }
@@ -320,6 +321,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		}
 		old = c.Servers[idx]
 		sv.ID = orig
+		sv.Site = old.Site // the form has no site field: keep the site of the import
 		c.Servers[idx] = sv
 	} else {
 		base := config.Slug(name)
@@ -371,7 +373,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		}
 	}
 	if orig == "" {
-		s.announce(r, "Server "+name+" added", "The API URL is "+sv.URL+".")
+		s.announce(r, notify.Notice{Title: "Server " + name + " added", Summary: "The API URL is " + sv.URL + "."})
 	} else {
 		// Disabling a server or changing its name or URL changes what is
 		// checked and what the messages say, so every change is listed.
@@ -383,7 +385,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 			changes = append(changes, "The pinned certificate is removed. syncwatch accepts and pins the next certificate from "+sv.URL+" (trust on first use).")
 		}
 		if len(changes) > 0 {
-			s.announce(r, "Server "+name+" changed", strings.Join(changes, "\n"))
+			s.announce(r, notify.Notice{Title: "Server " + name + " changed", Summary: strings.Join(changes, "\n")})
 		}
 	}
 	s.redirect(w, r, "/settings#servers", "Server "+name+" is saved.", false)
@@ -416,7 +418,7 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info
 	}
 	_ = s.st.DeleteSecret(store.ServerAPIKeySecret(id))
 	_ = s.st.SetPin(id, "")
-	s.announce(r, "Server "+name+" removed", "syncwatch deleted its API key and pinned certificate.")
+	s.announce(r, notify.Notice{Title: "Server " + name + " removed", Summary: "syncwatch deleted its API key and pinned certificate."})
 	s.redirect(w, r, "/settings#servers", "The server is removed.", false)
 }
 
@@ -435,7 +437,7 @@ func (s *Server) handleAcceptCert(w http.ResponseWriter, r *http.Request, info r
 	if sv, ok := s.cfg.Get().ServerByKey(id); ok {
 		name = sv.Name
 	}
-	s.announce(r, "Server "+name+": new certificate accepted", "The pinned SHA-256 fingerprint is "+stclient.ShortFP(fp)+".")
+	s.announce(r, notify.Notice{Title: "Server " + name + ": new certificate accepted", Summary: "The pinned SHA-256 fingerprint is " + stclient.ShortFP(fp) + "."})
 	s.redirect(w, r, "/settings#servers", "The new certificate is accepted. syncwatch reconnects to the server.", false)
 }
 
@@ -507,7 +509,7 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 		return
 	}
 	if len(changes) > 0 {
-		announce("Notification settings changed", strings.Join(changes, "\n"))
+		announce(notify.Notice{Title: "Notification settings changed", Summary: strings.Join(changes, "\n")})
 	}
 	s.redirect(w, r, "/settings#notifications", "The notification settings are saved.", false)
 }
@@ -999,7 +1001,7 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 		changes = append(changes, "The new viewer password is set. syncwatch logged out all viewers.")
 	}
 	if len(changes) > 0 {
-		s.announce(r, "Access settings changed", strings.Join(changes, "\n"))
+		s.announce(r, notify.Notice{Title: "Access settings changed", Summary: strings.Join(changes, "\n")})
 	}
 	s.redirect(w, r, "/settings#access", "The access settings are saved.", false)
 }
@@ -1076,31 +1078,20 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 	if s.cfg.Get().Access.Mode == config.AccessBuiltin {
 		_ = s.startSession(w, r, RoleAdmin)
 	}
-	s.announce(r, "Administrator password changed", "syncwatch logged out the other administrator sessions.")
+	s.announce(r, notify.Notice{Title: "Administrator password changed", Summary: "syncwatch logged out the other administrator sessions."})
 	s.redirect(w, r, "/settings#access", "The administrator password is changed. syncwatch logged out the other administrator sessions.", false)
 }
 
-func (s *Server) handleAPIToken(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	had := s.st.HasSecret(store.SecretAPIToken)
-	if r.FormValue("op") == "revoke" {
-		_ = s.st.DeleteSecret(store.SecretAPIToken)
-		if had {
-			s.announce(r, "API token revoked", "syncwatch refuses requests with the old API token.")
-		}
-		s.redirect(w, r, "/settings#api", "The API token is revoked.", false)
-		return
-	}
-	tok := "swt_" + randomToken(24)
-	if err := s.st.SetSecret(store.SecretAPIToken, tok); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	title, summary := "API token generated", "The API token gives read access to /api/v1/status and /api/v1/ha."
-	if had {
-		title, summary = "API token replaced", summary+" syncwatch refuses the old API token now."
-	}
-	s.announce(r, title, summary)
-	s.render(w, r, http.StatusOK, "settings", info, s.settingsData(info, map[string]any{"NewToken": tok}))
+// handleDevicesSave saves the devices that always connect through a relay.
+// The form is not available yet: the address refuses each request.
+func (s *Server) handleDevicesSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
+	s.redirect(w, r, "/settings", "This form is not available.", true)
+}
+
+// handleNoticesTest sends a test notice to the webhook for settings notices.
+// The form is not available yet: the address refuses each request.
+func (s *Server) handleNoticesTest(w http.ResponseWriter, r *http.Request, info requestInfo) {
+	s.redirect(w, r, "/settings", "This form is not available.", true)
 }
 
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -1179,7 +1170,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request, info reque
 		s.channelsChanged() // the file may have brought a new webhook
 	}
 	if len(changes) > 0 {
-		announce("Configuration imported", strings.Join(changes, "\n"))
+		announce(notify.Notice{Title: "Configuration imported", Summary: strings.Join(changes, "\n")})
 	}
 	msg := "The configuration is imported."
 	if n > 0 {

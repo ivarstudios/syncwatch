@@ -91,6 +91,23 @@ var schema = []string{
 	`CREATE TABLE IF NOT EXISTS traffic_counters (server TEXT PRIMARY KEY, in_total INTEGER NOT NULL, out_total INTEGER NOT NULL, start_time TEXT NOT NULL, at INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS traffic_deltas (server TEXT NOT NULL, at INTEGER NOT NULL, in_bytes INTEGER NOT NULL, out_bytes INTEGER NOT NULL)`,
 	`CREATE INDEX IF NOT EXISTS traffic_deltas_at ON traffic_deltas(at)`,
+	// The tables below came after schema version 1 without a new version:
+	// an older syncwatch still opens the database and does not use them.
+	`CREATE TABLE IF NOT EXISTS api_tokens (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		scope TEXT NOT NULL,
+		hash TEXT NOT NULL UNIQUE,
+		created_at INTEGER NOT NULL,
+		last_used INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE TABLE IF NOT EXISTS folder_activity (
+		server TEXT NOT NULL,
+		folder TEXT NOT NULL,
+		first_seen INTEGER NOT NULL,
+		last_local_change INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY(server, folder)
+	)`,
 }
 
 // Open opens (creating if needed) the database at path. key is the 32-byte
@@ -158,8 +175,54 @@ func (s *Store) migrate() error {
 	if v > schemaVersion {
 		return fmt.Errorf("the database schema %d is newer than this syncwatch version (%d)", v, schemaVersion)
 	}
-	_, err := s.db.Exec(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, schemaVersion)
-	return err
+	if _, err := s.db.Exec(`INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, schemaVersion); err != nil {
+		return err
+	}
+	if err := s.migrateAPIToken(); err != nil {
+		return fmt.Errorf("cannot move the API token into api_tokens: %w", err)
+	}
+	return nil
+}
+
+// migrateAPIToken moves the single API token of an older version (the secret
+// api.token) into api_tokens, as the token "API token" with the scope full,
+// in one transaction. It changes nothing when api_tokens has a row. A secret
+// that the secret key cannot decrypt stays where it is: Settings shows it.
+func (s *Store) migrateAPIToken() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM api_tokens`).Scan(&n); err != nil || n > 0 {
+		return err
+	}
+	var nonce, ct []byte
+	var updated int64
+	err = tx.QueryRow(`SELECT nonce, ciphertext, updated_at FROM secrets WHERE name=?`, SecretAPIToken).Scan(&nonce, &ct, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	token, err := s.decrypt(SecretAPIToken, nonce, ct)
+	if err != nil || token == "" {
+		return nil
+	}
+	id, err := newTokenID(tx)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO api_tokens(id, name, scope, hash, created_at, last_used) VALUES(?,?,?,?,?,0)`,
+		id, LegacyTokenName, ScopeFull, HashAPIToken(token), updated); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM secrets WHERE name=?`, SecretAPIToken); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func ms(t time.Time) int64 {

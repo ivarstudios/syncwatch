@@ -19,7 +19,8 @@ import (
 // Secret names.
 const (
 	SecretDiscordWebhook = "notify.discord_webhook"
-	SecretAPIToken       = "api.token"
+	SecretNoticesWebhook = "notify.discord_notices_webhook" // the Discord webhook for settings notices
+	SecretAPIToken       = "api.token"                      // the single API token of an older version; see migrateAPIToken
 )
 
 // ServerAPIKeySecret is the secret name of a server's API key.
@@ -178,9 +179,18 @@ func (s *Store) Secret(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return s.decrypt(name, nonce, ct)
+}
+
+// decrypt opens the stored value of a secret. A nonce of the wrong size is
+// an error, not a panic in gcm.Open.
+func (s *Store) decrypt(name string, nonce, ct []byte) (string, error) {
 	gcm, err := s.aead()
 	if err != nil {
 		return "", err
+	}
+	if len(nonce) != gcm.NonceSize() {
+		return "", fmt.Errorf("cannot decrypt the secret %s: check the secret key", name)
 	}
 	pt, err := gcm.Open(nil, nonce, ct, []byte(name))
 	if err != nil {

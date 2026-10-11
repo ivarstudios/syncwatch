@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +157,11 @@ func (s *Server) resolve(r *http.Request) requestInfo {
 func (s *Server) secureCookies(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
+
+// TrustProxies sets the addresses of the reverse proxies whose
+// X-Forwarded-Proto header syncwatch believes (SYNCWATCH_TRUSTED_PROXIES).
+// Call it before serving.
+func (s *Server) TrustProxies(p []netip.Prefix) { s.trusted = slices.Clone(p) }
 
 // ensureCSRF sets the double-submit CSRF cookie if missing and returns its value.
 func (s *Server) ensureCSRF(w http.ResponseWriter, r *http.Request, info *requestInfo) string {

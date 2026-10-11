@@ -295,11 +295,11 @@ type configWatcher struct {
 	// noticeLater captures the notification channels configured now and
 	// returns a function that sends a settings notice to them
 	// (notify.Notifier.NoticeLater).
-	noticeLater func() func(title, summary string)
+	noticeLater func() func(notify.Notice)
 
 	mu      sync.Mutex
-	applied int64                       // the revision the holder has
-	notice  func(title, summary string) // the channels of that configuration
+	applied int64               // the revision the holder has
+	notice  func(notify.Notice) // the channels of that configuration
 }
 
 // capture keeps the notification channels of the configuration that runs.
@@ -353,7 +353,7 @@ func (w *configWatcher) sendCLINotices() {
 			}
 			w.log.Warn("settings changed", "change", n.Title, "detail", summary, "source", "command line")
 			if w.notice != nil {
-				w.notice(n.Title, summary)
+				w.notice(notify.Notice{Title: n.Title, Summary: summary})
 			}
 		}
 		if err := w.st.DeleteSetting(key); err != nil {
@@ -487,6 +487,7 @@ func Run(ctx context.Context, o Options) error {
 		AcceptCert:      mgr.AcceptCert,
 		ResetPin:        mgr.ResetPin,
 		SendTest:        ntf.SendTest,
+		SendNoticesTest: ntf.SendNoticesTest,
 		Notice:          ntf.Notice,
 		NoticeLater:     ntf.NoticeLater,
 		ChannelsChanged: channelsChanged,

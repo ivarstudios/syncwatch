@@ -425,7 +425,7 @@ func TestNoticeLogsOneDecision(t *testing.T) {
 	dead := &fakeSender{}
 	dead.fail(&httpError{code: 404, text: "Unknown Webhook"})
 	r.n.SetSenders(func() []Sender { return []Sender{dead} })
-	r.n.NoticeLater()("Server AKKA changed", "The API key is replaced.")
+	r.n.NoticeLater()(Notice{Title: "Server AKKA changed", Summary: "The API key is replaced."})
 	waitFor(t, func() bool { return strings.Contains(logs.String(), "settings notice") })
 	r.at(start.Add(time.Minute))
 	r.at(start.Add(5 * time.Minute))
@@ -455,7 +455,7 @@ func TestNoticeLogsOneDecision(t *testing.T) {
 	current = []Sender{r.sender}
 	mu.Unlock()
 	r.n.ChannelsChanged() // the administrator saved a new webhook
-	notice("Discord webhook replaced", "x")
+	notice(Notice{Title: "Discord webhook replaced", Summary: "x"})
 	waitFor(t, func() bool { return pendingNotices(r) == 1 })
 	r.at(start.Add(time.Minute))
 	msgs := r.sender.take()

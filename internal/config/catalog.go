@@ -29,6 +29,8 @@ var Catalog = []CheckInfo{
 	{"H9", "Pending device or folder", model.CatHealth, model.Warn, false, 5 * time.Minute},
 	{"H10", "New sync conflicts", model.CatHealth, model.Warn, false, 5 * time.Minute},
 	{"H11", "Connected through a relay", model.CatHealth, model.Warn, false, 5 * time.Minute},
+	{"H12", "Relay connection lost", model.CatHealth, model.Warn, false, 5 * time.Minute},
+	{"H13", "Certificate expires soon", model.CatHealth, model.Info, false, 5 * time.Minute},
 	{"X1", "Same label, different folder IDs", model.CatCross, model.Warn, false, 5 * time.Minute},
 	{"X2", "Folder in different share types", model.CatCross, model.Warn, false, 5 * time.Minute},
 	{"S1", "Syncthing folder inside another", model.CatStructure, model.Error, true, 5 * time.Minute},

@@ -27,6 +27,34 @@ type Snapshot struct {
 	// Disabled are the servers that are disabled in the configuration. The
 	// collector does not poll them, but their devices are servers, not PCs.
 	Disabled []DisabledServer
+	// Links are the connections between the polled servers that have each
+	// other configured, in configuration order; nil until the engine sets them.
+	Links []ServerLink
+	// SiteLinks are the connections between the sites, when 2 or more sites
+	// are set.
+	SiteLinks []SiteLink
+}
+
+// States of a link between 2 servers or 2 sites.
+const (
+	LinkConnected    = "connected"    // the 2 servers are connected to each other
+	LinkDisconnected = "disconnected" // both servers are up and loaded, and not connected to each other
+	LinkUnreachable  = "unreachable"  // a server of the pair is not up or not loaded: syncwatch cannot tell
+)
+
+// ServerLink is the connection between 2 polled servers.
+type ServerLink struct {
+	A, B  string    // server IDs, A before B in configuration order
+	State string    // LinkConnected, LinkDisconnected or LinkUnreachable
+	Since time.Time // connected: the start of the connection; disconnected: the last time they saw each other; zero when not known
+}
+
+// SiteLink is the connection between 2 sites: the server links between them.
+type SiteLink struct {
+	A, B    string      // site names, A before B in the order of their first server in the configuration
+	State   string      // LinkConnected when 1 server link is connected; else LinkUnreachable when 1 is unreachable; else LinkDisconnected
+	Since   time.Time   // connected: the earliest Since of the connected links; disconnected: the latest Since of the links; else zero
+	Servers [][2]string // the server links (A, B server IDs) between the 2 sites
 }
 
 // DisabledServer is a server that is disabled in the configuration, with
@@ -109,6 +137,66 @@ type Server struct {
 
 	RemoteStates    map[string]map[string]string     // last known remoteState by folder ID, then device ID; see RemoteState
 	LastCompletions map[string]map[string]Completion // last completion of a connected, valid device by folder ID, then device ID; see LastCompletion
+
+	NeedLists      map[string]map[string]NeedList         // the files that a device still needs, by folder ID, then device ID; replaced at each full check
+	Progress       map[string]map[string][]ProgressSample // by folder ID, then device ID ("" for the server's own copy), oldest first; see AddProgress
+	RelayListeners []RelayListener                        // the relay listeners of the server (connectionServiceStatus)
+}
+
+// NeedList is a part of the files that a device still needs for a folder.
+type NeedList struct {
+	Names []string  // at most 20 file names (paths in the folder) that the device still needs
+	Items int64     // the device's need items when the list was read
+	At    time.Time // when the list was read
+}
+
+// ProgressSample is the progress of a folder for a device at one time.
+type ProgressSample struct {
+	At          time.Time
+	NeedBytes   int64
+	GlobalBytes int64
+}
+
+// Limits of the progress samples of one folder and device.
+const (
+	progressSpacing = time.Minute   // the shortest time between 2 samples
+	progressWindow  = 2 * time.Hour // samples older than this before the newest one go
+	maxProgress     = 120
+)
+
+// AddProgress records a progress sample of a folder for a device ("" for the
+// server's own copy). A sample less than 1 minute after the newest sample of
+// the pair is not kept. Samples more than 2 hours older than p go, and at
+// most 120 samples stay.
+func (s *Server) AddProgress(folderID, deviceID string, p ProgressSample) {
+	samples := s.Progress[folderID][deviceID]
+	if n := len(samples); n > 0 && p.At.Sub(samples[n-1].At) < progressSpacing {
+		return
+	}
+	cut := p.At.Add(-progressWindow)
+	i := 0
+	for i < len(samples) && samples[i].At.Before(cut) {
+		i++
+	}
+	samples = append(samples[i:], p)
+	if len(samples) > maxProgress {
+		samples = samples[len(samples)-maxProgress:]
+	}
+	if s.Progress == nil {
+		s.Progress = map[string]map[string][]ProgressSample{}
+	}
+	if s.Progress[folderID] == nil {
+		s.Progress[folderID] = map[string][]ProgressSample{}
+	}
+	s.Progress[folderID][deviceID] = samples
+}
+
+// RelayListener is the state of one relay listener of a server.
+type RelayListener struct {
+	URI       string    // the listen address without its query: relay://10.115.1.60:22067 or dynamic+https://relays.syncthing.net/endpoint
+	Connected bool      // Syncthing reports a WAN address and no error for it
+	Error     string    // Syncthing's error text, "" when none
+	Since     time.Time // when Connected last changed (the first sample when not known)
 }
 
 // Rate is a server's transfer rate between its two latest traffic readings.
@@ -289,6 +377,7 @@ type Folder struct {
 	Completion map[string]*Completion // by remote device ID
 
 	LastLocalChange time.Time // newest LocalChangeDetected seen by the collector
+	FirstSeen       time.Time // when syncwatch saw the folder on this server for the first time (store folder_activity)
 }
 
 // DisplayName is the label, or the ID when the label is empty.
@@ -328,6 +417,7 @@ type Completion struct {
 	Percent     float64
 	NeedBytes   int64
 	NeedItems   int64
+	GlobalBytes int64  // the size of the folder for the device
 	RemoteState string // valid, paused, notSharing, unknown
 	UpdatedAt   time.Time
 }
@@ -412,9 +502,12 @@ type NestedDir struct {
 
 // Clone returns a deep copy.
 func (s *Snapshot) Clone() *Snapshot {
-	out := &Snapshot{At: s.At, Servers: make([]*Server, len(s.Servers)), Disabled: slices.Clone(s.Disabled)}
+	out := &Snapshot{At: s.At, Servers: make([]*Server, len(s.Servers)), Disabled: slices.Clone(s.Disabled), Links: slices.Clone(s.Links), SiteLinks: slices.Clone(s.SiteLinks)}
 	for i, sv := range s.Servers {
 		out.Servers[i] = sv.Clone()
+	}
+	for i := range out.SiteLinks {
+		out.SiteLinks[i].Servers = slices.Clone(s.SiteLinks[i].Servers)
 	}
 	return out
 }
@@ -452,6 +545,24 @@ func (s *Server) Clone() *Server {
 	for k, m := range s.LastCompletions {
 		c.LastCompletions[k] = maps.Clone(m)
 	}
+	c.NeedLists = make(map[string]map[string]NeedList, len(s.NeedLists))
+	for k, m := range s.NeedLists {
+		lists := make(map[string]NeedList, len(m))
+		for dev, nl := range m {
+			nl.Names = slices.Clone(nl.Names)
+			lists[dev] = nl
+		}
+		c.NeedLists[k] = lists
+	}
+	c.Progress = make(map[string]map[string][]ProgressSample, len(s.Progress))
+	for k, m := range s.Progress {
+		samples := make(map[string][]ProgressSample, len(m))
+		for dev, ps := range m {
+			samples[dev] = slices.Clone(ps)
+		}
+		c.Progress[k] = samples
+	}
+	c.RelayListeners = slices.Clone(s.RelayListeners)
 	c.PendingDevices = slices.Clone(s.PendingDevices)
 	c.PendingFolders = slices.Clone(s.PendingFolders)
 	c.Conflicts = maps.Clone(s.Conflicts)

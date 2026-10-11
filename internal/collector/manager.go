@@ -21,6 +21,12 @@ type Manager struct {
 	cfg *config.Holder
 	log *slog.Logger
 
+	// OnPin, when set, is called after the collector pinned the certificate
+	// of a server without an administrator: at the first contact (renewal
+	// false) or for a CA-signed renewal for the same host name (renewal true).
+	// Set it before Run.
+	OnPin func(serverID, fingerprint string, renewal bool)
+
 	mu      sync.Mutex
 	ctx     context.Context
 	running map[string]*running

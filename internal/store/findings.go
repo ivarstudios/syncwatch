@@ -19,6 +19,7 @@ type Record struct {
 	Stale              bool      // frozen (a server it depends on is unreachable) or held (r1: a device that is away)
 	UrgentSince        time.Time // when it became urgent (zero while it isn't)
 	PingedAt           time.Time // urgent message sent
+	RepeatedAt         time.Time // the last repeat of the urgent message; zero when none
 	ResolvedNotifiedAt time.Time // "resolved" message sent
 }
 
@@ -34,13 +35,17 @@ func (r *Record) UrgentFrom() time.Time {
 	return r.OpenedAt
 }
 
+// recordData holds the parts of a record that have no column of their own.
+// An older syncwatch reads the keys it knows and drops the others.
 type recordData struct {
-	Checks      []string       `json:"checks,omitempty"`
-	Related     []string       `json:"related,omitempty"`
-	Details     []model.Detail `json:"details,omitempty"`
-	Paths       []string       `json:"paths,omitempty"`
-	Link        string         `json:"link,omitempty"`
-	UrgentSince int64          `json:"urgent_since,omitempty"` // Unix ms
+	Checks       []string       `json:"checks,omitempty"`
+	Related      []string       `json:"related,omitempty"`
+	Details      []model.Detail `json:"details,omitempty"`
+	Paths        []string       `json:"paths,omitempty"`
+	Link         string         `json:"link,omitempty"`
+	UrgentSince  int64          `json:"urgent_since,omitempty"` // Unix ms
+	RepeatedAt   int64          `json:"repeated_at,omitempty"`  // Unix ms
+	ResolvedText string         `json:"resolved_text,omitempty"`
 }
 
 const findingCols = `id, check_id, severity, category, server, subject, message, data, urgent, since, opened_at, last_seen, resolved_at, stale, pinged_at, resolved_notified_at`
@@ -61,6 +66,7 @@ func scanRecord(sc interface{ Scan(...any) error }) (*Record, error) {
 	if len(r.Checks) == 0 {
 		r.Checks = []string{r.Check}
 	}
+	r.ResolvedText, r.RepeatedAt = d.ResolvedText, fromMS(d.RepeatedAt)
 	r.Urgent, r.Stale, r.UrgentSince = urgent == 1, stale == 1, fromMS(d.UrgentSince)
 	r.Since, r.OpenedAt, r.LastSeen = fromMS(since), fromMS(opened), fromMS(last)
 	r.ResolvedAt, r.PingedAt, r.ResolvedNotifiedAt = fromMS(resolved), fromMS(pinged), fromMS(notified)
@@ -76,7 +82,8 @@ func b2i(b bool) int {
 
 // SaveRecord inserts or replaces a finding record.
 func (s *Store) SaveRecord(r *Record) error {
-	data, _ := json.Marshal(recordData{Checks: r.Checks, Related: r.Related, Details: r.Details, Paths: r.Paths, Link: r.Link, UrgentSince: ms(r.UrgentSince)})
+	data, _ := json.Marshal(recordData{Checks: r.Checks, Related: r.Related, Details: r.Details, Paths: r.Paths, Link: r.Link, UrgentSince: ms(r.UrgentSince),
+		RepeatedAt: ms(r.RepeatedAt), ResolvedText: r.ResolvedText})
 	_, err := s.db.Exec(`INSERT INTO findings(`+findingCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET check_id=excluded.check_id, severity=excluded.severity, category=excluded.category,
 		server=excluded.server, subject=excluded.subject, message=excluded.message, data=excluded.data, urgent=excluded.urgent,

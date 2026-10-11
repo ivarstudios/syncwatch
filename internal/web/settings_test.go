@@ -3,47 +3,12 @@ package web
 import (
 	"html"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 )
-
-// notices returns the notices sent so far.
-func (e *env) noticeList() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return append([]string(nil), e.notices...)
-}
-
-// checksForm fills the checks form with the current configuration.
-func checksForm(cfg *config.Config, csrf string) url.Values {
-	form := url.Values{"csrf": {csrf}}
-	for _, c := range config.Catalog {
-		if cfg.CheckEnabled(c.ID) {
-			form.Set("enabled_"+c.ID, "on")
-		}
-		if cfg.Urgent(c.ID) {
-			form.Set("urgent_"+c.ID, "on")
-		}
-		form.Set("debounce_"+c.ID, config.Duration(cfg.Debounce(c.ID)).String())
-	}
-	th := cfg.Thresholds
-	for k, v := range map[string]config.Duration{"failing_files": th.FailingFiles, "stuck_sync": th.StuckSync, "paused": th.Paused, "pc_offline": th.PCOffline,
-		"conflict_window": th.ConflictWindow, "inactive_project": th.InactiveProject, "old_device": th.OldDevice, "dead_share": th.DeadShare} {
-		form.Set(k, v.String())
-	}
-	return form
-}
-
-// notifyForm fills the notifications form with the current configuration.
-func notifyForm(cfg *config.Config, csrf string) url.Values {
-	n := cfg.Notify
-	return url.Values{"csrf": {csrf}, "discord_role_id": {n.DiscordRoleID}, "quiet_hours": {n.QuietHours}, "reminder_time": {n.ReminderTime},
-		"weekly_day": {n.WeeklyDay}, "weekly_time": {n.WeeklyTime}, "weekly_top": {"10"}, "timezone": {cfg.Timezone}, "public_url": {cfg.PublicURL}}
-}
 
 func TestConfigChanges(t *testing.T) {
 	base := "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\n"
@@ -184,13 +149,10 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 	post("/settings/password", url.Values{"current": {"correct horse battery"}, "password": {"another long password"}, "password2": {"another long password"}})
 	expect("password", "Administrator password changed")
 
-	e.post("/settings/api-token", url.Values{"csrf": {csrf}, "op": {"generate"}})
-	expect("token", "API token replaced")
-	post("/settings/api-token", url.Values{"op": {"revoke"}})
-	expect("revoke", "API token revoked")
-
+	// The API token steps are TestAPITokenChangesAreAnnounced (api_test.go):
+	// the API token of twoServers is still set here.
 	post("/settings/import", url.Values{"yaml": {"servers: [{name: Akka, id: akka, url: 'https://a:1', api_key: k3}, {name: SOL, url: 'https://b:1'}]\nthresholds: {paused: 1d}\napi: {token: swt_imported_token}\n"}})
-	expect("import", "Configuration imported", "H6 paused for more than: 3d → 1d", "The API token is added.", "The API key of the server Akka is replaced.")
+	expect("import", "Configuration imported", "H6 paused for more than: 3d → 1d", "The API token is replaced.", "The API key of the server Akka is replaced.")
 	if n := e.noticeList()[seen-1]; strings.Contains(n, "k3") || strings.Contains(n, "swt_imported") {
 		t.Fatalf("import notice shows a secret: %q", n)
 	}
@@ -300,8 +262,6 @@ func TestStructureFormKeepsIgnoreDirs(t *testing.T) {
 	}
 }
 
-var revRe = regexp.MustCompile(`name="rev" value="([^"]+)"`)
-
 // Two admins (or two tabs) saving different sections must not overwrite
 // each other: a form from a page loaded before another save is refused,
 // before anything (a secret included) is written. Forms without a revision
@@ -364,5 +324,80 @@ func TestNotificationLogTimeZone(t *testing.T) {
 	}
 	if row := body[strings.LastIndex(body[:i], "<tr>"):i]; !strings.Contains(row, "2026-10-06 12:30") {
 		t.Fatalf("row shows %q", row)
+	}
+}
+
+func TestSettingsForms(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	// Add a server; a new server needs an API key.
+	if r := e.post("/settings/servers", url.Values{"csrf": {csrf}, "name": {"SIRIUS"}, "url": {"https://c:8384"}}); !strings.Contains(r.Header.Get("Location"), "#servers") {
+		t.Fatal("redirect")
+	}
+	if _, ok := e.cfg.Get().ServerByKey("sirius"); ok {
+		t.Fatal("server without API key was added")
+	}
+	e.post("/settings/servers", url.Values{"csrf": {csrf}, "name": {"SIRIUS"}, "url": {"https://c:8384"}, "api_key": {"k3"}})
+	if _, ok := e.cfg.Get().ServerByKey("sirius"); !ok {
+		t.Fatal("server not added")
+	}
+	if v, _, _ := e.st.ServerKey("sirius"); v != "k3" {
+		t.Fatal("API key not stored")
+	}
+	// Structure rules: invalid YAML is rejected, valid is applied.
+	r := e.post("/settings/structure", url.Values{"csrf": {csrf}, "yaml": {"structure: {project_pattern: '('}"}})
+	if loc := r.Header.Get("Location"); !strings.Contains(loc, "#structure") {
+		t.Fatal(loc)
+	}
+	if e.cfg.Get().Structure.ProjectPattern == "(" {
+		t.Fatal("invalid pattern saved")
+	}
+	e.post("/settings/structure", url.Values{"csrf": {csrf}, "yaml": {"structure: {project_pattern: '^LIVE-'}\nshares: {add: {AKKA: [/x/AKKA-LIVE-5COLLECT]}}"}})
+	if e.cfg.Get().Structure.ProjectPattern != "^LIVE-" || len(e.cfg.Get().Shares.Add["AKKA"]) != 1 {
+		t.Fatalf("structure not saved: %+v", e.cfg.Get().Structure)
+	}
+	// Checks: disable S7, make H7 urgent.
+	form := url.Values{"csrf": {csrf}}
+	for _, c := range config.Catalog {
+		if c.ID != "S7" {
+			form.Set("enabled_"+c.ID, "on")
+		}
+		if c.Urgent || c.ID == "H7" {
+			form.Set("urgent_"+c.ID, "on")
+		}
+		form.Set("debounce_"+c.ID, config.Duration(c.Debounce).String())
+	}
+	for _, k := range []string{"failing_files", "stuck_sync", "paused", "pc_offline", "conflict_window", "inactive_project", "old_device", "dead_share"} {
+		form.Set(k, "2d")
+	}
+	e.post("/settings/checks", form)
+	if e.cfg.Get().CheckEnabled("S7") || !e.cfg.Get().Urgent("H7") || e.cfg.Get().Thresholds.PCOffline.D() != 48*time.Hour {
+		t.Fatalf("checks not saved: %+v", e.cfg.Get().Checks)
+	}
+	// Export never contains secrets; import round-trips.
+	_, exp := e.get("/settings/export")
+	if strings.Contains(exp, "k3") || strings.Contains(exp, "secret") || !strings.Contains(exp, "SIRIUS") {
+		t.Fatalf("export: %s", exp)
+	}
+	r = e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {exp}})
+	if !strings.Contains(r.Header.Get("Location"), "#import") {
+		t.Fatal("import redirect")
+	}
+	if v, _, _ := e.st.ServerKey("sirius"); v != "k3" {
+		t.Fatal("import without secrets must keep existing secrets")
+	}
+	// The API token part is TestAPITokenGenerateForm (api_test.go).
+}
+
+// The Servers form has no site field yet: a save keeps the site that an
+// import set.
+func TestServerFormKeepsSite(t *testing.T) {
+	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: secret-key-akka, site: IVAR Office}, {name: SOL, url: "https://b:1"}]`)
+	csrf := e.csrf("/settings")
+	if msg, isErr := flash(e.post("/settings/servers", url.Values{"csrf": {csrf}, "orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "disabled": {"on"}})); isErr {
+		t.Fatal(msg)
+	}
+	if sv, _ := e.cfg.Get().ServerByKey("akka"); sv.Site != "IVAR Office" || !sv.Disabled {
+		t.Fatalf("after the save: %+v", sv)
 	}
 }

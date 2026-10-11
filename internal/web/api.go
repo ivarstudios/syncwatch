@@ -117,6 +117,11 @@ func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request) bool {
 		if err == nil && want != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
 			return true
 		}
+		// The API tokens of api_tokens (the store moves the single API
+		// token of an older version there at the start), any scope.
+		if t, err := s.st.APITokenByValue(got); err == nil && t != nil {
+			return true
+		}
 		ip := clientIP(r)
 		if n := s.logs.count("token "+ip, s.now()); n > 0 {
 			s.log.Warn("API request with an unknown token", "ip", ip, "path", r.URL.Path, "count", n)

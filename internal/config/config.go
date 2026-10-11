@@ -10,10 +10,12 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,7 +24,9 @@ import (
 type Config struct {
 	PublicURL  string           `yaml:"public_url" json:"public_url"`
 	Timezone   string           `yaml:"timezone" json:"timezone"`
+	Site       string           `yaml:"site,omitempty" json:"site,omitempty"` // where syncwatch runs, free text; "" when not set
 	Servers    []Server         `yaml:"servers" json:"servers"`
+	Devices    []Device         `yaml:"devices,omitempty" json:"devices,omitempty"`
 	Collector  Collector        `yaml:"collector" json:"collector"`
 	Checks     map[string]Check `yaml:"checks,omitempty" json:"checks"`
 	Thresholds Thresholds       `yaml:"thresholds" json:"thresholds"`
@@ -43,6 +47,56 @@ type Server struct {
 	Disabled bool   `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 	// AllowHTTP permits a plain http:// URL, which sends the API key unencrypted.
 	AllowHTTP bool `yaml:"allow_http,omitempty" json:"allow_http,omitempty"`
+	// Site is where the server is, free text (the same spelling for each
+	// server of a site); "" when not set.
+	Site string `yaml:"site,omitempty" json:"site,omitempty"`
+}
+
+// Device is the configuration of one Syncthing device (a PC), by its device ID.
+type Device struct {
+	ID    string `yaml:"id" json:"id"`
+	Relay bool   `yaml:"relay,omitempty" json:"relay,omitempty"` // always connects through a relay: no H11; H12 after thresholds.relay_lost without a connection
+}
+
+// MaxSiteLen is the longest site name, in characters.
+const MaxSiteLen = 40
+
+// MaxDevices is the most entries that devices can have.
+const MaxDevices = 500
+
+var deviceIDRe = regexp.MustCompile(`^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$`)
+
+// ValidDeviceID reports whether s is a complete Syncthing device ID: 8
+// groups of 7 characters from A-Z and 2-7, joined by "-".
+func ValidDeviceID(s string) bool { return deviceIDRe.MatchString(s) }
+
+// RelayExpected reports whether the device always connects through a relay
+// (devices[].relay).
+func (c *Config) RelayExpected(deviceID string) bool {
+	for _, d := range c.Devices {
+		if strings.EqualFold(d.ID, deviceID) {
+			return d.Relay
+		}
+	}
+	return false
+}
+
+// SiteOf returns the site of a server, or "" when the server has no site or
+// is not in the configuration.
+func (c *Config) SiteOf(serverID string) string {
+	for _, s := range c.Servers {
+		if s.ID == serverID {
+			return s.Site
+		}
+	}
+	return ""
+}
+
+// siteOK reports whether a site name has at most MaxSiteLen characters and
+// no control or format characters.
+func siteOK(s string) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= MaxSiteLen &&
+		strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) < 0
 }
 
 // SameEndpoint reports whether two server URLs address the same scheme, host,
@@ -107,6 +161,7 @@ type Thresholds struct {
 	Paused          Duration `yaml:"paused" json:"paused"`                     // H6
 	PCOffline       Duration `yaml:"pc_offline" json:"pc_offline"`             // H7
 	ConflictWindow  Duration `yaml:"conflict_window" json:"conflict_window"`   // H10
+	RelayLost       Duration `yaml:"relay_lost" json:"relay_lost"`             // H12
 	InactiveProject Duration `yaml:"inactive_project" json:"inactive_project"` // C1
 	OldDevice       Duration `yaml:"old_device" json:"old_device"`             // C2
 	DeadShare       Duration `yaml:"dead_share" json:"dead_share"`             // C3
@@ -137,13 +192,15 @@ type Shares struct {
 
 // Notify settings.
 type Notify struct {
-	DiscordWebhook string `yaml:"discord_webhook,omitempty" json:"-"` // import only
-	DiscordRoleID  string `yaml:"discord_role_id" json:"discord_role_id"`
-	QuietHours     string `yaml:"quiet_hours" json:"quiet_hours"`     // "22:00-07:00" or "off"; "" = default
-	ReminderTime   string `yaml:"reminder_time" json:"reminder_time"` // "08:00" or "off"; "" = default
-	WeeklyDay      string `yaml:"weekly_day" json:"weekly_day"`       // monday … sunday or "off"; "" = default
-	WeeklyTime     string `yaml:"weekly_time" json:"weekly_time"`     // "08:00"
-	WeeklyTop      int    `yaml:"weekly_top" json:"weekly_top"`
+	DiscordWebhook        string   `yaml:"discord_webhook,omitempty" json:"-"`         // import only
+	DiscordNoticesWebhook string   `yaml:"discord_notices_webhook,omitempty" json:"-"` // import only: the webhook for settings notices
+	DiscordRoleID         string   `yaml:"discord_role_id" json:"discord_role_id"`
+	RepeatUrgent          Duration `yaml:"repeat_urgent,omitempty" json:"repeat_urgent,omitempty"` // 0 = off
+	QuietHours            string   `yaml:"quiet_hours" json:"quiet_hours"`                         // "22:00-07:00" or "off"; "" = default
+	ReminderTime          string   `yaml:"reminder_time" json:"reminder_time"`                     // "08:00" or "off"; "" = default
+	WeeklyDay             string   `yaml:"weekly_day" json:"weekly_day"`                           // monday … sunday or "off"; "" = default
+	WeeklyTime            string   `yaml:"weekly_time" json:"weekly_time"`                         // "08:00"
+	WeeklyTop             int      `yaml:"weekly_top" json:"weekly_top"`
 }
 
 // Access settings.
@@ -208,6 +265,7 @@ func (c *Config) ApplyDefaults() {
 	setDur(&t.Paused, 3*24*time.Hour)
 	setDur(&t.PCOffline, 7*24*time.Hour)
 	setDur(&t.ConflictWindow, 7*24*time.Hour)
+	setDur(&t.RelayLost, 30*time.Minute)
 	setDur(&t.InactiveProject, 180*24*time.Hour)
 	setDur(&t.OldDevice, 90*24*time.Hour)
 	setDur(&t.DeadShare, 30*24*time.Hour)
@@ -259,6 +317,21 @@ func (c *Config) ApplyDefaults() {
 		if u, err := CanonicalDiscordWebhook(n.DiscordWebhook); err == nil {
 			n.DiscordWebhook = u
 		}
+	}
+	if n.DiscordNoticesWebhook != "" {
+		if u, err := CanonicalNoticesWebhook(n.DiscordNoticesWebhook); err == nil {
+			n.DiscordNoticesWebhook = u
+		}
+	}
+	// notifications.repeat_urgent has no default: 0 is off.
+	c.Site = strings.TrimSpace(c.Site)
+	for i := range c.Servers {
+		c.Servers[i].Site = strings.TrimSpace(c.Servers[i].Site)
+	}
+	// Syncthing writes device IDs in upper case; a pasted ID can have spaces
+	// around it.
+	for i := range c.Devices {
+		c.Devices[i].ID = strings.ToUpper(strings.TrimSpace(c.Devices[i].ID))
 	}
 	// Explicit ids are reserved first, so a generated id never collides with one.
 	taken := map[string]bool{}
@@ -361,6 +434,33 @@ func (c *Config) Validate() error {
 		if s.GUIURL != "" && !webURL(s.GUIURL) {
 			errs = append(errs, fmt.Errorf("Server %s: the GUI URL (gui_url) must be an https:// or http:// URL without a user name or a password.", s.ID))
 		}
+		if !siteOK(s.Site) {
+			errs = append(errs, fmt.Errorf("Server %s: the site (servers[].site) must have at most %d characters and no control characters.", s.ID, MaxSiteLen))
+		}
+	}
+	if !siteOK(c.Site) {
+		errs = append(errs, fmt.Errorf("Site (site): the value must have at most %d characters and no control characters.", MaxSiteLen))
+	}
+	if len(c.Devices) > MaxDevices {
+		errs = append(errs, fmt.Errorf("Devices (devices): the list has %d entries. The maximum is %d.", len(c.Devices), MaxDevices))
+	}
+	devices := map[string]int{}
+	var order []string
+	for _, d := range c.Devices {
+		id := strings.ToUpper(strings.TrimSpace(d.ID))
+		if !ValidDeviceID(id) {
+			errs = append(errs, fmt.Errorf("Devices (devices): %q is not a Syncthing device ID. Use the complete device ID, 8 groups of 7 characters.", d.ID))
+			continue
+		}
+		if devices[id] == 0 {
+			order = append(order, id)
+		}
+		devices[id]++
+	}
+	for _, id := range order {
+		if n := devices[id]; n > 1 {
+			errs = append(errs, fmt.Errorf("Devices (devices): the device ID %s is in the list %d times.", id, n))
+		}
 	}
 	if c.Collector.Mode != ModeEvents && c.Collector.Mode != ModePolled {
 		errs = append(errs, fmt.Errorf("Collector mode (collector.mode): the value must be %q or %q.", ModeEvents, ModePolled))
@@ -388,12 +488,15 @@ func (c *Config) Validate() error {
 		d    Duration
 	}{
 		{"failing_files", th.FailingFiles}, {"stuck_sync", th.StuckSync}, {"paused", th.Paused}, {"pc_offline", th.PCOffline},
-		{"conflict_window", th.ConflictWindow}, {"inactive_project", th.InactiveProject}, {"old_device", th.OldDevice}, {"dead_share", th.DeadShare},
+		{"conflict_window", th.ConflictWindow}, {"relay_lost", th.RelayLost}, {"inactive_project", th.InactiveProject}, {"old_device", th.OldDevice},
+		{"dead_share", th.DeadShare},
 	} {
 		add(durRange("thresholds."+t.name, t.d, minThreshold, MaxDuration))
 	}
 	add(intRange("structure.nested_scan_depth", c.Structure.NestedScanDepth, 1, 10))
 	add(intRange("notifications.weekly_top", c.Notify.WeeklyTop, 1, 50))
+	// 0 is off; ApplyDefaults keeps it.
+	add(durRange("notifications.repeat_urgent", c.Notify.RepeatUrgent, 30*time.Minute, 24*time.Hour))
 	add(durRange("access.session_ttl", c.Access.SessionTTL, time.Hour, 365*24*time.Hour))
 	if _, err := c.Structure.Compile(); err != nil {
 		errs = append(errs, err)
@@ -430,6 +533,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Notify.DiscordWebhook != "" {
 		if err := CheckDiscordWebhook(c.Notify.DiscordWebhook); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.Notify.DiscordNoticesWebhook != "" {
+		if _, err := CanonicalNoticesWebhook(c.Notify.DiscordNoticesWebhook); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -510,16 +618,28 @@ func CheckDiscordWebhook(raw string) error {
 // form to store: trimmed of whitespace and invisible format characters that
 // come with a paste, lower-case host, no trailing slash and no fragment.
 func CanonicalDiscordWebhook(raw string) (string, error) {
+	return canonicalWebhook(raw, "Discord webhook URL (notifications.discord_webhook)")
+}
+
+// CanonicalNoticesWebhook is CanonicalDiscordWebhook for the webhook of the
+// settings notices. Its error names that webhook.
+func CanonicalNoticesWebhook(raw string) (string, error) {
+	return canonicalWebhook(raw, "Discord webhook for settings notices (notifications.discord_notices_webhook)")
+}
+
+// canonicalWebhook validates a Discord webhook URL; label names the setting
+// in the error.
+func canonicalWebhook(raw, label string) (string, error) {
 	raw = strings.TrimFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
 	u, err := url.Parse(raw)
 	if AllowAnyWebhook {
 		if err != nil || !webURL(raw) {
-			return "", errors.New("Discord webhook URL (notifications.discord_webhook): the value must be an https:// or http:// URL.")
+			return "", errors.New(label + ": the value must be an https:// or http:// URL.")
 		}
 		return raw, nil
 	}
 	if err != nil || u.Scheme != "https" || u.User != nil || !DiscordHost(raw) || !webhookPath.MatchString(u.Path) {
-		return "", errors.New("Discord webhook URL (notifications.discord_webhook): the value must be a webhook URL from Discord (https://discord.com/api/webhooks/…).")
+		return "", errors.New(label + ": the value must be a webhook URL from Discord (https://discord.com/api/webhooks/…).")
 	}
 	u.Host = strings.ToLower(u.Host)
 	u.Path, u.RawPath = strings.TrimSuffix(u.Path, "/"), ""
@@ -596,6 +716,7 @@ func (c *Config) Debounce(id string) time.Duration {
 func (c *Config) Clone() *Config {
 	out := *c
 	out.Servers = append([]Server(nil), c.Servers...)
+	out.Devices = slices.Clone(c.Devices)
 	if c.Checks != nil {
 		out.Checks = make(map[string]Check, len(c.Checks))
 		for id, ch := range c.Checks {
@@ -660,6 +781,7 @@ func (c *Config) Redacted() *Config {
 		out.Servers[i].APIKey = ""
 	}
 	out.Notify.DiscordWebhook = ""
+	out.Notify.DiscordNoticesWebhook = ""
 	out.API.Token = ""
 	return out
 }
@@ -761,11 +883,13 @@ var fieldLabels = map[string]string{
 	"collector.concurrency":         "Parallel requests for each server",
 	"collector.down_after_failures": "Mark unreachable after failures",
 	"notifications.weekly_top":      "Findings listed in the weekly report",
+	"notifications.repeat_urgent":   "Repeat urgent messages every",
 	"thresholds.failing_files":      "H4 with only failed items after",
 	"thresholds.stuck_sync":         "H5 stuck sync after",
 	"thresholds.paused":             "H6 paused for more than",
 	"thresholds.pc_offline":         "H7 PC offline for more than",
 	"thresholds.conflict_window":    "H10 conflicts in the last",
+	"thresholds.relay_lost":         "H12 no relay connection for more than",
 	"thresholds.inactive_project":   "C1 no file change for",
 	"thresholds.old_device":         "C2 device not seen for",
 	"thresholds.dead_share":         "C3 folder not used by device after",

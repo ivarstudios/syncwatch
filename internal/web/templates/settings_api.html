@@ -1,0 +1,30 @@
+{{/* The API parts of the Settings page. Both read the page data of "settings": .Data.API (apiSettings), .Data.NewToken and .CSRF. */}}
+{{define "settings-api-new-token"}}{{with .Data.NewToken}}
+<section class="card flash ok" role="status">
+  <h2>New API token</h2>
+  <p>Copy the token now. syncwatch does not show it again.</p>
+  <p class="mono token">{{.}}</p>
+  <p class="small">Use it as <code>Authorization: Bearer &lt;token&gt;</code> for <code>GET /api/v1/status</code> and <code>GET /api/v1/ha</code>.</p>
+</section>
+{{end}}{{end}}
+
+{{define "settings-api"}}{{$api := .Data.API}}{{$csrf := .CSRF}}
+<section class="card" id="api">
+  <h2>JSON status API</h2>
+  <p>Send <code>GET /api/v1/status</code> or <code>GET /api/v1/ha</code> with the header <code>Authorization: Bearer &lt;token&gt;</code>. The API is read-only. The answer contains device IDs, server URLs and folder paths. It does not contain API keys, passwords or the webhook URL. API token: {{if $api.TokenLost}}<span class="c-err">set, but syncwatch cannot decrypt it: the secret key changed. Replace the API token or restore the old secret key</span>{{else if $api.HasToken}}<strong>set</strong>{{else}}not set{{end}}.</p>
+  {{if $api.HasToken}}
+  <div class="actions">
+    <form method="post" action="/settings/api-token" class="inline" data-confirm="Replace the API token? Home Assistant and scripts with the current API token lose access immediately.">
+      <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="generate">Replace API token</button>
+    </form>
+    <form method="post" action="/settings/api-token" class="inline" data-confirm="Revoke the API token? Home Assistant and scripts with the current API token lose access immediately.">
+      <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="revoke" class="danger">Revoke API token</button>
+    </form>
+  </div>
+  {{else}}
+  <form method="post" action="/settings/api-token" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="generate">Generate API token</button>
+  </form>
+  {{end}}
+</section>
+{{end}}

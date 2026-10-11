@@ -119,6 +119,34 @@ func TestBootstrapNullIsNotASecret(t *testing.T) {
 	}
 }
 
+// The webhook for settings notices is a secret of the bootstrap file too: it
+// goes into the encrypted store, and the scrub removes it from the file.
+func TestBootstrapNoticesWebhookScrubbed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syncwatch.yaml")
+	const hook = "https://discord.com/api/webhooks/2/secret-notices"
+	if err := os.WriteFile(path, []byte("servers:\n  - name: A\n    url: https://10.0.0.1:8384\nnotifications:\n  discord_notices_webhook: "+hook+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !bootstrapHasSecrets(path) {
+		t.Fatal("the webhook for settings notices is not a secret of the bootstrap file")
+	}
+	st, _ := store.OpenMemory(make([]byte, 32))
+	var logs bytes.Buffer
+	if _, err := LoadConfig(st, path, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := st.Secret(store.SecretNoticesWebhook); v != hook {
+		t.Fatalf("stored webhook for settings notices %q", v)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "secret-notices") || !strings.Contains(string(b), scrubbedNote) || bootstrapHasSecrets(path) {
+		t.Fatalf("the bootstrap file still contains the webhook for settings notices:\n%s", b)
+	}
+	if _, err := config.ParseYAML(b); err != nil {
+		t.Fatalf("scrubbed file does not parse: %v", err)
+	}
+}
+
 // A symlinked bootstrap file (Kubernetes-style mounts, hand-made links) is
 // scrubbed where the plaintext lives: in the target, with the link kept.
 func TestBootstrapScrubFollowsSymlink(t *testing.T) {

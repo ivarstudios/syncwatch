@@ -63,10 +63,13 @@ func ImportSecrets(st *store.Store, c *config.Config) (int, error) {
 	if err := set(store.SecretDiscordWebhook, c.Notify.DiscordWebhook); err != nil {
 		return n, err
 	}
+	if err := set(store.SecretNoticesWebhook, c.Notify.DiscordNoticesWebhook); err != nil {
+		return n, err
+	}
 	if err := set(store.SecretAPIToken, c.API.Token); err != nil {
 		return n, err
 	}
-	c.Notify.DiscordWebhook, c.API.Token = "", ""
+	c.Notify.DiscordWebhook, c.Notify.DiscordNoticesWebhook, c.API.Token = "", "", ""
 	return n, nil
 }
 

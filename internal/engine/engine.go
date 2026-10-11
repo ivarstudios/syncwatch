@@ -667,6 +667,20 @@ func (e *Engine) MarkPinged(ids []string, at time.Time) { e.mark(ids, at, false)
 // MarkResolvedNotified records that "resolved" messages went out.
 func (e *Engine) MarkResolvedNotified(ids []string, at time.Time) { e.mark(ids, at, true) }
 
+// MarkRepeated records that a repeat of the urgent message went out for
+// findings. Only open findings are repeated: an ID that is not open is
+// skipped.
+func (e *Engine) MarkRepeated(ids []string, at time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, id := range ids {
+		if r := e.open[id]; r != nil {
+			r.RepeatedAt = at
+			e.save(r)
+		}
+	}
+}
+
 func (e *Engine) mark(ids []string, at time.Time, resolved bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
