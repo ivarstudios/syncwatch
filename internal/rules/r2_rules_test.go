@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -724,9 +725,10 @@ func TestStuckPCGetsNoTimeLeft(t *testing.T) {
 		return mustFind(t, fs, "H5", "on PC-K2")
 	}
 	want := "Device PC-K2 is stuck at 99.9% of folder LIVE-FJORD-4FINALS for more than 24 hours (3 remaining items, seen from AKKA)"
-	// The files arrived 9 minutes 55 seconds ago: a speed, but no time left.
+	// The files arrived 10 minutes 5 seconds to 9 minutes 55 seconds ago:
+	// half of that time is in the 10 minutes. A speed, but no time left.
 	h5 := at(0)
-	if h5.Message != want || h5.DetailValue("Speed") != "0.00076 MB each second" || h5.DetailValue("Time left") != "" || h5.DetailValue("Received") != "0.46 of 0.46 MB" {
+	if h5.Message != want || h5.DetailValue("Speed") != "0.00038 MB each second" || h5.DetailValue("Time left") != "" || h5.DetailValue("Received") != "0.46 of 0.46 MB" {
 		t.Fatalf("10 minutes after the start:\n%s\n%v", h5.Message, h5.Details)
 	}
 	// 10 seconds later the files arrived more than 10 minutes ago.
@@ -797,5 +799,49 @@ func TestStuckSyncCountsDataAfterTheNeedRose(t *testing.T) {
 	if h5.DetailValue("Speed") != "0.9 MB each second" || h5.DetailValue("Time left") != "approximately 94 minutes" ||
 		h5.Message != "Device LAPTOP-DANI is stuck at 74.5% of folder LIVE-FJORD-4FINALS for more than 24 hours (2 remaining items, approximately 94 minutes remaining, seen from AKKA)" {
 		t.Fatalf("new file while the PC receives:\n%s\n%v", h5.Message, h5.Details)
+	}
+}
+
+// W-059 (live check of the repair on s19): a steady sync gives the same
+// speed at each evaluation. The samples are about 1 minute apart (55
+// seconds here) and the newest sample moves with each event: of the 2
+// samples around the start of the 10 minutes, only the part after the start
+// counts. The time left only goes down.
+func TestStuckSyncSpeedIsSteady(t *testing.T) {
+	c := ivarConfig(t)
+	const size, bps = 30_000_000, 16_000
+	t0 := now.Add(-20 * time.Minute)
+	needAt := func(at time.Time) int64 { return size - int64(at.Sub(t0).Seconds())*bps }
+	var lefts []string
+	for k := 0; k < 12; k++ {
+		at := now.Add(time.Duration(k) * 5 * time.Second)
+		sol := server("sol", "SOL", solID)
+		f := folder("s", "LIVE-FJORD-1SOURCE", "/s/SOL-LIVE-1SOURCE/LIVE-FJORD-1SOURCE")
+		f.State, f.NeedItems, f.NeedBytes, f.GlobalBytes = "syncing", 1, needAt(at), size
+		sol.Folders["s"] = f
+		var ps []model.ProgressSample
+		for s := t0; s.Before(at); s = s.Add(55 * time.Second) {
+			ps = append(ps, model.ProgressSample{At: s, NeedBytes: needAt(s), GlobalBytes: size})
+		}
+		ps = append(ps, model.ProgressSample{At: at, NeedBytes: needAt(at), GlobalBytes: size})
+		sol.Progress = map[string]map[string][]model.ProgressSample{"s": {"": ps}}
+		fs := Evaluate(Input{Snapshot: &model.Snapshot{At: at, Servers: []*model.Server{sol}}, Config: c, Now: at})
+		h5 := mustFind(t, fs, "H5", "Folder LIVE-FJORD-1SOURCE on SOL")
+		if got := h5.DetailValue("Speed"); got != "0.016 MB each second" {
+			t.Errorf("%s after the start: Speed %q, want 0.016 MB each second", at.Sub(t0), got)
+		}
+		lefts = append(lefts, h5.DetailValue("Time left"))
+	}
+	minutes := func(s string) int {
+		n, _ := strconv.Atoi(strings.Fields(strings.TrimPrefix(s, "approximately "))[0])
+		return n
+	}
+	for i := 1; i < len(lefts); i++ {
+		if minutes(lefts[i]) > minutes(lefts[i-1]) {
+			t.Fatalf("the time left went up: %q", lefts)
+		}
+	}
+	if lefts[0] != "approximately 11 minutes" || lefts[len(lefts)-1] != "approximately 10 minutes" {
+		t.Fatalf("time left: %q", lefts)
 	}
 }

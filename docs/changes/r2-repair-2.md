@@ -54,9 +54,10 @@ waits for its resolved message at the update, gets its duration and not the gap 
   Thus the newest sample keeps the time when its need began. A minute has at most 2 samples, and 120 samples are at least
   1 hour.
 - `internal/rules/progress.go`, `syncSpeed`: the bytes that arrived are the decreases of the need in the 10 minutes before
-  the newest point. A decrease counts at the time of the point that shows it. A need that increases (new files) does not
-  hide the decreases. When the folder needed no data at the start of the 10 minutes, the time counts from the first point
-  with a need.
+  the newest point. A need that increases (new files) does not hide the decreases. Between 2 points the need is a straight
+  line. Thus of the 2 points around the start of the 10 minutes, only the part after the start counts. A steady sync gives
+  the same speed at each evaluation, also with samples approximately 1 minute apart. When the folder needed no data at the
+  start of the 10 minutes, the time counts from the first point with a need.
 - `internal/rules/progress.go`, `progressOf`: no time left when the need did not decrease for longer than the time left.
 
 **DECISION repair-2-1:** the speed adds the decreases and ignores the increases. The report of the live check proposed to
@@ -77,7 +78,9 @@ the end. That rule removes the correct time left of such a sync.
 
 **Tests.** `TestStuckPCGetsNoTimeLeft` and `TestStuckSyncCountsDataAfterTheNeedRose` (rules), `TestAddProgress` (model),
 `TestProgressSamples` (collector). The 4 tests fail on `b2d55f8`. `TestAddProgress` and `TestProgressSamples` had the old
-rule for the samples.
+rule for the samples. `TestStuckSyncSpeedIsSteady` (rules) fails on the first version of the repair, which divided the sum by
+10 minutes without the straight line. On kit slot s19 that version gave 0.016, 0.017 and 0.018 MB each second by turns for a
+steady sync of 16 KB each second.
 
 **Note.** `docs/changes/r2-2.md` section 5 and `docs/changes/r2-3.md` describe the rules before this branch. The speed was
 the decrease between the newest point and the newest sample at least 10 minutes older, with at most 1 sample each minute.
@@ -91,4 +94,4 @@ Each commit has these results on the tree of the commit:
 - The builds with `GOOS=windows` and `GOOS=linux` and `CGO_ENABLED=0` show no error.
 - All tests of `go test -count=1 ./...` are successful.
 
-The logs are `the test kit`, `gates-p2.log` and `gates-docs.log`.
+The logs are `the test kit`, `gates-p2.log`, `gates-docs.log` and `gates-p2b.log`.
