@@ -492,3 +492,38 @@ func TestProgressTexts(t *testing.T) {
 		t.Errorf("rate: %q", got)
 	}
 }
+
+// W-061 (b): an INFO hint when the certificate of a server expires in less
+// than 30 days or expired. syncwatch continues to read the server.
+func TestCertificateExpiresSoon(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	akka := server("akka", "AKKA", akkaID)
+	akka.Cert = model.CertInfo{Fingerprint: "b6cfed46a1b2c3d4e5f60718293a4b5c6d7e8f90", NotAfter: now.Add(10*24*time.Hour + time.Hour)}
+	fs := run(t, c, akka)
+	h13 := mustFind(t, fs, "H13", "AKKA")
+	if want := "The certificate of server AKKA expires on 2026-10-15 (in 10 days). syncwatch continues to read the server"; h13.Message != want {
+		t.Fatalf("message\n got %s\nwant %s", h13.Message, want)
+	}
+	if h13.ID != model.FindingID("H13", "akka", "cert-expiry") || h13.Server != "akka" || h13.Subject != "AKKA" || h13.Severity != model.Info || h13.Urgent || h13.MinDuration != 0 {
+		t.Fatalf("H13 %+v", h13)
+	}
+	if h13.DetailValue("Certificate expires") != "2026-10-15T13:00:00Z" || h13.DetailValue("Fingerprint") != "B6:CF:ED:46:A1:B2:C3:D4" ||
+		h13.DetailValue("What to do") != "Make a new certificate for the server or its gate. Then accept the new certificate in Settings → Servers." {
+		t.Fatalf("details %v", h13.Details)
+	}
+	// 40 days: no hint.
+	akka.Cert.NotAfter = now.Add(40 * 24 * time.Hour)
+	mustNot(t, run(t, c, akka), "H13", "")
+	// Expired.
+	akka.Cert.NotAfter = now.Add(-2 * 24 * time.Hour)
+	h13 = mustFind(t, run(t, c, akka), "H13", "AKKA")
+	if want := "The certificate of server AKKA expired on 2026-10-03. syncwatch continues to read the server, because the fingerprint is the pinned fingerprint"; h13.Message != want {
+		t.Fatalf("expired\n got %s\nwant %s", h13.Message, want)
+	}
+	// Not known, or a server that syncwatch does not read now: no hint.
+	akka.Status = model.StatusDown
+	mustNot(t, run(t, c, akka), "H13", "")
+	akka.Status, akka.Cert.NotAfter = model.StatusUp, time.Time{}
+	mustNot(t, run(t, c, akka), "H13", "")
+}

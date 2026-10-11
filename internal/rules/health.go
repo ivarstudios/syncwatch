@@ -26,6 +26,7 @@ func (e *evaluator) health() {
 		e.conflicts(sv)
 		e.relays(sv)
 		e.relayListeners(sv)
+		e.certExpiry(sv)
 	}
 	e.links()
 	e.versions()
@@ -132,6 +133,34 @@ func (e *evaluator) peerViews(sv *model.Server) []model.Detail {
 		}
 	}
 	return out
+}
+
+// certWarning is how long before the end of the certificate H13 opens.
+const certWarning = 30 * 24 * time.Hour
+
+// H13: the certificate of the server expires in less than 30 days, or it
+// expired. syncwatch continues to read the server while the fingerprint is
+// the pinned fingerprint: this is a hint, not an alert.
+func (e *evaluator) certExpiry(sv *model.Server) {
+	end := sv.Cert.NotAfter
+	if sv.Status != model.StatusUp || end.IsZero() || end.Sub(e.Now) >= certWarning {
+		return
+	}
+	date := end.In(e.Config.Location()).Format("2006-01-02")
+	msg := fmt.Sprintf("The certificate of server %s expires on %s (in %s). syncwatch continues to read the server", sv.Name, date, Ago(end.Sub(e.Now)))
+	if !end.After(e.Now) {
+		msg = fmt.Sprintf("The certificate of server %s expired on %s. syncwatch continues to read the server, because the fingerprint is the pinned fingerprint", sv.Name, date)
+	}
+	e.add("H13", sv.ID, "cert-expiry", model.Finding{
+		Subject: sv.Name,
+		Message: msg,
+		Details: []model.Detail{
+			timeDetail("Certificate expires", end),
+			detail("Fingerprint", stclient.ShortFP(sv.Cert.Fingerprint)),
+			detail("What to do", "Make a new certificate for the server or its gate. Then accept the new certificate in Settings → Servers."),
+		},
+		ResolvedText: fmt.Sprintf("The certificate of server %s is valid for more than 30 days now.", sv.Name),
+	})
 }
 
 var busyStates = map[string]bool{
