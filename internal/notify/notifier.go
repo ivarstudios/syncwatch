@@ -945,7 +945,7 @@ func (n *Notifier) send(ctx context.Context, now time.Time, m Message) error {
 	err := n.sendTo(ctx, now, m, n.senders(), true, gen)
 	if err == nil && !upTo.IsZero() {
 		if err := n.st.MarkGapsReported(upTo); err != nil {
-			n.log.Warn("cannot save that a message reported the times when syncwatch did not run", "err", err)
+			n.log.Warn("cannot mark the reported times when syncwatch did not run", "err", err)
 		}
 	}
 	return err
