@@ -90,7 +90,10 @@ func TestRefusedChecksSaveKeepsTextThatIsNotADuration(t *testing.T) {
 		t.Fatalf("%d: %s", resp.StatusCode, checks)
 	}
 	msg := checks[strings.Index(checks, `id="checks-error"`):]
-	if !strings.Contains(msg, "H1 debounce: the value &#34;soon&#34; is not a duration.") || !strings.Contains(msg, "H7 PC offline for more than: the value must be a duration of more than 0.") {
+	// RT-2: a value that is not a duration gets the message of the parser,
+	// which names the format.
+	if !strings.Contains(msg, "H1 debounce: the value &#34;soon&#34; is not a duration.") ||
+		!strings.Contains(msg, "H7 PC offline for more than: the value &#34;3 days&#34; is not a duration. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.") {
 		t.Fatalf("message: %s", msg)
 	}
 }
@@ -249,9 +252,9 @@ func TestNoticeLinesUseLabels(t *testing.T) {
 	}{
 		{"labels and a list", base + "thresholds: {inactive_project: 180d}\nnotifications: {quiet_hours: '22:30-07:00'}\nstructure: {ignore_dirs: ['.*', '#recycle', '@*']}\n",
 			base + "thresholds: {inactive_project: 10m}\nnotifications: {quiet_hours: '21:43-21:48'}\nstructure: {ignore_dirs: ['.*', '@*', '@eaDir']}\n",
-			[]string{"Quiet hours: 22:30-07:00 → 21:43-21:48", "structure.ignore_dirs: added @eaDir · removed #recycle", "C1 no file change for: 180d → 10m"}},
-		{"only the order", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a]}\n", []string{"structure.ignore_dirs: [a, b] → [b, a]"}},
-		{"an entry two times", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a, b]}\n", []string{"structure.ignore_dirs: added b"}},
+			[]string{"Quiet hours: 22:30-07:00 → 21:43-21:48", "Structure rules (ignore_dirs): added @eaDir · removed #recycle", "C1 no file change for: 180d → 10m"}},
+		{"only the order", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a]}\n", []string{"Structure rules (ignore_dirs): [a, b] → [b, a]"}},
+		{"an entry two times", base + "structure: {ignore_dirs: [a, b]}\n", base + "structure: {ignore_dirs: [b, a, b]}\n", []string{"Structure rules (ignore_dirs): added b"}},
 		{"viewer access", base + "access: {viewer: password}\n", base + "access: {viewer: open}\n", []string{"Viewer access: viewer password → open (no login)"}},
 		{"plain http", base, "servers: [{name: AKKA, url: 'http://a:1', allow_http: true}]\n",
 			[]string{"The API URL of the server AKKA changed from https://a:1 to http://a:1.", "The server AKKA permits a plain http:// URL now. syncwatch sends the API key unencrypted."}},
@@ -439,7 +442,10 @@ func TestRefusedConfirmationsAreLogged(t *testing.T) {
 	e.post("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf}, "fingerprint": {"ff"}, "confirm": {""}})
 	e.post("/settings/servers", url.Values{"csrf": {csrf}, "orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "reset_pin": {"on"}, "confirm": {"wrong key"}})
 	e.post("/settings/access", url.Values{"csrf": {csrf}, "mode": {"builtin"}, "viewer": {"open"}, "confirm": {"wrong password"}})
-	e.post("/settings/import", url.Values{"csrf": {csrf}, "confirm": {"wrong password"}, "yaml": {"servers: [{name: AKKA, url: 'https://a:1'}]\naccess: {mode: proxy}\n"}})
+	// The import asks for the password in step 2, the form of the preview.
+	if msg, isErr := impFile(e, csrf, "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\naccess: {mode: proxy}\n", url.Values{"confirm": {"wrong password"}}); !isErr || !strings.Contains(msg, "not correct") {
+		t.Fatalf("import with a wrong password: %q %v", msg, isErr)
+	}
 	e.post("/settings/password", url.Values{"csrf": {csrf}, "current": {"wrong password"}, "password": {"a new long password"}, "password2": {"a new long password"}})
 	got := logs.String()
 	for _, want := range []string{`level=WARN msg="certificate accept refused" ip=127.0.0.1 server=akka`, `level=WARN msg="pinned certificate removal refused" ip=127.0.0.1 server=akka`,
