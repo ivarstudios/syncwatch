@@ -690,7 +690,8 @@ func TestUndecryptableAPITokenIsNotShownAsSet(t *testing.T) {
 	// An API token that syncwatch can decrypt is in the list, without the
 	// line of the old API token.
 	_, page = adminEnv(t, twoServers).get("/settings")
-	if a := section(t, page, "api"); strings.Contains(a, "older version") || !strings.Contains(a, "<td><strong>API token</strong></td><td>Full: /api/v1/status and /api/v1/ha</td>") {
+	if a := section(t, page, "api"); strings.Contains(a, "older version") || !strings.Contains(a, `<dl class="facts"><dt>Scope</dt><dd>Full: /api/v1/status and /api/v1/ha</dd>`) ||
+		!strings.Contains(a, "<strong>API token</strong>") {
 		t.Errorf("a readable API token is not in the list: %s", a)
 	}
 }

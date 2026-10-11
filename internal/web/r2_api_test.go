@@ -192,7 +192,7 @@ func TestNewAPITokenShownOnce(t *testing.T) {
 		t.Fatal("the value shows again")
 	}
 	api := section(t, page, "api")
-	if !strings.Contains(api, "<td><strong>Home Assistant</strong></td><td>Home Assistant: /api/v1/ha only</td><td class=\"nowrap\">2026-10-11 15:05</td><td class=\"nowrap\">never</td>") {
+	if !regexp.MustCompile(`<strong>Home Assistant</strong>\s*<dl class="facts"><dt>Scope</dt><dd>Home Assistant: /api/v1/ha only</dd><dt>Made</dt><dd>2026-10-11 15:05</dd><dt>Last used</dt><dd>never</dd></dl>`).MatchString(api) {
 		t.Errorf("the list: %s", api)
 	}
 	stored, _ := e.st.APITokenByValue(m[1])
@@ -244,7 +244,7 @@ func TestAPITokenLastUsed(t *testing.T) {
 		t.Fatalf("a refused request: %d, last use %v", code, used())
 	}
 	_, page := e.get("/settings")
-	if !strings.Contains(section(t, page, "api"), `<td class="nowrap">2026-10-11 08:03</td>`) {
+	if !strings.Contains(section(t, page, "api"), `<dt>Last used</dt><dd>2026-10-11 08:03</dd>`) {
 		t.Errorf("the list does not show the last use: %s", section(t, page, "api"))
 	}
 }
