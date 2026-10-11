@@ -202,7 +202,7 @@ done`, share, fanout, projects)
 		t.Fatalf("probe: %v\n%s", err, out)
 	}
 	b, _ := os.ReadFile(report)
-	est := regexp.MustCompile(`(Regular|Baseline) scan .*about \*\*(\d+) listings\*\*`).FindAllStringSubmatch(string(b), -1)
+	est := regexp.MustCompile(`(Structure|Baseline) scan .*approximately \*\*(\d+) listings\*\*`).FindAllStringSubmatch(string(b), -1)
 	if len(est) != 2 {
 		t.Fatalf("no estimate in the probe report:\n%s", b)
 	}
