@@ -670,7 +670,7 @@ func TestUndecryptableAPITokenIsNotShownAsSet(t *testing.T) {
 	}
 	_, page := e.get("/settings")
 	a := section(t, page, "api")
-	if !strings.Contains(a, `<p class="c-err">An API token of an older version is stored, but syncwatch cannot decrypt it. Revoke it.</p>`) ||
+	if !strings.Contains(a, `<p class="c-err">The database has an API token of an older version. syncwatch cannot decrypt it. Revoke it.</p>`) ||
 		!strings.Contains(a, `value="revoke-old" class="danger">Revoke old API token</button>`) || !strings.Contains(a, "<p>There are no API tokens.</p>") {
 		t.Errorf("API token: %s", a)
 	}

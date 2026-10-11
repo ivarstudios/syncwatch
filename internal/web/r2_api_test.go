@@ -335,7 +335,7 @@ func TestOldAPITokenSecretIsNotAccepted(t *testing.T) {
 		t.Errorf("the secret api.token: %d", code)
 	}
 	_, page := e.get("/settings")
-	if !strings.Contains(section(t, page, "api"), `<p class="c-err">An API token of an older version is stored. syncwatch does not accept it. Revoke it.</p>`) {
+	if !strings.Contains(section(t, page, "api"), `<p class="c-err">The database has an API token of an older version. syncwatch does not accept it. Revoke it.</p>`) {
 		t.Errorf("card: %s", section(t, page, "api"))
 	}
 	// The old route revokes the API token "API token", not the secret.

@@ -16,7 +16,7 @@
   {{with $api.Error}}<p id="api-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
   {{if $api.Tokens}}
   <div class="scroll"><table class="list">
-    <thead><tr><th>Name</th><th>Scope</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Scope</th><th>Made</th><th>Last used</th><th></th></tr></thead>
     <tbody>
     {{range $api.Tokens}}
     <tr>
@@ -37,7 +37,7 @@
   <p>There are no API tokens.</p>
   {{end}}
   {{if $api.Old}}
-  <p class="c-err">{{if $api.OldLost}}An API token of an older version is stored, but syncwatch cannot decrypt it. Revoke it.{{else}}An API token of an older version is stored. syncwatch does not accept it. Revoke it.{{end}}</p>
+  <p class="c-err">{{if $api.OldLost}}The database has an API token of an older version. syncwatch cannot decrypt it. Revoke it.{{else}}The database has an API token of an older version. syncwatch does not accept it. Revoke it.{{end}}</p>
   <form method="post" action="/settings/api-tokens" class="inline">
     <input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" name="op" value="revoke-old" class="danger">Revoke old API token</button>
   </form>
