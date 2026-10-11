@@ -577,11 +577,12 @@ func TestInactiveProjectBasis(t *testing.T) {
 	fs := run(t, c, akka)
 	mustNot(t, fs, "C1", "LIVE-EDITED")
 	l := mustFind(t, fs, "C1", "LIVE-LOCAL")
-	if !strings.Contains(l.Message, "200 days") || !strings.Contains(l.Message, "local change") || !l.Since.Equal(local.LastLocalChange) {
+	// r2 (W-021, W-038): Since is zero; the time without a change is in the message.
+	if !strings.Contains(l.Message, "200 days") || !strings.Contains(l.Message, "local change") || !l.Since.IsZero() {
 		t.Fatalf("local: %s", l.Message)
 	}
 	p := mustFind(t, fs, "C1", "LIVE-PULLED")
-	if !strings.Contains(p.Message, "200 days") || !strings.Contains(p.Message, "local change") || !p.Since.Equal(pulled.LastLocalChange) {
+	if !strings.Contains(p.Message, "200 days") || !strings.Contains(p.Message, "local change") || !p.Since.IsZero() {
 		t.Fatalf("pulled, then edited: %s", p.Message)
 	}
 	pulled.LastLocalChange = time.Time{}

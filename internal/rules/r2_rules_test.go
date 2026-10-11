@@ -527,3 +527,43 @@ func TestCertificateExpiresSoon(t *testing.T) {
 	akka.Status, akka.Cert.NotAfter = model.StatusUp, time.Time{}
 	mustNot(t, run(t, c, akka), "H13", "")
 }
+
+// W-021: a project that nobody changed after the copy has no pulled file and
+// no local change. C1 uses the time when syncwatch first saw the folder (the
+// earliest of the servers). The message gives the date and the time in the
+// configured zone; Since is zero.
+func TestInactiveProjectFirstSeen(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	a := folder("ice", "LIVE-ORION2026-1SOURCE", "/s/AKKA-LIVE-1SOURCE/LIVE-ORION2026-1SOURCE")
+	a.FirstSeen = now.Add(-200 * 24 * time.Hour)
+	s := folder("ice", "LIVE-ORION2026-1SOURCE", "/s/SOL-LIVE-1SOURCE/LIVE-ORION2026-1SOURCE")
+	s.FirstSeen = now.Add(-150 * 24 * time.Hour)
+	akka.Folders["ice"], sol.Folders["ice"] = a, s
+	c1 := mustFind(t, run(t, c, akka, sol), "C1", "LIVE-ORION2026-1SOURCE")
+	want := "No file in folder LIVE-ORION2026-1SOURCE changed in the last 200 days (syncwatch first saw the folder on 2026-03-19 13:00). You can archive it"
+	if c1.Message != want {
+		t.Fatalf("message\n got %s\nwant %s", c1.Message, want)
+	}
+	if c1.DetailValue("Based on") != "the time when syncwatch first saw the folder" || c1.DetailValue("Last change") != "2026-03-19T12:00:00Z" || !c1.Since.IsZero() || c1.MinDuration != 0 {
+		t.Fatalf("C1 %+v", c1)
+	}
+	// syncwatch saw it for less than 180 days: no C1.
+	a.FirstSeen = now.Add(-100 * 24 * time.Hour)
+	mustNot(t, run(t, c, akka, sol), "C1", "")
+	// A local change 10 days ago: no C1.
+	a.FirstSeen = now.Add(-200 * 24 * time.Hour)
+	s.LastLocalChange = now.Add(-10 * 24 * time.Hour)
+	mustNot(t, run(t, c, akka, sol), "C1", "")
+	// A local change 190 days ago: that is the basis, with its date and time.
+	s.LastLocalChange = now.Add(-190 * 24 * time.Hour)
+	c1 = mustFind(t, run(t, c, akka, sol), "C1", "LIVE-ORION2026-1SOURCE")
+	if want := "No file in folder LIVE-ORION2026-1SOURCE changed in the last 190 days (the last local change that syncwatch saw was on 2026-03-29 14:00). You can archive it"; c1.Message != want {
+		t.Fatalf("local change\n got %s\nwant %s", c1.Message, want)
+	}
+	// Not known at all: no C1.
+	s.LastLocalChange, a.FirstSeen, s.FirstSeen = time.Time{}, time.Time{}, time.Time{}
+	mustNot(t, run(t, c, akka, sol), "C1", "")
+}
