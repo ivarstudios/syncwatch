@@ -261,13 +261,14 @@ func TestNoticesWebhookFallsBackAfterAnHour(t *testing.T) {
 func TestKeptNoticesLimit(t *testing.T) {
 	r := newRig(t, local(2026, 10, 6, 10, 0), "AKKA")
 	at := local(2026, 10, 6, 10, 0)
+	r.n.queueNotice(pendingNotice{Key: "s0", Title: "🔧 Access settings changed", Security: true, At: at})
 	r.n.queueNotice(pendingNotice{Key: "other", Title: "🔧 Checks changed", At: at, GiveUp: at.Add(noticeRetryFor)})
-	for i := range maxNotices {
+	for i := 1; i < maxNotices; i++ {
 		r.n.queueNotice(pendingNotice{Key: fmt.Sprint("s", i), Title: "🔧 Access settings changed", Security: true, At: at})
 	}
 	kept := storedNotices(t, r.st)
-	if len(kept) != maxNotices || kept[0].Key != "s0" {
-		t.Fatalf("%d kept, first %s", len(kept), kept[0].Key)
+	if len(kept) != maxNotices || kept[0].Key != "s0" || kept[1].Key != "s1" {
+		t.Fatalf("%d kept, first %s, %s", len(kept), kept[0].Key, kept[1].Key)
 	}
 	r.n.queueNotice(pendingNotice{Key: "last", Title: "🔧 Access settings changed", Security: true, At: at})
 	if kept := storedNotices(t, r.st); len(kept) != maxNotices || kept[0].Key != "s1" || kept[len(kept)-1].Key != "last" {
