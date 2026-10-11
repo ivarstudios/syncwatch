@@ -5,6 +5,7 @@ package collector
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -55,7 +56,14 @@ type Collector struct {
 	trafficEvery time.Duration // how often traffic counters are read
 }
 
-func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Store, cfg *config.Holder, log *slog.Logger) (*Collector, error) {
+// rootCAs are the certificate authorities that a CA-signed certificate of a
+// server must chain to: nil is the system pool. Tests set a test CA.
+var rootCAs *x509.CertPool
+
+// newCollector makes the collector of one server. onPin, when not nil, is
+// called after the collector pinned a certificate of the server without an
+// administrator (see Manager.OnPin).
+func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Store, cfg *config.Holder, log *slog.Logger, onPin func(serverID, fingerprint string, renewal bool)) (*Collector, error) {
 	pin, err := st.Pin(sc.ID)
 	if err != nil {
 		return nil, err
@@ -70,10 +78,21 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 		APIKey:  apiKey,
 		Pin:     pin,
 		Timeout: cfg.Get().Collector.RequestTimeout.D(),
+		RootCAs: rootCAs,
 		Log:     log,
 		OnPin: func(fp string) {
+			// The pin before this one tells a first contact from a renewal.
+			old, err := st.Pin(sc.ID)
+			if err != nil {
+				c.log.Warn("cannot read the pinned certificate", "err", err)
+			}
 			if err := st.SetPin(sc.ID, fp); err != nil {
 				c.log.Error("cannot save the pinned certificate", "err", err)
+			}
+			if onPin != nil && old != fp {
+				// Not here: the client calls this in the TLS handshake and
+				// holds its lock.
+				go onPin(sc.ID, fp, old != "")
 			}
 		},
 	})

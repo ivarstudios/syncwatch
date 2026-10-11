@@ -941,7 +941,7 @@ func TestStaleWakeDoesNotSkipBackoff(t *testing.T) {
 	st, _ := store.OpenMemory(make([]byte, 32))
 	hub := model.NewHub(nil)
 	hub.SetServers([]*model.Server{{ID: "akka", Name: "AKKA"}})
-	c, err := newCollector(h.Get().Servers[0], "k", hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c, err := newCollector(h.Get().Servers[0], "k", hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
