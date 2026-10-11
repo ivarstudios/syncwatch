@@ -254,7 +254,7 @@
     <label>YAML file <input type="file" name="file" accept=".yaml,.yml,text/yaml"></label>
     <label>…or paste YAML <textarea name="yaml" rows="6" class="mono" spellcheck="false"></textarea></label>
     <p class="small muted">The import replaces the complete configuration. Sections that are not in the file get their default values. First, syncwatch shows a preview of the changes. The preview also shows the servers that the import removes.</p>
-    <p class="small muted">syncwatch encrypts the secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>discord_notices_webhook</code>, <code>api.token</code>). Secrets that are not in the file stay as they are. syncwatch uses a kept API key only while the URL of its server does not change.</p>
+    <p class="small muted">syncwatch encrypts the secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>discord_notices_webhook</code>). The value of <code>api.token</code> becomes the value of the API token "API token". Secrets that are not in the file stay as they are. syncwatch uses a kept API key only while the URL of its server does not change.</p>
     <div class="actions"><button type="submit">Show the preview</button></div>
   </form>
   {{end}}
