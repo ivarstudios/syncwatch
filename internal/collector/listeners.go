@@ -21,9 +21,24 @@ import (
 // answer that the collector read at now.
 func (c *Collector) setRelayListeners(status stclient.SystemStatus, now time.Time) {
 	c.update(func(s *model.Server) {
-		s.RelayListeners = relayListeners(s.RelayListeners, status.ConnectionServiceStatus, now)
+		// The hub runs this function under its lock: one sample at a time
+		// changes relayOK (the session and the traffic loop both sample).
+		if c.relayOK == nil {
+			c.relayOK = map[string]time.Time{}
+		}
+		s.RelayListeners = relayListeners(s.RelayListeners, c.relayOK, status.ConnectionServiceStatus, now)
 	})
 }
+
+// relayConfirm is how long a relay listener that was not connected must
+// report no error before it counts as connected again: the first sample
+// without an error and a later one at least relayConfirm after it, with no
+// error between them. While the relay is off or cannot be reached, Syncthing
+// clears the error of the listener for some seconds at each new try to
+// connect (approximately every 70 seconds with Syncthing 2.1.5 and 2.1.6 in
+// the kit); without this rule a sample in that time ended H12 and started
+// relay_lost again. The samples of the traffic loop are 1 minute apart.
+const relayConfirm = 50 * time.Second
 
 // sampleListeners reads the listeners again while the server is up. A
 // failure is left to the session, which reports a server that cannot be
@@ -45,25 +60,56 @@ func (c *Collector) sampleListeners(ctx context.Context) {
 // the listeners whose scheme is relay or starts with dynamic+. A listener
 // is connected when Syncthing reports a WAN address and no error for it.
 // Since stays as in prev while the listener stays connected or not
-// connected; a new listener or a change gets now.
-func relayListeners(prev []model.RelayListener, status map[string]stclient.ListenerStatus, now time.Time) []model.RelayListener {
+// connected; a new listener or a change gets now. A listener that was not
+// connected counts as connected again only after relayConfirm without an
+// error (see relayConfirm); okSince keeps the first sample without an error
+// of each such listener, and Since is then the time of that sample.
+func relayListeners(prev []model.RelayListener, okSince map[string]time.Time, status map[string]stclient.ListenerStatus, now time.Time) []model.RelayListener {
 	var out []model.RelayListener
+	seen := map[string]bool{}
 	for addr, ls := range status {
 		uri, ok := relayURI(addr)
 		if !ok {
 			continue
 		}
+		seen[uri] = true
 		l := model.RelayListener{URI: uri, Since: now}
 		if ls.Error != nil {
 			l.Error = *ls.Error
 		}
 		l.Connected = len(ls.WANAddresses) > 0 && l.Error == ""
-		for _, p := range prev {
-			if p.URI == uri && p.Connected == l.Connected && !p.Since.IsZero() {
+		var p *model.RelayListener
+		for i := range prev {
+			if prev[i].URI == uri {
+				p = &prev[i]
+			}
+		}
+		switch {
+		case p != nil && !p.Connected && l.Connected:
+			first, waiting := okSince[uri]
+			if !waiting {
+				first = now
+				okSince[uri] = now
+			}
+			if now.Sub(first) < relayConfirm {
+				// Not confirmed yet: maybe a new try to connect.
+				l.Connected, l.Error, l.Since = false, p.Error, p.Since
+			} else {
+				l.Since = first
+				delete(okSince, uri)
+			}
+		default:
+			delete(okSince, uri) // an error ends a confirmation
+			if p != nil && p.Connected == l.Connected && !p.Since.IsZero() {
 				l.Since = p.Since
 			}
 		}
 		out = append(out, l)
+	}
+	for uri := range okSince {
+		if !seen[uri] {
+			delete(okSince, uri)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].URI < out[j].URI })
 	return out

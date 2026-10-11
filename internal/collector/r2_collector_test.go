@@ -42,7 +42,8 @@ func TestRelayListeners(t *testing.T) {
 		"tcp://0.0.0.0:22000":  {LANAddresses: []string{"tcp://0.0.0.0:22000"}, WANAddresses: []string{"tcp://0.0.0.0:22000"}},
 		"quic://0.0.0.0:22000": {Error: errText("quic: listen failed")},
 	}
-	got := relayListeners(nil, status, t0)
+	ok := map[string]time.Time{}
+	got := relayListeners(nil, ok, status, t0)
 	want := []model.RelayListener{
 		{URI: dynRelays, Connected: false, Since: t0},
 		{URI: "relay://10.123.1.60:22067", Connected: true, Since: t0},
@@ -55,23 +56,30 @@ func TestRelayListeners(t *testing.T) {
 	t1 := t0.Add(time.Minute)
 	status[kitRelay] = stclient.ListenerStatus{Error: errText("dial tcp 10.123.1.60:22067: connect: connection refused"),
 		LANAddresses: []string{kitRelay}, WANAddresses: []string{kitRelay}}
-	got = relayListeners(got, status, t1)
+	got = relayListeners(got, ok, status, t1)
 	if r := got[1]; r.Connected || r.Since != t1 || r.Error != "dial tcp 10.123.1.60:22067: connect: connection refused" {
 		t.Fatalf("stopped relay: %+v", r)
 	}
 	if d := got[0]; d.Since != t0 {
 		t.Fatalf("the unchanged listener got a new time: %+v", d)
 	}
-	got = relayListeners(got, status, t1.Add(time.Minute))
+	got = relayListeners(got, ok, status, t1.Add(time.Minute))
 	if r := got[1]; r.Since != t1 {
 		t.Fatalf("still stopped: Since %v, want %v", r.Since, t1)
 	}
 
-	// The relay is back, and the dynamic listener finds a relay.
+	// The relay is back, and the dynamic listener finds a relay. The first
+	// sample without an error is not a connection yet (see
+	// TestRelayListenerRetryIsNotAConnection); the sample 1 minute later
+	// confirms it, from the time of the first one.
 	t3 := t1.Add(5 * time.Minute)
 	status[kitRelay] = stclient.ListenerStatus{WANAddresses: []string{kitRelay}}
 	status[dynRelays] = stclient.ListenerStatus{WANAddresses: []string{"relay://203.0.113.7:22067/?id=X"}}
-	got = relayListeners(got, status, t3)
+	got = relayListeners(got, ok, status, t3)
+	if got[0].Connected || got[0].Since != t0 || got[1].Connected || got[1].Since != t1 || got[1].Error == "" {
+		t.Fatalf("one sample without an error: %+v", got)
+	}
+	got = relayListeners(got, ok, status, t3.Add(time.Minute))
 	for _, l := range got {
 		if !l.Connected || l.Since != t3 || l.Error != "" {
 			t.Fatalf("connected again: %+v", l)
@@ -80,8 +88,48 @@ func TestRelayListeners(t *testing.T) {
 			t.Fatalf("URI with its query: %q", l.URI)
 		}
 	}
-	if got := relayListeners(got, nil, t3); got != nil {
+	if len(ok) != 0 {
+		t.Fatalf("confirmations left: %v", ok)
+	}
+	if got := relayListeners(got, ok, nil, t3); got != nil {
 		t.Fatalf("no listeners: %+v", got)
+	}
+}
+
+// While the relay is off, Syncthing (2.1.5 and 2.1.6 in kit slot s20)
+// clears the error of the relay listener for some seconds at each new try to
+// connect, approximately every 70 seconds; the WAN address stays. A sample
+// in that time is no connection: the listener stays not connected from the
+// first failure, thus H12 opens after relay_lost and stays open. The
+// samples below are the 1-minute samples of an outage as the kit gave them.
+func TestRelayListenerRetryIsNotAConnection(t *testing.T) {
+	t0 := time.Date(2026, 10, 11, 19, 39, 43, 0, time.UTC)
+	refused := stclient.ListenerStatus{Error: errText("dial tcp 10.120.1.60:22067: connect: no route to host"), WANAddresses: []string{kitRelay}}
+	retry := stclient.ListenerStatus{WANAddresses: []string{kitRelay}} // the error is cleared during a new try
+	ok := map[string]time.Time{}
+	got := relayListeners([]model.RelayListener{{URI: "relay://10.123.1.60:22067", Connected: true, Since: t0.Add(-time.Hour)}}, ok,
+		map[string]stclient.ListenerStatus{kitRelay: refused}, t0)
+	if got[0].Connected || got[0].Since != t0 {
+		t.Fatalf("the relay stops: %+v", got[0])
+	}
+	for i, ls := range []stclient.ListenerStatus{refused, retry, refused, retry, refused, refused, retry, refused} {
+		at := t0.Add(time.Duration(i+1) * time.Minute)
+		got = relayListeners(got, ok, map[string]stclient.ListenerStatus{kitRelay: ls}, at)
+		if l := got[0]; l.Connected || l.Since != t0 || !strings.Contains(l.Error, "no route to host") {
+			t.Fatalf("sample %d at %s: %+v", i+1, at.Format("15:04:05"), l)
+		}
+	}
+	// 2 samples without an error less than relayConfirm apart (a full check
+	// right after the minute's sample) are not enough either.
+	at := t0.Add(10 * time.Minute)
+	got = relayListeners(got, ok, map[string]stclient.ListenerStatus{kitRelay: retry}, at)
+	got = relayListeners(got, ok, map[string]stclient.ListenerStatus{kitRelay: retry}, at.Add(5*time.Second))
+	if got[0].Connected {
+		t.Fatalf("5 seconds without an error: %+v", got[0])
+	}
+	got = relayListeners(got, ok, map[string]stclient.ListenerStatus{kitRelay: retry}, at.Add(time.Minute))
+	if l := got[0]; !l.Connected || l.Since != at || l.Error != "" {
+		t.Fatalf("the relay is back: %+v", l)
 	}
 }
 

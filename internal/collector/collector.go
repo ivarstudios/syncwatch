@@ -56,6 +56,7 @@ type Collector struct {
 	needRefused   atomic.Bool          // the gate refused /rest/db/remoteneed in this session; see needList
 	localSaved    map[string]time.Time // by folder: when its last local change was written to the store; see saveLocalChange
 	localDue      map[string]bool      // folders whose newest local change waits for the store
+	relayOK       map[string]time.Time // by relay listener URI: the first sample without an error after a failure; see relayListeners
 
 	trafficEvery time.Duration // how often traffic counters are read
 }
