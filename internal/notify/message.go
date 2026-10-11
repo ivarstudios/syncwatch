@@ -16,6 +16,7 @@ import (
 // Message kinds.
 const (
 	KindUrgent    = "urgent"
+	KindRepeat    = "repeat" // the urgent message again, while an ERROR finding of a server stays open
 	KindResolved  = "resolved"
 	KindReminder  = "reminder"
 	KindOvernight = "overnight"

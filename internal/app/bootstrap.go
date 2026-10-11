@@ -13,7 +13,7 @@ import (
 // are in (for "servers", in each list item).
 var secretKeys = map[string][]string{
 	"servers":       {"api_key"},
-	"notifications": {"discord_webhook"},
+	"notifications": {"discord_webhook", "discord_notices_webhook"},
 	"api":           {"token"},
 }
 

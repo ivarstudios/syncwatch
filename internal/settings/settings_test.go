@@ -93,6 +93,43 @@ func TestImportSecrets(t *testing.T) {
 	}
 }
 
+// The webhook for settings notices is a secret like the webhook: an import
+// stores it encrypted, counts it as 1 secret and clears it from the
+// configuration. A file without it keeps the stored one.
+func TestImportNoticesWebhook(t *testing.T) {
+	st := memStore(t)
+	c, err := config.ParseYAML([]byte("notifications:\n  discord_webhook: https://discord.com/api/webhooks/1/hook\n  discord_notices_webhook: ' https://discord.com/api/webhooks/2/notices/ '\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := ImportSecrets(st, c)
+	if err != nil || n != 2 {
+		t.Fatalf("imported %d: %v", n, err)
+	}
+	if c.Notify.DiscordNoticesWebhook != "" || c.Notify.DiscordWebhook != "" {
+		t.Fatalf("secrets left in the configuration: %+v", c.Notify)
+	}
+	if hook, _ := st.Secret(store.SecretNoticesWebhook); hook != "https://discord.com/api/webhooks/2/notices" {
+		t.Fatalf("webhook for settings notices %q", hook)
+	}
+	if hook, _ := st.Secret(store.SecretDiscordWebhook); hook != "https://discord.com/api/webhooks/1/hook" {
+		t.Fatalf("webhook %q", hook)
+	}
+	if err := Save(st, c); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := st.Setting(keyConfig); strings.Contains(raw, "notices") {
+		t.Fatalf("the stored configuration contains the webhook for settings notices: %s", raw)
+	}
+	n, err = ImportSecrets(st, config.Default())
+	if err != nil || n != 0 {
+		t.Fatalf("a file without secrets: %d %v", n, err)
+	}
+	if !st.HasSecret(store.SecretNoticesWebhook) {
+		t.Fatal("a file without the webhook for settings notices removed it")
+	}
+}
+
 // A key typed for a different URL removes the pinned certificate, as for a
 // new server. The same URL keeps it.
 func TestSetServerKeyPin(t *testing.T) {

@@ -38,10 +38,11 @@ type Hooks struct {
 	AcceptCert      func(serverID, fingerprint string) error
 	ResetPin        func(serverID string) error
 	SendTest        func(ctx context.Context) error
-	Notice          func(title, summary string)        // announce a security-relevant settings change
-	NoticeLater     func() func(title, summary string) // capture today's channels, announce to them later
-	ChannelsChanged func()                             // notification channels were replaced; retry now
-	Delivery        func() notify.Delivery             // whether notifications reach their channels
+	SendNoticesTest func(ctx context.Context) error // send a test notice to the webhook for settings notices
+	Notice          func(notify.Notice)             // announce a security-relevant settings change
+	NoticeLater     func() func(notify.Notice)      // capture today's channels, announce to them later
+	ChannelsChanged func()                          // notification channels were replaced; retry now
+	Delivery        func() notify.Delivery          // whether notifications reach their channels
 }
 
 // Server is the HTTP handler.
@@ -58,7 +59,9 @@ type Server struct {
 	limiter *limiter
 	logs    *logLimiter // once-a-minute log lines about refused requests
 	mux     *http.ServeMux
-	hosts   []string // names answered besides addresses, localhost and public_url's host
+	hosts   []string       // names answered besides addresses, localhost and public_url's host
+	trusted []netip.Prefix // the reverse proxies whose X-Forwarded-Proto counts (TrustProxies)
+	health  HealthOptions  // the rules of /healthz (SetHealth)
 
 	setupMu    sync.Mutex
 	setupToken string
@@ -163,13 +166,7 @@ func (s *Server) routes() {
 	m.Handle("GET /favicon.ico", cacheFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, sub, "syncwatch-icon.ico")
 	}), 24*time.Hour))
-	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.st.Ping(r.Context()); err != nil {
-			http.Error(w, "database not available", http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	m.HandleFunc("GET /healthz", s.handleHealthz)
 
 	m.HandleFunc("GET /login", s.page(RoleNone, s.handleLoginPage))
 	m.HandleFunc("POST /login", s.page(RoleNone, s.handleLogin))
@@ -185,6 +182,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /frag/problems", s.page(RoleViewer, s.fragProblems))
 	m.HandleFunc("GET /events", s.page(RoleViewer, s.handleSSE))
 	m.HandleFunc("GET /frag/alert", s.page(RoleViewer, s.fragAlert))
+	m.HandleFunc("GET /lobby", s.page(RoleViewer, s.handleLobby))
+	m.HandleFunc("GET /frag/lobby", s.page(RoleViewer, s.fragLobby))
 
 	m.HandleFunc("POST /problems/{id}/snooze", s.action(RoleAdmin, s.handleSnooze))
 	m.HandleFunc("POST /problems/{id}/ignore", s.action(RoleAdmin, s.handleIgnore))
@@ -194,14 +193,17 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/servers", s.action(RoleAdmin, s.handleServerSave))
 	m.HandleFunc("POST /settings/servers/{id}/delete", s.action(RoleAdmin, s.handleServerDelete))
 	m.HandleFunc("POST /settings/servers/{id}/accept-cert", s.action(RoleAdmin, s.handleAcceptCert))
+	m.HandleFunc("POST /settings/devices", s.action(RoleAdmin, s.handleDevicesSave))
 	m.HandleFunc("POST /settings/notifications", s.action(RoleAdmin, s.handleNotifySave))
 	m.HandleFunc("POST /settings/notifications/test", s.action(RoleAdmin, s.handleNotifyTest))
+	m.HandleFunc("POST /settings/notifications/test-notices", s.action(RoleAdmin, s.handleNoticesTest))
 	m.HandleFunc("POST /settings/checks", s.action(RoleAdmin, s.handleChecksSave))
 	m.HandleFunc("POST /settings/structure", s.action(RoleAdmin, s.handleStructureSave))
 	m.HandleFunc("POST /settings/collector", s.action(RoleAdmin, s.handleCollectorSave))
 	m.HandleFunc("POST /settings/access", s.action(RoleAdmin, s.handleAccessSave))
 	m.HandleFunc("POST /settings/password", s.action(RoleAdmin, s.handlePasswordSave))
-	m.HandleFunc("POST /settings/api-token", s.action(RoleAdmin, s.handleAPIToken))
+	m.HandleFunc("POST /settings/api-tokens", s.action(RoleAdmin, s.handleAPITokens))
+	m.HandleFunc("POST /settings/api-token", s.action(RoleAdmin, s.handleAPITokens))
 	m.HandleFunc("GET /settings/export", s.page(RoleAdmin, s.handleExport))
 	m.HandleFunc("POST /settings/import", s.action(RoleAdmin, s.handleImport))
 
@@ -738,7 +740,7 @@ func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info reque
 func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
 	for _, f := range s.eng.View().Open {
 		if f.ID == id && f.Urgent {
-			s.announce(r, "Urgent finding "+what, f.Check+" "+f.Subject+": "+f.Message+"\n"+detail)
+			s.announce(r, notify.Notice{Title: "Urgent finding " + what, Summary: f.Check + " " + f.Subject + ": " + f.Message + "\n" + detail, Security: false})
 			return
 		}
 	}

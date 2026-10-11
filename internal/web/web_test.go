@@ -98,16 +98,17 @@ func newEnv(t *testing.T, yaml string) *env {
 			e.resets = append(e.resets, id)
 			return st.SetPin(id, "")
 		},
-		SendTest: func(context.Context) error { return nil },
+		SendTest:        func(context.Context) error { return nil },
+		SendNoticesTest: func(context.Context) error { return nil },
 		Delivery: func() notify.Delivery {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			return e.delivery
 		},
-		Notice: func(title, summary string) {
+		Notice: func(n notify.Notice) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
-			e.notices = append(e.notices, title+": "+summary)
+			e.notices = append(e.notices, n.Title+": "+n.Summary)
 		},
 	}, "test", log)
 	if err != nil {

@@ -493,7 +493,7 @@ func TestNoticeLaterGoesToTheOldChannels(t *testing.T) {
 	mu.Lock()
 	current = newCh
 	mu.Unlock()
-	notice("Discord webhook replaced", "x")
+	notice(Notice{Title: "Discord webhook replaced", Summary: "x"})
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		oldCh.mu.Lock()
@@ -533,7 +533,7 @@ func TestFailedNoticeIsRetried(t *testing.T) {
 	mu.Lock()
 	current = []Sender{r.sender} // replaced by a working one
 	mu.Unlock()
-	notice("Discord webhook replaced", "From 10.0.0.9.")
+	notice(Notice{Title: "Discord webhook replaced", Summary: "From 10.0.0.9."})
 	deadline := time.Now().Add(5 * time.Second)
 	for pending() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -557,7 +557,7 @@ func TestFailedNoticeIsRetried(t *testing.T) {
 	mu.Lock()
 	current = []Sender{dead}
 	mu.Unlock()
-	r.n.Notice("Server SOL removed", "x")
+	r.n.Notice(Notice{Title: "Server SOL removed", Summary: "x"})
 	for pending() == 0 && time.Now().Before(deadline.Add(5*time.Second)) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -707,7 +707,7 @@ func pendingNotices(r *rig) int {
 func queueNoticeTo(t *testing.T, r *rig, title string) {
 	t.Helper()
 	before := pendingNotices(r)
-	r.n.Notice(title, strings.Repeat("x", 100))
+	r.n.Notice(Notice{Title: title, Summary: strings.Repeat("x", 100)})
 	deadline := time.Now().Add(5 * time.Second)
 	for pendingNotices(r) == before && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -728,7 +728,7 @@ func TestRejectedNoticeIsDropped(t *testing.T) {
 	r.n.log = slog.New(slog.NewTextHandler(logs, nil))
 	sel := &kindSender{failKind: KindNotice, err: &httpError{code: 400, text: "Invalid Form Body"}}
 	r.n.SetSenders(func() []Sender { return []Sender{sel} })
-	r.n.Notice("Configuration imported", strings.Repeat("x", 100))
+	r.n.Notice(Notice{Title: "Configuration imported", Summary: strings.Repeat("x", 100)})
 	deadline := time.Now().Add(5 * time.Second)
 	for !strings.Contains(logs.String(), "settings notice") && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)

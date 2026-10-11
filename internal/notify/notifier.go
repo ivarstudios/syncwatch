@@ -78,9 +78,21 @@ const (
 // Delivery is whether notifications currently reach their channels, for
 // the dashboard banner and the status API.
 type Delivery struct {
-	Failing bool
-	Since   time.Time // first failure in the current run of failures
-	Error   string    // the latest error
+	Failing     bool
+	Since       time.Time // first failure in the current run of failures
+	Error       string    // the latest error
+	NextTry     time.Time // while failing: the time of the next send; zero otherwise
+	NoticesKept int       // settings notices that wait for a channel that accepts them
+}
+
+// Notice is a settings notice: a change of a setting that the channels must
+// hear about.
+type Notice struct {
+	Title, Summary string
+	// Security marks a change of a secret (an API key, a webhook, an API
+	// token), a pinned certificate, a password, the access settings or an
+	// import.
+	Security bool
 }
 
 // Delivery returns the current delivery state.
@@ -723,25 +735,33 @@ func (n *Notifier) SendTest(ctx context.Context) error {
 // Notice announces a security-relevant settings change (a server's URL, API
 // key or certificate pin, access settings). It is sent at once, also during
 // quiet hours, without a mention, so a change nobody expected is noticed.
-func (n *Notifier) Notice(title, summary string) {
+func (n *Notifier) Notice(nt Notice) {
 	gen := n.generation()
-	n.notice(n.senders(), gen, true, title, summary)
+	n.notice(n.senders(), gen, true, nt)
 }
 
 // NoticeLater captures the channels configured now and returns a function
 // that sends a notice to them. A change that replaces or removes a channel
 // is announced with it, so the channel that loses messages hears about it.
-func (n *Notifier) NoticeLater() func(title, summary string) {
+func (n *Notifier) NoticeLater() func(Notice) {
 	gen := n.generation()
 	senders := n.senders()
 	// Those channels may be gone by then; their failures aren't the
 	// current channels' and don't count towards the banner.
-	return func(title, summary string) { n.notice(senders, gen, false, title, summary) }
+	return func(nt Notice) { n.notice(senders, gen, false, nt) }
+}
+
+// errNoNoticesChannel means no webhook for settings notices is configured.
+var errNoNoticesChannel = errors.New("No Discord webhook for settings notices is configured.")
+
+// SendNoticesTest sends a test notice to the webhook for settings notices.
+func (n *Notifier) SendNoticesTest(ctx context.Context) error {
+	return errNoNoticesChannel
 }
 
 // notice sends a settings notice to senders, built in channel generation
 // built.
-func (n *Notifier) notice(senders []Sender, built int, current bool, title, summary string) {
+func (n *Notifier) notice(senders []Sender, built int, current bool, nt Notice) {
 	cfg := n.cfg.Get()
 	now := n.now()
 	n.dmu.Lock()
@@ -749,7 +769,8 @@ func (n *Notifier) notice(senders []Sender, built int, current bool, title, summ
 	key := fmt.Sprintf("notice:%d:%d", now.UnixNano(), n.noticeSeq)
 	gen := n.gen
 	n.dmu.Unlock()
-	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: summary, Color: ColorNotice, URL: cfg.PublicURL, Key: key}
+	title := nt.Title
+	m := Message{Kind: KindNotice, Title: "🔧 " + title, Summary: nt.Summary, Color: ColorNotice, URL: cfg.PublicURL, Key: key}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
