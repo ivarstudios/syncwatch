@@ -102,7 +102,7 @@ func (n *Notifier) notice(senders []Sender, own bool, built int, current bool, n
 		case errors.Is(err, errNoChannel):
 			n.log.Info("settings notice not sent: no Discord webhook is configured", "title", title)
 			n.logNotice(now, m.Title, channelDiscord, err.Error())
-		case invalidMessage(err):
+		case nt.Security && invalidMessage(err):
 			// Discord refuses the message itself: no channel takes it.
 			n.log.Warn("settings notice discarded, Discord refused it", "title", title, "err", err)
 			n.logFailures(now, m.Title, failed, "discarded: ")

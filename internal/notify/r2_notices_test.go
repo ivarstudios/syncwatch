@@ -348,3 +348,29 @@ func TestUndecryptableNoticesWebhook(t *testing.T) {
 		t.Fatalf("the channel of the findings: %d messages, %+v", alert.sent(), n.Delivery())
 	}
 }
+
+// A notice that is not about security keeps the rule of r1 for a webhook
+// that was replaced after the change: Discord's refusal (also HTTP 400) of
+// the old webhook keeps it for the new webhook, which gets one try.
+func TestOtherNoticeKeepsTheRuleOfR1(t *testing.T) {
+	r := newRig(t, local(2026, 10, 6, 10, 0), "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	old := &fakeSender{}
+	old.fail(&httpError{code: 400, text: "Invalid Form Body"})
+	r.n.SetSenders(func() []Sender { return []Sender{old} })
+	notice := r.n.NoticeLater()
+	r.n.SetSenders(func() []Sender { return []Sender{r.sender} })
+	r.n.ChannelsChanged() // a new webhook
+	notice(Notice{Title: "Checks changed", Summary: "x"})
+	waitFor(t, func() bool { return pendingNotices(r) == 1 })
+	if kept := storedNotices(t, r.st); len(kept) != 1 || kept[0].Security || kept[0].GiveUp.IsZero() {
+		t.Fatalf("kept: %+v", kept)
+	}
+	if rows := noticeRows(t, r.st); len(rows) != 1 || rows[0].Error != "kept for 1 day: Discord: HTTP 400: Invalid Form Body" {
+		t.Fatalf("notification log: %+v", rows)
+	}
+	r.at(local(2026, 10, 6, 10, 1))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindNotice {
+		t.Fatalf("on the new webhook: %+v", m)
+	}
+}
