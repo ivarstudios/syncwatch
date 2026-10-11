@@ -452,8 +452,11 @@ func (e *Engine) Evaluate() {
 			}
 			if old, err := e.st.Record(id); err == nil && old != nil && !old.Open() && !old.PingedAt.IsZero() && old.ResolvedNotifiedAt.IsZero() {
 				// It flapped back before its "resolved" message went out:
-				// carry on as the same, already-announced problem.
+				// carry on as the same, already-announced problem. The time
+				// of the last repeat goes with it, or the notifier repeats
+				// the urgent message again at once (W-050).
 				rec.PingedAt = old.PingedAt
+				rec.RepeatedAt = old.RepeatedAt
 			}
 			e.open[id] = rec
 			e.save(rec)
@@ -718,9 +721,10 @@ func (e *Engine) mark(ids []string, at time.Time, resolved bool) {
 		r := e.open[id]
 		if r != nil && resolved {
 			// The "resolved" message was about an earlier occurrence that
-			// has re-opened since, inheriting its PingedAt (see Evaluate).
-			// That occurrence is done with; the new one is unannounced.
-			r.PingedAt = time.Time{}
+			// has re-opened since, inheriting its PingedAt and RepeatedAt
+			// (see Evaluate). That occurrence is done with; the new one is
+			// unannounced.
+			r.PingedAt, r.RepeatedAt = time.Time{}, time.Time{}
 			e.save(r)
 			continue
 		}
