@@ -83,13 +83,15 @@ func (e *evaluator) progressOf(samples []model.ProgressSample, need, global int6
 // before the newest point, and for how long the need did not go down
 // (until now). The newest point is the newest sample, or the need now when
 // no sample came in the last minute (while a sync waits, Syncthing sends no
-// progress). The bytes that arrived are the decreases of the need from the
-// point at the start of the 10 minutes: a need that rises (new files) does
-// not hide them (W-059). A decrease counts at the time of the point that
-// shows it, thus a sync that stopped more than 10 minutes ago gives 0. When
-// the folder needed nothing at the start, the time counts from the first
-// point that needs something. ok is false when the samples do not go back
-// 10 minutes.
+// progress). The bytes that arrived are the decreases of the need in the
+// 10 minutes: a need that rises (new files) does not hide them (W-059).
+// Between 2 points the need is a straight line, thus of the 2 points around
+// the start of the 10 minutes only the part after the start counts. Then a
+// steady sync gives the same speed at each evaluation, also with samples
+// about 1 minute apart. A sync that stopped more than 10 minutes ago gives
+// 0. When the folder needed nothing at the start, the time counts from the
+// first point that needs something. ok is false when the samples do not go
+// back 10 minutes.
 func syncSpeed(samples []model.ProgressSample, need int64, now time.Time) (bps float64, still time.Duration, ok bool) {
 	if len(samples) == 0 {
 		return 0, 0, false
@@ -110,22 +112,28 @@ func syncSpeed(samples []model.ProgressSample, need int64, now time.Time) (bps f
 	if first < 0 {
 		return 0, 0, false
 	}
-	var arrived int64
+	var arrived float64
 	var down time.Time // the newest point that shows a decrease
 	idle := points[first].NeedBytes == 0
 	for i := first + 1; i < len(points); i++ {
-		if idle && points[i].NeedBytes > 0 {
-			from, idle = points[i].At, false
+		a, b := points[i-1], points[i]
+		if idle && b.NeedBytes > 0 {
+			from, idle = b.At, false
 		}
-		if d := points[i-1].NeedBytes - points[i].NeedBytes; d > 0 {
-			arrived += d
-			down = points[i].At
+		d := float64(a.NeedBytes - b.NeedBytes)
+		if d <= 0 {
+			continue
 		}
+		if a.At.Before(from) {
+			d *= b.At.Sub(from).Seconds() / b.At.Sub(a.At).Seconds()
+		}
+		arrived += d
+		down = b.At
 	}
-	if arrived == 0 {
+	if arrived <= 0 {
 		return 0, 0, true
 	}
-	return float64(arrived) / end.Sub(from).Seconds(), now.Sub(down), true
+	return arrived / end.Sub(from).Seconds(), now.Sub(down), true
 }
 
 // sizeOf writes a part of a size in the unit of the size: "1.6 of 2.1 GB".
