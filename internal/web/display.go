@@ -39,6 +39,31 @@ type detailRow struct {
 	Label, Value string
 }
 
+// deviceIDKeys are the detail keys whose values are device IDs (C4).
+var deviceIDKeys = map[string]bool{"Device ID": true, "Offered by": true}
+
+// shortDeviceID is the form of a device ID that viewers see (C12, W-048):
+// the first group and "…". Viewers cannot use the full ID, and the pages
+// show less of the studio network.
+func shortDeviceID(id string) string {
+	if sh := model.ShortID(id); sh != id {
+		return sh + "…"
+	}
+	return id
+}
+
+// viewerDetails returns the details with the device IDs in their short form.
+func viewerDetails(ds []model.Detail) []model.Detail {
+	out := make([]model.Detail, len(ds))
+	for i, d := range ds {
+		if deviceIDKeys[d.Key] {
+			d.Value = shortDeviceID(d.Value)
+		}
+		out[i] = d
+	}
+	return out
+}
+
 // detailRows gives the details that have a value, with their labels. A time
 // (UTC, RFC 3339 in the finding) shows in the configured time zone.
 func (s *Server) detailRows(ds []model.Detail) []detailRow {

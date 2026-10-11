@@ -94,25 +94,35 @@ func TestViewerModes(t *testing.T) {
 	}
 }
 
-// While notifications fail, every page says so; viewers don't see the
-// error text.
+// While notifications fail, every page says so, with the time of the next
+// try when the notifier knows it (W-040); viewers don't see the error text.
 func TestNotificationFailureBanner(t *testing.T) {
-	e := adminEnv(t, twoServers+"access: {viewer: open}\n")
+	e := adminEnv(t, twoServers+"access: {viewer: open}\ntimezone: Europe/Stockholm\n")
+	now := time.Date(2026, 10, 11, 19, 44, 0, 0, time.UTC) // 21:44 in Stockholm
+	e.web.now = func() time.Time { return now }
 	const banner = "Notifications fail"
 	if _, body := e.get("/"); strings.Contains(body, banner) {
 		t.Fatal("banner while notifications work")
 	}
-	e.setDelivery(notify.Delivery{Failing: true, Since: time.Now(), Error: "discord: HTTP 404: Unknown Webhook"})
+	e.setDelivery(notify.Delivery{Failing: true, Since: now, Error: "discord: HTTP 404: Unknown Webhook", NextTry: now.Add(8*time.Minute + 30*time.Second)})
+	const next = "syncwatch tries again at 21:52."
 	for _, p := range []string{"/", "/grid", "/problems", "/settings", "/frag/alert"} {
-		if _, body := e.get(p); !strings.Contains(body, banner) || !strings.Contains(body, "Unknown Webhook") {
-			t.Fatalf("%s: no banner with the error for the admin", p)
+		if _, body := e.get(p); !strings.Contains(body, banner) || !strings.Contains(body, "Unknown Webhook") || !strings.Contains(body, next) {
+			t.Fatalf("%s: no banner with the error and the next try for the admin", p)
 		}
 	}
 	anon, _ := http.Get(e.srv.URL + "/")
 	b, _ := io.ReadAll(anon.Body)
 	anon.Body.Close()
-	if !strings.Contains(string(b), banner) || strings.Contains(string(b), "Unknown Webhook") {
-		t.Fatal("open viewer: want the banner without the error text")
+	if !strings.Contains(string(b), banner) || strings.Contains(string(b), "Unknown Webhook") || !strings.Contains(string(b), next) {
+		t.Fatal("open viewer: want the banner with the next try, without the error text")
+	}
+	// A try time that passed, or none: the banner does not give a time.
+	for _, try := range []time.Time{now.Add(-time.Second), {}} {
+		e.setDelivery(notify.Delivery{Failing: true, Since: now, Error: "discord: HTTP 500", NextTry: try})
+		if _, body := e.get("/frag/alert"); !strings.Contains(body, "syncwatch tries again automatically.") || strings.Contains(body, "tries again at") {
+			t.Errorf("next try %v: %s", try, body)
+		}
 	}
 	req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/api/v1/status", nil)
 	req.Header.Set("Authorization", "Bearer swt_test_token")

@@ -1,5 +1,6 @@
 // syncwatch: keeps fold-outs open across live updates, filters the grid and
-// asks for confirmation on destructive forms. No inline scripts (CSP).
+// the sites, and asks for confirmation on destructive forms. No inline
+// scripts (CSP).
 (function () {
   "use strict";
   var openKeys = {};
@@ -50,6 +51,61 @@
     try {
       sessionStorage.setItem("sw-grid", JSON.stringify({ q: q.value, p: only }));
     } catch (e) { /* storage may be unavailable */ }
+  }
+
+  // The site filter (W-057): the select "Site" of the Overview and the
+  // Folders page, when 2 or more sites are set. It hides the elements of
+  // other sites: data-site is the site of a tile, a grid column, a device
+  // list or a finding row of one site; data-sites has the sites (1 on each
+  // line) of a Connections row or a finding row between the servers of more
+  // sites, which shows with each of them. An element without these (a
+  // finding without a server) always shows. The browser remembers the site
+  // for both pages (localStorage "sw-site").
+  function siteHidden(el, site) {
+    if (site === "") return false;
+    if (el.hasAttribute("data-site")) return el.getAttribute("data-site") !== site;
+    return el.getAttribute("data-sites").split("\n").indexOf(site) < 0;
+  }
+
+  function applySiteFilter() {
+    var sel = document.getElementById("site-filter");
+    var site = sel ? sel.value : "";
+    document.querySelectorAll("[data-site], [data-sites]").forEach(function (el) {
+      el.classList.toggle("site-hidden", siteHidden(el, site));
+    });
+    // A list with data-limit shows that many of its visible rows; the
+    // paragraph .site-empty after it shows when the site has none.
+    document.querySelectorAll("[data-limit]").forEach(function (list) {
+      var limit = parseInt(list.getAttribute("data-limit"), 10) || 0;
+      var shown = 0;
+      Array.prototype.forEach.call(list.children, function (li) {
+        var over = false;
+        if (!li.classList.contains("site-hidden")) {
+          shown++;
+          over = shown > limit;
+        }
+        li.classList.toggle("over-limit", over);
+      });
+      var none = list.nextElementSibling;
+      if (none && none.classList.contains("site-empty")) none.hidden = shown > 0;
+    });
+  }
+
+  function initSiteFilter() {
+    var sel = document.getElementById("site-filter");
+    if (!sel) return;
+    try {
+      var saved = localStorage.getItem("sw-site") || "";
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === saved) sel.value = saved;
+      }
+    } catch (e) { /* storage may be unavailable */ }
+    sel.addEventListener("change", function () {
+      try {
+        localStorage.setItem("sw-site", sel.value);
+      } catch (e) { /* storage may be unavailable */ }
+      applySiteFilter();
+    });
   }
 
   document.addEventListener("toggle", function (e) {
@@ -109,6 +165,7 @@
   document.addEventListener("htmx:afterSwap", function (e) {
     restoreOpen(document);
     applyGridFilter();
+    applySiteFilter();
   });
 
   // Focus moves before focusout settles, so look again a moment later.
@@ -128,10 +185,16 @@
   // still keeps a form that is in use).
   var conn = { source: null, errorAt: 0, offline: false, timer: null, lastEvent: Date.now(), hiddenAt: 0 };
 
-  // clock writes a time as HH:MM in the configured time zone of syncwatch.
+  // zoned writes a time as an ISO text in the configured time zone of
+  // syncwatch; clock gives its HH:MM.
+  function zoned(ms) {
+    var b = document.body;
+    var off = (b && parseInt(b.getAttribute("data-tz-offset") || "0", 10)) || 0;
+    return new Date(ms + off * 60000).toISOString();
+  }
+
   function clock(ms) {
-    var off = parseInt(document.body.getAttribute("data-tz-offset") || "0", 10) || 0;
-    return new Date(ms + off * 60000).toISOString().slice(11, 16);
+    return zoned(ms).slice(11, 16);
   }
 
   function showOffline(since) {
@@ -220,6 +283,20 @@
     if (away) refreshAll();
   });
 
+  // Times of today show without the date ("connected from 08:12"). A
+  // section with such times has data-day (its day in the configured zone):
+  // when the day changes, the page fetches it again one time, so that a time
+  // of yesterday gets its date.
+  var today = zoned(Date.now()).slice(0, 10);
+  setInterval(function () {
+    var d = zoned(Date.now()).slice(0, 10);
+    if (d === today) return;
+    today = d;
+    document.querySelectorAll("[data-day]").forEach(function (el) {
+      if (el.getAttribute("data-day") !== d) htmx.trigger(el, "sse:update");
+    });
+  }, 60000);
+
   document.addEventListener("DOMContentLoaded", function () {
     var q = document.getElementById("grid-search");
     var p = document.getElementById("grid-problems");
@@ -232,6 +309,8 @@
       p.addEventListener("change", applyGridFilter);
       applyGridFilter();
     }
+    initSiteFilter();
+    applySiteFilter();
     rememberOpen(document);
     openFromHash();
     window.addEventListener("hashchange", openFromHash);

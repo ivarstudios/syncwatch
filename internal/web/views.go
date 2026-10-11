@@ -2,7 +2,9 @@ package web
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +28,8 @@ type problemRow struct {
 	Details                                                    []detailRow
 	Paths                                                      []string
 	Link                                                       string
+	Sites                                                      []string // the sites of its servers, for the site filter of the Overview (findingSites)
+	Over                                                       bool     // past the limit of the Overview list until the site filter selects it
 }
 
 func (s *Server) fmtTime(t time.Time) string {
@@ -35,7 +39,24 @@ func (s *Server) fmtTime(t time.Time) string {
 	return t.In(s.cfg.Get().Location()).Format("2006-01-02 15:04")
 }
 
-func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow {
+// fmtClock writes a time of today (in the configured zone) as 21:52, and
+// another time as fmtTime does. The rule of the gap line (C6): the date shows
+// only when it is not today.
+func (s *Server) fmtClock(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	loc := s.cfg.Get().Location()
+	if lt := t.In(loc); lt.Format("2006-01-02") == s.now().In(loc).Format("2006-01-02") {
+		return lt.Format("15:04")
+	}
+	return s.fmtTime(t)
+}
+
+// problemRows builds the rows of findings. For a viewer (admin false) the
+// device IDs in the details are short and there is no link to Syncthing
+// (C12, W-048).
+func (s *Server) problemRows(v *engine.View, recs []*store.Record, admin bool) []problemRow {
 	now := s.now()
 	var out []problemRow
 	for _, r := range recs {
@@ -43,8 +64,12 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 			ID: r.ID, Check: r.Check, Checks: strings.Join(r.Checks, "+"), Severity: r.Severity.Lower(),
 			SeverityLabel: r.Severity.Label(), Icon: notify.Icon(r.Severity), Category: r.Category,
 			Server: r.Server, Subject: showControls(r.Subject), Message: showControls(r.Message), Urgent: r.Urgent, Stale: r.Stale,
-			Details: s.detailRows(r.Details), Paths: showAll(r.Paths), Link: r.Link,
-			Title: config.CatalogByID[r.Check].Title,
+			Paths: showAll(r.Paths), Title: config.CatalogByID[r.Check].Title,
+		}
+		if admin {
+			row.Details, row.Link = s.detailRows(r.Details), r.Link
+		} else {
+			row.Details = s.detailRows(viewerDetails(r.Details))
 		}
 		if sv := v.Snapshot.Server(r.Server); sv != nil {
 			row.ServerName = showControls(sv.Name)
@@ -87,21 +112,170 @@ type serverTile struct {
 	ShareErrors                                                             []string
 	Shares                                                                  int
 	LastScan, ScanCost                                                      string
-	FoldersStale                                                            bool // the folder counts are the last known state
-	NoContact                                                               bool // never contacted: no folder state at all
-	Disabled                                                                bool // in the configuration, but syncwatch does not poll it
+	FoldersStale                                                            bool   // the folder counts are the last known state
+	NoContact                                                               bool   // never contacted: no folder state at all
+	Disabled                                                                bool   // in the configuration, but syncwatch does not poll it
+	Site                                                                    string // servers[].site, "" when not set
 }
 
 type overviewVM struct {
 	Health                   string
 	Servers                  []serverTile
+	Links                    []linkRow // the Connections section (C11)
+	Sites                    []string  // the choices of the site filter; nil with fewer than 2 sites
 	PCTotal, PCOnline, PCOff int
 	PCUnknown                int // not connected, but a server that knows the PC is not up: maybe online
 	PCOffLabel               string
 	Top                      []problemRow
+	TopLimit                 int // the rows that the list shows; with the site filter, Top has more (Over)
 	OpenCount, UrgentOpen    int
 	SnoozedCount             int // open findings hidden by a snooze or ignore
 	Evaluated                string
+	Day                      string // today in the configured zone: times of today show without the date
+}
+
+// topLimit is the number of findings in the Overview list.
+const topLimit = 8
+
+// filterSites returns the sites of the configured servers, in the order of
+// their first server, when 2 or more are set: the choices of the site filter
+// (C11). With fewer sites there is no filter, and it returns nil.
+func filterSites(cfg *config.Config) []string {
+	var out []string
+	for _, sc := range cfg.Servers {
+		if sc.Site != "" && !slices.Contains(out, sc.Site) {
+			out = append(out, sc.Site)
+		}
+	}
+	if len(out) < 2 {
+		return nil
+	}
+	return out
+}
+
+// siteList adds a site to a list of sites, one time each.
+func siteList(list []string, site string) []string {
+	if slices.Contains(list, site) {
+		return list
+	}
+	return append(list, site)
+}
+
+// findingSites gives the sites of the servers of a finding: its server and
+// the related servers ("" for a server without a site). The site filter
+// shows the finding with each of these sites; a finding between the servers
+// of 2 sites shows with both. A finding without a server (nil) always shows.
+func findingSites(cfg *config.Config, r *store.Record) []string {
+	var out []string
+	if r.Server != "" {
+		out = siteList(out, cfg.SiteOf(r.Server))
+	}
+	for _, id := range r.Related {
+		out = siteList(out, cfg.SiteOf(id))
+	}
+	return out
+}
+
+// siteMatch reports whether the site filter shows an element with these
+// sites when the site is selected.
+func siteMatch(sites []string, site string) bool {
+	return len(sites) == 0 || slices.Contains(sites, site)
+}
+
+// linkRow is one row of the Connections section of the Overview (C11): the
+// connection between 2 sites, or between 2 servers when fewer than 2 sites
+// are set.
+type linkRow struct {
+	A, B  string   // the names of the 2 sites or servers
+	Sites []string // the sites of the 2 ends, for the site filter
+	Class string   // ok (connected), err (not connected), off (unknown)
+	Icon  string
+	State string // "connected from 08:12", "not connected from 21:04", "state unknown: SOL is unreachable"
+}
+
+// linkRows gives the rows of the Connections section: one row for each site
+// link (2 or more sites), else one for each server link. An empty list (one
+// server, or links not computed) gives no section.
+func (s *Server) linkRows(v *engine.View) []linkRow {
+	snap := v.Snapshot
+	if snap == nil {
+		return nil
+	}
+	cfg := s.cfg.Get()
+	var out []linkRow
+	if len(snap.SiteLinks) > 0 {
+		for _, l := range snap.SiteLinks {
+			var ids []string
+			for _, p := range l.Servers {
+				ids = append(ids, p[0], p[1])
+			}
+			row := s.linkState(snap, l.State, l.Since, ids)
+			row.A, row.B, row.Sites = l.A, l.B, siteList([]string{l.A}, l.B)
+			out = append(out, row)
+		}
+		return out
+	}
+	name := func(id string) string {
+		if sv := snap.Server(id); sv != nil {
+			return showControls(sv.Name)
+		}
+		if sc, ok := cfg.ServerByKey(id); ok {
+			return showControls(sc.Name)
+		}
+		return showControls(id)
+	}
+	for _, l := range snap.Links {
+		row := s.linkState(snap, l.State, l.Since, []string{l.A, l.B})
+		row.A, row.B, row.Sites = name(l.A), name(l.B), siteList([]string{cfg.SiteOf(l.A)}, cfg.SiteOf(l.B))
+		out = append(out, row)
+	}
+	return out
+}
+
+// linkState gives the state part of a Connections row. For a link whose
+// state is not known it names the servers of the link (ids) that are not up
+// or did not finish a full check.
+func (s *Server) linkState(snap *model.Snapshot, state string, since time.Time, ids []string) linkRow {
+	from := ""
+	if !since.IsZero() {
+		from = " from " + s.fmtClock(since)
+	}
+	switch state {
+	case model.LinkConnected:
+		return linkRow{Class: "ok", Icon: "✔", State: "connected" + from}
+	case model.LinkDisconnected:
+		return linkRow{Class: "err", Icon: "✖", State: "not connected" + from}
+	}
+	var why []string
+	var seen []string
+	for _, id := range ids {
+		sv := snap.Server(id)
+		if sv == nil || folderStateKnown(sv) || slices.Contains(seen, id) {
+			continue
+		}
+		seen = append(seen, id)
+		why = append(why, linkUnknownWhy(sv))
+	}
+	row := linkRow{Class: "off", Icon: "?", State: "state unknown"}
+	if len(why) > 0 {
+		row.State += ": " + strings.Join(why, " and ")
+	}
+	return row
+}
+
+// linkUnknownWhy says why syncwatch does not know the connections of a
+// server: the server is not up, or its full check is not complete.
+func linkUnknownWhy(sv *model.Server) string {
+	name := showControls(sv.Name)
+	switch sv.Status {
+	case model.StatusDown:
+		return name + " is unreachable"
+	case model.StatusCertChanged:
+		return "the certificate of " + name + " changed"
+	case model.StatusUp:
+		return "the full check of " + name + " is not complete"
+	}
+	return "syncwatch has no contact with " + name
 }
 
 func statusLabel(st model.ServerStatus) (label, icon, class string) {
@@ -117,10 +291,43 @@ func statusLabel(st model.ServerStatus) (label, icon, class string) {
 	}
 }
 
+// topFindings picks the findings of the Overview list: the first topLimit
+// of recs. With the site filter (sites set) it adds the first topLimit that
+// each site shows (siteMatch of findingSites), so that the list is complete
+// for each site. first has the findings that the list shows without a
+// filter.
+func topFindings(cfg *config.Config, recs []*store.Record, sites []string) (top []*store.Record, first map[string]bool) {
+	keep := map[string]bool{}
+	take := func(match func(r *store.Record) bool) {
+		n := 0
+		for _, r := range recs {
+			if n == topLimit {
+				return
+			}
+			if match(r) {
+				keep[r.ID] = true
+				n++
+			}
+		}
+	}
+	take(func(*store.Record) bool { return true })
+	first = maps.Clone(keep)
+	for _, site := range sites {
+		take(func(r *store.Record) bool { return siteMatch(findingSites(cfg, r), site) })
+	}
+	for _, r := range recs {
+		if keep[r.ID] {
+			top = append(top, r)
+		}
+	}
+	return top, first
+}
+
 func (s *Server) overview(v *engine.View) overviewVM {
 	cfg := s.cfg.Get()
 	now := s.now()
-	vm := overviewVM{Health: showControls(notify.HealthLine(cfg, v, now)), Evaluated: s.fmtTime(v.Changed)}
+	vm := overviewVM{Health: showControls(notify.HealthLine(cfg, v, now)), Evaluated: s.fmtTime(v.Changed),
+		Links: s.linkRows(v), Sites: filterSites(cfg), TopLimit: topLimit, Day: now.In(cfg.Location()).Format("2006-01-02")}
 	perServer := map[string]int{}
 	var visible []*store.Record
 	for _, r := range v.Open {
@@ -135,15 +342,18 @@ func (s *Server) overview(v *engine.View) overviewVM {
 		}
 	}
 	vm.OpenCount = len(visible)
-	if len(visible) > 8 {
-		visible = visible[:8]
+	top, first := topFindings(cfg, visible, vm.Sites)
+	// The list shows no details and no links: the viewer form is enough
+	// for every role.
+	vm.Top = s.problemRows(v, top, false)
+	for i, r := range top {
+		vm.Top[i].Over, vm.Top[i].Sites = !first[r.ID], findingSites(cfg, r)
 	}
-	vm.Top = s.problemRows(v, visible)
 	for _, sv := range v.Snapshot.Servers {
 		label, icon, class := statusLabel(sv.Status)
 		t := serverTile{ID: sv.ID, Name: showControls(sv.Name), Status: class, StatusLabel: label, StatusIcon: icon,
 			Version: sv.Version, Link: sv.GUIURL, Problems: perServer[sv.ID], Mode: sv.Mode,
-			LastContact: s.fmtTime(sv.LastContact), LastError: showControls(sv.LastError)}
+			LastContact: s.fmtTime(sv.LastContact), LastError: showControls(sv.LastError), Site: cfg.SiteOf(sv.ID)}
 		if !sv.StartTime.IsZero() && sv.Status == model.StatusUp {
 			t.Uptime = rules.Ago(now.Sub(sv.StartTime))
 		}
@@ -172,7 +382,7 @@ func (s *Server) overview(v *engine.View) overviewVM {
 	// A disabled server keeps a grey tile, so it does not disappear without a trace.
 	for _, sc := range cfg.Servers {
 		if sc.Disabled && v.Snapshot.Server(sc.ID) == nil {
-			vm.Servers = append(vm.Servers, serverTile{ID: sc.ID, Name: showControls(sc.Name), Status: "wait", StatusLabel: "Disabled", StatusIcon: "○", Disabled: true})
+			vm.Servers = append(vm.Servers, serverTile{ID: sc.ID, Name: showControls(sc.Name), Status: "wait", StatusLabel: "Disabled", StatusIcon: "○", Disabled: true, Site: sc.Site})
 		}
 	}
 	pcs := countPCs(v.Snapshot, cfg.Thresholds.PCOffline.D(), now)
@@ -186,6 +396,7 @@ func (s *Server) overview(v *engine.View) overviewVM {
 type gridDevice struct {
 	ID, Name, Short string
 	Server, Online  bool
+	Site            string // the site of a server column, for the site filter
 }
 
 type gridCell struct {
@@ -224,6 +435,7 @@ type gridVM struct {
 	Groups  []gridGroup
 	Lists   []deviceList
 	Folders int
+	Sites   []string // the choices of the site filter; nil with fewer than 2 sites
 }
 
 // groupName strips a leading "<server name>-" from a share name, so
@@ -278,7 +490,9 @@ func plural(n int, one, many string) string {
 	return fmt.Sprintf("%d %s", n, many)
 }
 
-func (s *Server) grid(v *engine.View) gridVM {
+// grid builds the Folders grid. A viewer (role other than admin) gets the
+// device IDs of the column titles in their short form (C12, W-048).
+func (s *Server) grid(v *engine.View, role string) gridVM {
 	snap := v.Snapshot
 	// A disabled server is a server (r1-3, contract C4), but syncwatch does
 	// not poll it: its column would have only "–" cells. The Overview shows
@@ -289,12 +503,20 @@ func (s *Server) grid(v *engine.View) gridVM {
 			devs = append(devs, d)
 		}
 	}
-	vm := gridVM{}
+	cfg := s.cfg.Get()
+	vm := gridVM{Sites: filterSites(cfg)}
 	for _, d := range devs {
-		vm.Devices = append(vm.Devices, gridDevice{ID: d.ID, Name: showControls(d.Name), Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected})
+		id := d.ID
+		if role != RoleAdmin {
+			id = shortDeviceID(id)
+		}
+		gd := gridDevice{ID: id, Name: showControls(d.Name), Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected}
+		if d.IsServer {
+			gd.Site = cfg.SiteOf(d.ServerID)
+		}
+		vm.Devices = append(vm.Devices, gd)
 	}
 	cs := s.cfg.Structure()
-	cfg := s.cfg.Get()
 
 	type folderInfo struct {
 		id, label, group string
@@ -517,7 +739,9 @@ var severityOptions = []severityOption{
 	{model.Error.Lower(), model.Error.Label()}, {model.Warn.Lower(), model.Warn.Label()}, {model.Info.Lower(), model.Info.Label()},
 }
 
-func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
+// problems builds the Findings page. A viewer (role other than admin) gets
+// the short device IDs and no links to Syncthing (C12, W-048).
+func (s *Server) problems(v *engine.View, f problemFilter, role string) problemsVM {
 	now := s.now()
 	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions,
 		Today: now.In(s.cfg.Get().Location()).Format("2006-01-02")}
@@ -550,8 +774,9 @@ func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 		}
 		recs = append(recs, r)
 	}
-	vm.Rows = s.problemRows(v, recs)
-	vm.Snoozed = s.problemRows(v, hidden)
+	admin := role == RoleAdmin
+	vm.Rows = s.problemRows(v, recs, admin)
+	vm.Snoozed = s.problemRows(v, hidden, admin)
 	vm.Hidden = len(hidden)
 	if hist, err := s.st.HistoryBetween(now.Add(-7*24*time.Hour), now.Add(time.Second)); err == nil {
 		from := now.Add(-7 * 24 * time.Hour)

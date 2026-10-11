@@ -1,17 +1,21 @@
 {{define "overview"}}{{template "head" .}}
+{{with .Data.VM.Sites}}<div class="toolbar">
+  {{template "site-filter" .}}
+</div>{{end}}
 {{template "overview-body" .}}
 {{template "foot" .}}{{end}}
 
 {{define "overview-body"}}{{$vm := .Data.VM}}
-<div id="overview-body" hx-get="/frag/overview" hx-trigger="sse:update" hx-swap="outerHTML">
+<div id="overview-body" hx-get="/frag/overview" hx-trigger="sse:update" hx-swap="outerHTML" data-day="{{$vm.Day}}">
   <p class="health" aria-label="Health summary">{{$vm.Health}}</p>
   <section class="tiles" aria-label="Servers">
     {{range $vm.Servers}}
-    <article class="tile st-{{.Status}}">
+    <article class="tile st-{{.Status}}"{{if $vm.Sites}} data-site="{{.Site}}"{{end}}>
       <header>
         <h2>{{.Name}}</h2>
         <span class="badge st-{{.Status}}">{{.StatusIcon}} {{.StatusLabel}}</span>
       </header>
+      {{with .Site}}<p class="tile-site">{{.}}</p>{{end}}
       {{if .Disabled}}
       <p class="muted">syncwatch does not poll this server.{{if eq $.Role "admin"}} <a class="nowrap" href="/settings#servers">Settings → Servers</a>{{end}}</p>
       {{else}}
@@ -28,7 +32,7 @@
         <dt>Last contact</dt><dd>{{.LastContact}}{{if .Mode}} · {{.Mode}}{{end}}</dd>
       </dl>
       {{range .ShareErrors}}<p class="c-warn small">⚠ {{.}}</p>{{end}}
-      {{if .Link}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
+      {{if and .Link (eq $.Role "admin")}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
       {{end}}
     </article>
     {{else}}
@@ -46,15 +50,25 @@
     </article>
   </section>
 
+  {{with $vm.Links}}
+  <section class="card" aria-label="Connections">
+    <h2>Connections</h2>
+    <ul class="links">
+      {{range .}}<li class="lk-{{.Class}}"{{if $vm.Sites}}{{template "site-attr" .Sites}}{{end}}><span class="lk-state" aria-hidden="true">{{.Icon}}</span> <span class="lk-name">{{.A}}</span> ↔ <span class="lk-name">{{.B}}</span>: <span class="lk-state">{{.State}}</span></li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
   <section class="card">
     <header class="row">
       <h2>Most important open findings</h2>
       <span><a href="/problems">All {{$vm.OpenCount}} open →</a>{{if $vm.SnoozedCount}} <a class="muted small" href="/problems#snoozed">· {{$vm.SnoozedCount}} snoozed or ignored</a>{{end}}</span>
     </header>
     {{if $vm.Top}}
-    <ul class="plist compact">
+    <ul class="plist compact"{{if $vm.Sites}} data-limit="{{$vm.TopLimit}}"{{end}}>
       {{range $vm.Top}}
-      <li class="sev-row-{{.Severity}}">
+      <li class="sev-row-{{.Severity}}{{if .Over}} over-limit{{end}}"{{if $vm.Sites}}{{template "site-attr" .Sites}}{{end}}>
         {{template "sev" .}} <span class="chk">{{.Checks}}</span>
         {{if .Urgent}}<span class="tag urgent" title="Sends urgent messages">urgent</span>{{end}}
         {{if .Stale}}<span class="tag stale" title="No current data: last known state">stale</span>{{end}}
@@ -63,6 +77,7 @@
       </li>
       {{end}}
     </ul>
+    {{if $vm.Sites}}<p class="c-ok site-empty" hidden>✔ There are no open findings for this site.</p>{{end}}
     {{else}}<p class="c-ok">✔ There are no open findings.</p>{{end}}
   </section>
   <p class="muted small"><span class="live-on">Real-time view</span><span class="live-off">No connection to syncwatch</span> · last change {{$vm.Evaluated}}</p>

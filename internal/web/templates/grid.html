@@ -1,6 +1,7 @@
 {{define "grid"}}{{template "head" .}}
 <div class="toolbar">
   <label class="search">Search <input type="search" id="grid-search" placeholder="Folder label or ID" autocomplete="off"></label>
+  {{with .Data.VM.Sites}}{{template "site-filter" .}}{{end}}
   <label class="check"><input type="checkbox" id="grid-problems"> Only folders with faults</label>
 </div>
 {{template "grid-body" .}}
@@ -17,12 +18,12 @@
       <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{end}}{{if $g.Stale}} · <span class="muted" title="A server of these folders is not up: the grid shows its last known state">○ {{$g.Stale}} with an unknown state</span>{{end}}{{if not (or $g.Problems $g.Stale)}} · <span class="c-ok">✔ no faults</span>{{end}}</summary>
       <div class="scroll">
       <table class="grid">
-        <thead><tr><th scope="col" class="fcol">Folder</th>{{range $vm.Devices}}<th scope="col" class="dcol {{if .Server}}srv{{end}}" title="{{.ID}}">{{.Name}}{{if .Server}}<span class="muted"> (server)</span>{{end}}</th>{{end}}</tr></thead>
+        <thead><tr><th scope="col" class="fcol">Folder</th>{{range $vm.Devices}}<th scope="col" class="dcol {{if .Server}}srv{{end}}" title="{{.ID}}"{{if and $vm.Sites .Server}} data-site="{{.Site}}"{{end}}>{{.Name}}{{if .Server}}<span class="muted"> (server)</span>{{end}}</th>{{end}}</tr></thead>
         <tbody>
         {{range $g.Items}}
           <tr class="frow{{if .Problem}} has-problem{{end}}" data-search="{{.Search}}">
             <th scope="row" class="fcol" title="ID {{.ID}} · on {{.Servers}}">{{.Label}}</th>
-            {{range .Cells}}<td>{{template "cell" .}}</td>{{end}}
+            {{range $i, $c := .Cells}}<td{{if $vm.Sites}}{{with index $vm.Devices $i}}{{if .Server}} data-site="{{.Site}}"{{end}}{{end}}{{end}}>{{template "cell" $c}}</td>{{end}}
           </tr>
         {{end}}
         </tbody>
@@ -33,7 +34,7 @@
   </div>
   <div class="grid-narrow">
   {{range $vm.Lists}}
-    <details class="group" data-key="dev:{{.Device.ID}}" {{if .Problems}}open{{end}}>
+    <details class="group" data-key="dev:{{.Device.ID}}"{{if and $vm.Sites .Device.Server}} data-site="{{.Device.Site}}"{{end}} {{if .Problems}}open{{end}}>
       <summary><strong>{{.Device.Name}}</strong>{{if .Device.Server}} <span class="muted">(server)</span>{{end}} · <span class="muted">{{plural (len .Items) "folder" "folders"}}</span>{{if .Problems}} · <span class="c-err">✖ {{.Problems}}</span>{{end}}</summary>
       <ul class="dlist">
         {{range .Items}}<li class="frow{{if .Cell.Problem}} has-problem{{end}}" data-search="{{lower .Folder}}"><span>{{.Folder}}</span>{{template "cell" .Cell}}</li>{{end}}

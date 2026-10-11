@@ -48,10 +48,21 @@
 {{end}}
 
 {{define "alert"}}{{if .Role}}<div id="sw-alert" hx-get="/frag/alert" hx-trigger="every 60s" hx-swap="outerHTML">
-{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch tries again automatically. If Discord refuses the webhook (HTTP 401, 403 or 404), {{if eq $.Role "admin"}}type a new webhook URL in <a href="/settings#notifications">Settings → Notifications</a>{{else}}an administrator must type a new webhook URL in Settings → Notifications{{end}}.</div>{{end -}}
+{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch tries again {{with .NextTry}}at {{.}}{{else}}automatically{{end}}. If Discord refuses the webhook (HTTP 401, 403 or 404), {{if eq $.Role "admin"}}type a new webhook URL in <a href="/settings#notifications">Settings → Notifications</a>{{else}}an administrator must type a new webhook URL in Settings → Notifications{{end}}.</div>{{end -}}
 </div>{{end}}{{end}}
 
 {{define "sev"}}<span class="sev sev-{{.Severity}}" title="{{.SeverityLabel}}">{{.Icon}} {{.SeverityLabel}}</span>{{end}}
+
+{{/* The site filter of the Overview and the Folders page (C11): the sites, 2 or more. app.js applies it and remembers it. */}}
+{{define "site-filter"}}<label class="site-filter">Site
+    <select id="site-filter" autocomplete="off">
+      <option value="">All sites</option>
+      {{range .}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>{{end}}
+
+{{/* The sites of an element for the site filter: data-site for 1 site, data-sites (1 site on each line) for more, nothing for none (always shown). */}}
+{{define "site-attr"}}{{if eq (len .) 1}} data-site="{{index . 0}}"{{else if .}} data-sites="{{join . "\n"}}"{{end}}{{end}}
 
 {{define "error"}}{{template "head" .}}
 <section class="card narrow">
