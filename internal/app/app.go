@@ -41,10 +41,20 @@ type Options struct {
 	TLSKey        string
 	TLSSelfSigned bool     // serve HTTPS with a self-signed certificate kept in DataDir
 	TLSHosts      []string // extra names for the self-signed certificate
-	Version       string
-	Log           *slog.Logger
-	OnListen      func(addr string) // for tests
+	// NotifyLimit is how long notifications can fail before /healthz
+	// answers 503 (SYNCWATCH_HEALTH_NOTIFY_LIMIT); 0 = this rule is off.
+	NotifyLimit time.Duration
+	// DeadmanURL is the address of an outside monitor service that
+	// syncwatch calls while it is healthy (SYNCWATCH_DEADMAN_URL); "" = off.
+	DeadmanURL string
+	Version    string
+	Log        *slog.Logger
+	OnListen   func(addr string) // for tests
 }
+
+// evalLimit is how long syncwatch can be without an evaluation of the checks
+// before /healthz answers 503. The engine evaluates at least every 30 seconds.
+const evalLimit = 5 * time.Minute
 
 // OpenStore opens the database in a data directory.
 func OpenStore(dataDir, secretKey string) (*store.Store, error) {
@@ -410,6 +420,7 @@ func (w *configWatcher) run(ctx context.Context) {
 // Run serves until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
 	log := o.Log
+	started := time.Now()
 	o.DataDir = absPath(o.DataDir)
 	st, err := openServeStore(o.DataDir, o.SecretKey, log)
 	if err != nil {
@@ -424,6 +435,14 @@ func Run(ctx context.Context, o Options) error {
 	holder, err := config.NewHolder(cfg)
 	if err != nil {
 		return fmt.Errorf("the stored configuration is not valid: %w", err)
+	}
+	// The time when syncwatch did not run, before the first heartbeat of
+	// this start replaces the last one.
+	if err := noteGap(st, started, holder.Get().Location(), log); err != nil {
+		log.Warn("cannot record the time when syncwatch did not run", "err", err)
+	}
+	if err := st.SetAliveAt(started); err != nil {
+		log.Warn("cannot record the heartbeat", "err", err)
 	}
 	if o.AdminPassword != "" {
 		if h, _ := st.Setting(web.KeyAdminHash); h == "" {
@@ -497,7 +516,19 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	srvWeb.AllowHosts(o.Listen, o.TLSHosts...)
+	srvWeb.SetHealth(web.HealthOptions{Started: started, NotifyLimit: o.NotifyLimit, EvalLimit: evalLimit})
 	srvWeb.LogSetupToken(os.Stderr)
+	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run, heartbeat(st, log)}
+	deadmanAt := "off"
+	if o.DeadmanURL != "" {
+		dm, err := newDeadman(o.DeadmanURL, srvWeb.Ready, o.Version, log)
+		if err != nil {
+			return err
+		}
+		eng.OnEvaluate(dm.Wake)
+		workerFuncs = append(workerFuncs, dm.run)
+		deadmanAt = dm.target()
+	}
 
 	tc, err := tlsConfig(o, holder.Get(), log)
 	if err != nil {
@@ -524,7 +555,7 @@ func Run(ctx context.Context, o Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers sync.WaitGroup
-	for _, run := range []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run} {
+	for _, run := range workerFuncs {
 		workers.Add(1)
 		go func() { defer workers.Done(); run(ctx) }()
 	}
@@ -533,7 +564,12 @@ func Run(ctx context.Context, o Options) error {
 	if o.OnListen != nil {
 		o.OnListen(ln.Addr().String())
 	}
-	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers))
+	notifyLimit := "off"
+	if o.NotifyLimit > 0 {
+		notifyLimit = config.Duration(o.NotifyLimit).String()
+	}
+	log.Info("syncwatch started", "version", o.Version, "listen", ln.Addr().String(), "https", tc != nil, "data", o.DataDir, "servers", len(holder.Get().Servers),
+		"health_notify_limit", notifyLimit, "deadman", deadmanAt)
 
 	var serveErr error
 	select {
@@ -558,6 +594,10 @@ func Run(ctx context.Context, o Options) error {
 	case <-stopped:
 	case <-time.After(10 * time.Second):
 		log.Warn("some workers did not stop in time")
+	}
+	// A clean stop: the next start counts the gap from now.
+	if err := st.SetAliveAt(time.Now()); err != nil {
+		log.Warn("cannot record the heartbeat", "err", err)
 	}
 	return serveErr
 }

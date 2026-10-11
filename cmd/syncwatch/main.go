@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	_ "time/tzdata" // time zones in minimal containers
 
@@ -64,6 +66,46 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// Limits of SYNCWATCH_HEALTH_NOTIFY_LIMIT.
+const (
+	defaultNotifyLimit = 15 * time.Minute
+	minNotifyLimit     = time.Minute
+	maxNotifyLimit     = 24 * time.Hour
+)
+
+// envNotifyLimit reads SYNCWATCH_HEALTH_NOTIFY_LIMIT: how long notifications
+// can fail before /healthz answers 503. A duration such as 15m or 1h, from 1
+// minute to 1 day; not set = 15 minutes.
+func envNotifyLimit() (time.Duration, error) {
+	const key = "SYNCWATCH_HEALTH_NOTIFY_LIMIT"
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultNotifyLimit, nil
+	}
+	d, err := config.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if d.D() < minNotifyLimit || d.D() > maxNotifyLimit {
+		return 0, fmt.Errorf("%s: the value must be between %s and %s.", key, config.Duration(minNotifyLimit).Words(), config.Duration(maxNotifyLimit).Words())
+	}
+	return d.D(), nil
+}
+
+// envDeadmanURL reads SYNCWATCH_DEADMAN_URL: the address of an outside
+// monitor service that syncwatch calls while it is healthy. Not set = off.
+// The error does not repeat the value: it can contain a secret.
+func envDeadmanURL() (string, error) {
+	v := strings.TrimSpace(os.Getenv("SYNCWATCH_DEADMAN_URL"))
+	if v == "" {
+		return "", nil
+	}
+	if _, err := app.ParseDeadmanURL(v); err != nil {
+		return "", fmt.Errorf("SYNCWATCH_DEADMAN_URL: %w", err)
+	}
+	return v, nil
 }
 
 func defaultDataDir() string {
@@ -183,6 +225,14 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	notifyLimit, err := envNotifyLimit()
+	if err != nil {
+		return err
+	}
+	deadman, err := envDeadmanURL()
+	if err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, for example 192.168.1.10:8080 (env SYNCWATCH_LISTEN, default loopback only)")
@@ -205,6 +255,7 @@ func serve(args []string) error {
 		DataDir: *data, Listen: *listen, ConfigFile: *cfgFile, SecretKey: secretKey(*key),
 		AdminPassword: os.Getenv("SYNCWATCH_ADMIN_PASSWORD"), Version: version, Log: log,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSSelfSigned: *tlsSelf, TLSHosts: splitList(*tlsHosts),
+		NotifyLimit: notifyLimit, DeadmanURL: deadman,
 	})
 }
 
@@ -398,9 +449,31 @@ func healthcheck(args []string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// The first line of the answer gives the reason, for example
+		// "notifications fail from 2026-10-11 21:04" (docker inspect shows it).
+		if line := firstLine(resp.Body); line != "" {
+			return fmt.Errorf("the health check returned HTTP %d: %s", resp.StatusCode, line)
+		}
 		return fmt.Errorf("the health check returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// firstLine returns the first line of an answer, at most 200 characters,
+// without control characters.
+func firstLine(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 4<<10))
+	line, _, _ := strings.Cut(string(b), "\n")
+	line = strings.Map(func(c rune) rune {
+		if unicode.IsControl(c) {
+			return -1
+		}
+		return c
+	}, line)
+	if r := []rune(strings.TrimSpace(line)); len(r) > 200 {
+		return string(r[:200]) + "…"
+	}
+	return strings.TrimSpace(line)
 }
 
 // plural writes a count with its noun: "1 server", "3 servers".
