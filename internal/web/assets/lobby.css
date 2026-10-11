@@ -23,7 +23,8 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
-html { font-size: max(16px, 1.45vw); -webkit-text-size-adjust: 100%; }
+/* The first value is for an old browser of a TV that does not know max(). */
+html { font-size: 20px; font-size: max(16px, 1.45vw); -webkit-text-size-adjust: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 [hidden] { display: none !important; }
 main { padding: .8rem 1.2rem 1.2rem; }
@@ -33,7 +34,7 @@ h1, h2, h3, p { margin: 0; }
 
 /* Names and messages from Syncthing and the configuration: a long word
    wraps, and a direction control stays inside its own text. */
-.lobby-body { overflow-wrap: anywhere; }
+.lobby-body { overflow-wrap: break-word; overflow-wrap: anywhere; }
 .msg, .srv h3, .site h2, .links .text { unicode-bidi: isolate; }
 
 .lobby-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem 1.2rem; margin-bottom: .7rem; }
@@ -53,12 +54,12 @@ h1, h2, h3, p { margin: 0; }
 
 /* One column for each site. The servers of a site side by side when there is
    space; a card keeps the width of its column (auto-fill), also when it is alone. */
-.sites { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .8rem 1.2rem; margin-bottom: .8rem; }
+.sites { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .8rem 1.2rem; margin-bottom: .8rem; }
 .site { min-width: 0; }
 .site h2 { font-size: 1.35rem; margin-bottom: .2rem; }
 .pcs { color: var(--muted); margin-bottom: .4rem; }
 .pcs strong { color: var(--text); }
-.servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr)); gap: .5rem; }
+.servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr)); gap: .5rem; }
 .srv { min-width: 0; background: var(--card); border: 1px solid var(--line); border-left: .4rem solid var(--off); border-radius: .5rem; padding: .5rem .8rem; }
 .srv.st-ok { border-left-color: var(--ok); } .srv.st-err { border-left-color: var(--err); }
 .srv header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .2rem .8rem; margin-bottom: .3rem; }
