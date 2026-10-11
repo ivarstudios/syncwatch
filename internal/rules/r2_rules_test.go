@@ -324,6 +324,13 @@ func TestSiteTexts(t *testing.T) {
 		t.Fatal("a row 8 minutes after the last contact")
 	}
 	sol.LastContact = now.Add(-11 * time.Minute)
+	// A refused connection can come from SOL itself (its gate is down): the
+	// row does not say that the network path is down.
+	sol.LastError = "connection refused"
+	if got := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL").DetailValue("What AKKA sees"); got != "AKKA is connected to SOL. Thus Syncthing on SOL runs, and syncwatch cannot connect to the API address of SOL." {
+		t.Fatalf("row for a refused connection: %q", got)
+	}
+	sol.LastError = "timeout"
 	// The connections of a server that is down are old data.
 	akka.Status = model.StatusDown
 	if f := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL"); f.DetailValue("What AKKA sees") != "" {

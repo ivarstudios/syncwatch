@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,12 @@ var httpAnswer = regexp.MustCompile(`HTTP \d{3}\b`)
 // connection (see collector.shortErr).
 var netReasons = []string{"timeout", "connection refused", "no route to host", "network unreachable",
 	"connection reset", "connection closed early", "host name not found", "host name lookup failed"}
+
+// pathReasons are the network failures that say that nothing answers on the
+// network path to a server. A refused or reset connection or a host name
+// that is not found can also come from the server itself (its gate or GUI
+// is down) while the path works.
+var pathReasons = []string{"timeout", "no route to host", "network unreachable"}
 
 // networkFailure reports whether a server is down because syncwatch cannot
 // connect to it, not because of an answer or the configuration. From one
@@ -141,7 +148,11 @@ func (e *evaluator) peerViews(sv *model.Server) []model.Detail {
 			continue
 		}
 		if c := o.Connections[sv.MyID]; c != nil && c.Connected {
-			out = append(out, detail("What "+o.Name+" sees", fmt.Sprintf("%s is connected to %s. Thus Syncthing on %s runs, and the network path from syncwatch to %s is down.", o.Name, sv.Name, sv.Name, sv.Name)))
+			cause := fmt.Sprintf("the network path from syncwatch to %s is down", sv.Name)
+			if !slices.ContainsFunc(pathReasons, func(r string) bool { return strings.Contains(sv.LastError, r) }) {
+				cause = fmt.Sprintf("syncwatch cannot connect to the API address of %s", sv.Name)
+			}
+			out = append(out, detail("What "+o.Name+" sees", fmt.Sprintf("%s is connected to %s. Thus Syncthing on %s runs, and %s.", o.Name, sv.Name, sv.Name, cause)))
 		}
 	}
 	return out
