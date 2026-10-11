@@ -1,6 +1,8 @@
 package web
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -109,5 +111,34 @@ func TestServerKeyThatCannotBeDecrypted(t *testing.T) {
 	}
 	if i, j := strings.Index(sv, lost), strings.Index(sv, other); i < 0 || j < 0 || i > j {
 		t.Error("the cannot-decrypt mark is not on AKKA (first) or the other-URL mark is not on SOL")
+	}
+}
+
+// r1-5 request 5: a session over the confirmation limit logs "password
+// check rate limit reached" once a minute with a count (fixer 6's log
+// limiter, W-025), not once for each refused confirmation.
+func TestConfirmationLimitLogsOnceAMinute(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	var logs syncBuffer
+	e.web.log = slog.New(slog.NewTextHandler(&logs, nil))
+	now := time.Now()
+	e.web.now = func() time.Time { return now }
+	csrf := e.csrf("/settings")
+	accept := func(confirm string) {
+		e.post("/settings/servers/akka/accept-cert", url.Values{"csrf": {csrf}, "fingerprint": {"ff"}, "confirm": {confirm}})
+	}
+	for i := 0; i < 5; i++ {
+		accept(fmt.Sprintf("guess %d", i))
+	}
+	for i := 0; i < 4; i++ {
+		accept("correct horse battery") // refused by the limit
+	}
+	if n := strings.Count(logs.String(), "password check rate limit reached"); n != 1 {
+		t.Fatalf("%d lines for 4 refused checks in a minute, want 1:\n%s", n, logs.String())
+	}
+	now = now.Add(61 * time.Second)
+	accept("correct horse battery")
+	if n := strings.Count(logs.String(), "password check rate limit reached"); n != 2 || !strings.Contains(logs.String(), "count=4") {
+		t.Fatalf("after a minute: %d lines, want 2, the second with count=4:\n%s", n, logs.String())
 	}
 }

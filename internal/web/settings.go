@@ -250,10 +250,15 @@ func (s *Server) confirmed(r *http.Request, info requestInfo, serverID, refused 
 // the limit (the check isn't run then).
 func (s *Server) limitedCheck(r *http.Request, info requestInfo, check func() bool) (ok bool, limited string) {
 	key := confirmKey(r, info)
-	allowed, delay := s.limiter.check(key, s.now())
+	now := s.now()
+	allowed, delay := s.limiter.check(key, now)
 	if !allowed {
-		s.log.Warn("password check rate limit reached", "ip", clientIP(r), "path", r.URL.Path)
-		return false, tooManyTries(s.limiter.retryAfter(key, s.now()))
+		// One line per session (or proxy address) and minute, with the
+		// number of refused checks, as for logins (W-025).
+		if n := s.logs.count("confirm "+key, now); n > 0 {
+			s.log.Warn("password check rate limit reached", "ip", clientIP(r), "path", r.URL.Path, "count", n)
+		}
+		return false, tooManyTries(s.limiter.retryAfter(key, now))
 	}
 	wait(r, delay)
 	if check() {
