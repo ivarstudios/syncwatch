@@ -78,7 +78,14 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			msg = fmt.Sprintf("Server %s refuses the API key or the gate token", sv.Name)
 			details = append(details, detail("What to do", "Type the API key or the gate token again in Settings → Servers."))
 		} else if networkFailure(sv.LastError) {
-			details = append(details, detail("Possible causes", "The server is off or does not answer, or the network path to it (for example the VPN between the sites) is down."))
+			causes := "The server is off or does not answer, or the network path to it (for example the VPN between the sites) is down."
+			// With the sites set, the message and the causes name them.
+			if home, there := e.Config.Site, e.Config.SiteOf(sv.ID); home != "" && there != "" && home != there {
+				msg = fmt.Sprintf("Server %s (%s) is unreachable from %s", sv.Name, there, home)
+				causes = fmt.Sprintf("The VPN between %s and %s is down, or the server is off or does not answer.", home, there)
+			}
+			details = append(details, detail("Possible causes", causes))
+			details = append(details, e.peerViews(sv)...)
 		}
 		if sv.LastError != "" {
 			msg += ": " + sv.LastError
@@ -106,6 +113,25 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 			},
 		})
 	}
+}
+
+// peerViews gives a row for each other polled server that is up and has a
+// live connection to a server that syncwatch cannot reach: Syncthing on that
+// server runs, and the network path from syncwatch to it is down.
+func (e *evaluator) peerViews(sv *model.Server) []model.Detail {
+	if sv.MyID == "" {
+		return nil
+	}
+	var out []model.Detail
+	for _, o := range e.Snapshot.Servers {
+		if o.ID == sv.ID || o.Status != model.StatusUp {
+			continue
+		}
+		if c := o.Connections[sv.MyID]; c != nil && c.Connected {
+			out = append(out, detail("What "+o.Name+" sees", fmt.Sprintf("%s is connected to %s. Thus Syncthing on %s runs, and the network path from syncwatch to %s is down.", o.Name, sv.Name, sv.Name, sv.Name)))
+		}
+	}
+	return out
 }
 
 var busyStates = map[string]bool{
@@ -565,6 +591,10 @@ func (e *evaluator) links() {
 					since = t
 				}
 			}
+			check := "The VPN or network between the servers, and Syncthing on both servers."
+			if sa, sb := e.Config.SiteOf(a.ID), e.Config.SiteOf(b.ID); sa != "" && sb != "" && sa != sb {
+				check = fmt.Sprintf("The VPN between %s and %s, and Syncthing on both servers.", sa, sb)
+			}
 			e.add("H2", a.ID, "link:"+b.ID, model.Finding{
 				Subject:     fmt.Sprintf("%s ↔ %s", a.Name, b.Name),
 				Message:     fmt.Sprintf("Servers %s and %s are not connected to each other", a.Name, b.Name),
@@ -574,7 +604,7 @@ func (e *evaluator) links() {
 				Details: []model.Detail{
 					timeDetail(a.Name+" last saw "+b.Name, da.LastSeen),
 					timeDetail(b.Name+" last saw "+a.Name, db.LastSeen),
-					detail("What to check", "The VPN or network between the servers, and Syncthing on both servers."),
+					detail("What to check", check),
 				},
 			})
 		}

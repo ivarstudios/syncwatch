@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -120,5 +121,45 @@ thresholds: {relay_lost: 2m}
 	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
 	if find(r.at(time.Second), "H12", "LAPTOP-DANI") == nil {
 		t.Fatal("H12 should open when B is back and the device is still away")
+	}
+}
+
+// W-057: each evaluation sets the links between the servers and, with 2
+// sites, between the sites in the snapshot of the view.
+func TestEvaluateSetsLinks(t *testing.T) {
+	r := newRig(t)
+	r.hub.Update("a", func(s *model.Server) {
+		s.Devices["B-ID"] = &model.Device{ID: "B-ID", Name: "B", LastSeen: r.now.Add(-time.Hour)}
+		s.Connections["B-ID"] = &model.Connection{Connected: true, StartedAt: r.now.Add(-time.Hour)}
+	})
+	r.hub.Update("b", func(s *model.Server) {
+		s.Devices["A-ID"] = &model.Device{ID: "A-ID", Name: "A", LastSeen: r.now.Add(-time.Hour)}
+	})
+	v := r.at(0)
+	if want := []model.ServerLink{{A: "a", B: "b", State: model.LinkConnected, Since: r.now.Add(-time.Hour)}}; !reflect.DeepEqual(v.Snapshot.Links, want) || v.Snapshot.SiteLinks != nil {
+		t.Fatalf("without sites: %+v %+v", v.Snapshot.Links, v.Snapshot.SiteLinks)
+	}
+	r.withConfig(t, `
+servers: [{name: A, url: "https://a:1", site: IVAR Office}, {name: B, url: "https://b:1", site: Branch office}]
+`)
+	r.hub.Update("b", func(s *model.Server) { s.Status, s.DownSince = model.StatusDown, r.now })
+	v = r.at(time.Minute)
+	if len(v.Snapshot.Links) != 1 || v.Snapshot.Links[0].State != model.LinkUnreachable {
+		t.Fatalf("B down: %+v", v.Snapshot.Links)
+	}
+	want := []model.SiteLink{{A: "IVAR Office", B: "Branch office", State: model.LinkUnreachable, Servers: [][2]string{{"a", "b"}}}}
+	if !reflect.DeepEqual(v.Snapshot.SiteLinks, want) {
+		t.Fatalf("site links: %+v", v.Snapshot.SiteLinks)
+	}
+	r.hub.Update("b", func(s *model.Server) { s.Status = model.StatusUp })
+	if v = r.at(time.Minute); v.Snapshot.SiteLinks[0].State != model.LinkConnected || !v.Snapshot.SiteLinks[0].Since.Equal(r.now.Add(-time.Hour-2*time.Minute)) {
+		t.Fatalf("B back: %+v", v.Snapshot.SiteLinks)
+	}
+	// A reconnect between 2 evaluations changes only the start of the
+	// connection: the dashboards show it ("connected from 12:04").
+	before := v.Version
+	r.hub.Update("a", func(s *model.Server) { s.Connections["B-ID"].StartedAt = r.now })
+	if v = r.at(time.Second); v.Version == before || !v.Snapshot.Links[0].Since.Equal(r.now.Add(-time.Second)) {
+		t.Fatalf("reconnect: version %d, links %+v", v.Version, v.Snapshot.Links)
 	}
 }

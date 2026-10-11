@@ -273,3 +273,70 @@ func TestRelayListener(t *testing.T) {
 	akka.Status, akka.LastError = model.StatusDown, "timeout"
 	mustNot(t, run(t, c, akka), "H12", "")
 }
+
+// W-057 (c): with the sites set, H1 for a network failure names the site of
+// the server and the site of syncwatch, and the VPN between them; H2 names
+// the 2 sites. Without sites, the texts of r1 stay. When another server is
+// connected to the unreachable server, a row says so.
+func TestSiteTexts(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	akka.Devices[solID] = &model.Device{ID: solID, Name: "SOL", LastSeen: now.Add(-time.Hour)}
+	sol.Devices[akkaID] = &model.Device{ID: akkaID, Name: "AKKA", LastSeen: now.Add(-time.Hour)}
+	h2 := mustFind(t, run(t, c, akka, sol), "H2", "AKKA ↔ SOL")
+	if got := h2.DetailValue("What to check"); got != "The VPN or network between the servers, and Syncthing on both servers." {
+		t.Fatalf("H2 without sites: %q", got)
+	}
+	c.Site = "IVAR Office"
+	c.Servers[0].Site, c.Servers[1].Site = "IVAR Office", "Branch office"
+	h2 = mustFind(t, run(t, c, akka, sol), "H2", "AKKA ↔ SOL")
+	if got := h2.DetailValue("What to check"); got != "The VPN between IVAR Office and Branch office, and Syncthing on both servers." {
+		t.Fatalf("H2 with sites: %q", got)
+	}
+	if h2.Message != "Servers AKKA and SOL are not connected to each other" {
+		t.Fatalf("H2 message: %s", h2.Message)
+	}
+
+	// SOL is unreachable from syncwatch at IVAR Office.
+	sol.Status, sol.LastError, sol.DownSince = model.StatusDown, "timeout", now.Add(-10*time.Minute)
+	h1 := mustFind(t, run(t, c, akka, sol), "H1", "SOL")
+	if h1.Message != "Server SOL (Branch office) is unreachable from IVAR Office: timeout" {
+		t.Fatalf("H1 with sites: %s", h1.Message)
+	}
+	if got := h1.DetailValue("Possible causes"); got != "The VPN between IVAR Office and Branch office is down, or the server is off or does not answer." {
+		t.Fatalf("causes with sites: %q", got)
+	}
+	if h1.DetailValue("What AKKA sees") != "" {
+		t.Fatal("AKKA is not connected to SOL: no row")
+	}
+	// AKKA still has a connection to SOL: Syncthing on SOL runs.
+	akka.Connections[solID] = &model.Connection{Connected: true, Type: "tcp-client"}
+	h1 = mustFind(t, run(t, c, akka, sol), "H1", "SOL")
+	if got := h1.DetailValue("What AKKA sees"); got != "AKKA is connected to SOL. Thus Syncthing on SOL runs, and the network path from syncwatch to SOL is down." {
+		t.Fatalf("row: %q", got)
+	}
+	// The connections of a server that is down are old data.
+	akka.Status = model.StatusDown
+	if f := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL"); f.DetailValue("What AKKA sees") != "" {
+		t.Fatal("a row from a server that is down")
+	}
+	akka.Status = model.StatusUp
+
+	// syncwatch runs at the site of SOL: no "from".
+	c.Site = "Branch office"
+	if h1 = mustFind(t, run(t, c, akka, sol), "H1", "SOL"); h1.Message != "Server SOL is unreachable: timeout" || !strings.Contains(h1.DetailValue("Possible causes"), "(for example the VPN between the sites)") {
+		t.Fatalf("same site: %s %v", h1.Message, h1.Details)
+	}
+	// No site of syncwatch: the texts of r1.
+	c.Site = ""
+	if h1 = mustFind(t, run(t, c, akka, sol), "H1", "SOL"); h1.Message != "Server SOL is unreachable: timeout" {
+		t.Fatalf("no site of syncwatch: %s", h1.Message)
+	}
+	// A refused API key is not a network failure: no site text, no row.
+	c.Site = "IVAR Office"
+	sol.LastError = "/rest/system/status: HTTP 403 (check the API key)"
+	if h1 = mustFind(t, run(t, c, akka, sol), "H1", "SOL"); h1.Message != "Server SOL refuses the API key or the gate token: "+sol.LastError || h1.DetailValue("What AKKA sees") != "" {
+		t.Fatalf("refused: %s %v", h1.Message, h1.Details)
+	}
+}

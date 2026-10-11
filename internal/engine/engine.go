@@ -385,6 +385,8 @@ func (e *Engine) Evaluate() {
 	now := e.now()
 	snap.At = now
 	snap.Disabled = e.disabledServers(cfg)
+	snap.Links = snap.ServerLinks()
+	snap.SiteLinks = model.SiteLinks(snap.Links, cfg.SiteOf, serverOrder(cfg))
 	conflicts, err := e.st.ConflictsSince(now.Add(-cfg.Thresholds.ConflictWindow.D()))
 	if err != nil {
 		e.log.Warn("cannot read the conflict history", "err", err)
@@ -563,6 +565,16 @@ func (e *Engine) disabledServers(cfg *config.Config) []model.DisabledServer {
 	return out
 }
 
+// serverOrder lists the server IDs in configuration order, disabled servers
+// included (the order of the sites follows their first server).
+func serverOrder(cfg *config.Config) []string {
+	ids := make([]string, len(cfg.Servers))
+	for i, s := range cfg.Servers {
+		ids[i] = s.ID
+	}
+	return ids
+}
+
 func (e *Engine) save(r *store.Record) {
 	if err := e.st.SaveRecord(r); err != nil {
 		e.log.Error("cannot save the finding", "id", r.ID, "err", err)
@@ -586,6 +598,13 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 	}
 	for _, ds := range snap.Disabled {
 		w("disabled", ds.ID, ds.Name, ds.MyID)
+	}
+	// The connection rows show the state and its start time.
+	for _, l := range snap.Links {
+		w("link", l.A, l.B, l.State, l.Since.Unix())
+	}
+	for _, l := range snap.SiteLinks {
+		w("site link", l.A, l.B, l.State, l.Since.Unix())
 	}
 	for _, sv := range snap.Servers {
 		w(sv.ID, sv.Status, sv.Version, sv.LastError, sv.Loaded, sv.Mode, sv.Cert.NotAfter.Unix())
