@@ -49,7 +49,6 @@ Items that the review found and did not do. The source is in parentheses.
 - H10 does not name the conflict copies and does not resolve when you delete them. A read of `/metrics` at each structure scan changes the request pattern of the collector.
 - The urgent message does not wait for findings that become due some seconds later. A wait time for more findings changes the rule "Findings that open in the same cycle go into one message".
 - The notification banner does not show the time of the next try.
-- Settings does not show an API key of a server that syncwatch cannot decrypt.
 - C1 keeps the time of the last local change only in memory.
 - The CSRF protection does not refuse `Origin: null`. syncwatch has no setting that names a reverse proxy for `X-Forwarded-For`.
 - H5 does not list the files that a PC cannot store. The list needs `/rest/db/remoteneed` in the allowlist of the client and the gate.

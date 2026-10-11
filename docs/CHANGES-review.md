@@ -1,6 +1,6 @@
 # What the review of October 2026 changed
 
-This is the plain-language list of the changes from the review (13 branches, `sim/r0-a` to `sim/r0-s`, merged in `review/sim-2026-10`). It says what you will see and what you must do after the update. The technical reports are in [docs/changes/](changes/) (one file for each branch, `r0-*.md`).
+This is the plain-language list of the changes from the review (13 branches, `sim/r0-a` to `sim/r0-s`, merged in `review/sim-2026-10`). It says what you will see and what you must do after the update. The technical reports are in [docs/changes/](changes/) (one file for each branch, `r0-*.md`). The changes of the second round are in [Second round (r1)](#second-round-r1).
 
 ## What you must do after the update
 
@@ -14,6 +14,8 @@ This is the plain-language list of the changes from the review (13 branches, `si
 8. **Integrations:** read [Integrations: changes to /api/v1 after 78ef2d8](#integrations-changes-to-apiv1-after-78ef2d8) at the end of this file. Scripts must use the stable values (`check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`), not the health line or the finding messages.
 9. **Findings on Linux servers:** the IDs of S3 to S7 findings keep the case of the path now. After the update, such findings resolve and open again one time (one resolved message and one urgent message for S3). Snoozes and ignores on the old IDs do not apply to the new IDs.
 10. **Watcher errors:** an open H4 finding that was only a file watcher error resolves at the update and opens again as a WARNING after 1 hour.
+11. W-063
+12. W-015
 
 ## Security
 
@@ -43,7 +45,7 @@ This is the plain-language list of the changes from the review (13 branches, `si
 
 - After a restart, open findings stay open and show `stale` until syncwatch contacted the server. Before, H1 and H3 resolved at each restart and opened again with a new urgent message.
 - Structure findings stay stale until the first scan after a start, and while the listing of their share fails. Before, they resolved and opened again (with messages).
-- While one server is unreachable, the cross-server findings (H7, C2, H8, X1, X2, C1) of the other servers continue. Before, one unreachable server stopped all of them.
+- While one server is unreachable, the cross-server findings H8, X1, X2 and C1 of the other servers continue. Before, one unreachable server stopped all of them. H7 and C2 wait until syncwatch can reach every server of the PC again (r1).
 - A removed or disabled server closes its findings without a message. The history says why.
 - A higher threshold no longer closes findings that are open.
 - A finding ID that is not open, and not resolved in the last 90 days, cannot be snoozed or ignored. Ignores end 90 days after the finding resolved.
@@ -125,6 +127,50 @@ This is the plain-language list of the changes from the review (13 branches, `si
 
 - The README, plan.md, the examples and the comments in the Dockerfile and the workflows follow the STE style guide of the review. The check titles, the page names and the labels are the names of the product text rewrite: Findings page, administrator, urgent message, settings notice, full check, structure scan, pinned certificate, ERROR, WARNING, INFO.
 
+## Second round (r1)
+
+
+
+**Findings**
+
+- W-001
+- W-002
+- W-013
+- W-003
+- W-005
+- W-009, W-010
+- W-022
+- W-041, W-037
+- W-012
+- integrator
+
+**Notifications**
+
+- W-006, W-007
+- W-014
+- W-018
+- W-024
+- W-023
+- HEALTH
+- W-039, W-008
+
+**Dashboard and Settings**
+
+- W-011
+- W-004
+- W-019
+- W-016
+- W-017, W-032
+- W-030
+- W-026
+
+**Gate, collector, log and command line**
+
+- W-009, W-028, W-029
+- integrator
+- W-025, W-031, W-030
+- W-042
+
 ## Integrations: changes to /api/v1 after 78ef2d8
 
 This list is for scripts, Home Assistant and other programs that read `GET /api/v1/status` or `GET /api/v1/ha`. `78ef2d8` is the version before the review. Use the stable values: `check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`, and the status values. The texts for persons (the health line, `findings[].message`) can change in each version.
@@ -154,7 +200,7 @@ Changes of the first round (r0) and of the text rewrite:
 
 Changes of the second round (r1):
 
-9. **`health_counts`** (new) has the numbers of the health line: `servers`, `servers_up`, `servers_disabled`, `pcs`, `pcs_offline` and `pcs_unknown`. A PC is offline only when each server that knows the PC is up. Else the PC is unknown.
+9.  A PC is offline only when each server that knows the PC is up. Else the PC is unknown.
 10. **Disabled servers.** `servers[]` also lists the disabled servers, with `status` `disabled`. `devices[]` marks their device IDs as servers (`server: true`), not as PCs. Before, a disabled server was not in `servers[]` and counted as a PC.
 11. **`servers[].folders.stale`** is `true` when the server is not up (unreachable, not contacted or with a changed certificate). The folder counts are then the last known state.
 12. **`findings[].ignored`** and **`counts.ignored`** (new). `findings[].snoozed` and `counts.snoozed` do not change: they include the ignored findings.
