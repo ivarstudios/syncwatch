@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
 // An api.token in an imported file (the 2 steps of fixer 1) becomes the
@@ -41,5 +44,36 @@ func TestImportedAPITokenIsTheAPITokenNamedAPIToken(t *testing.T) {
 	tokens, err := e.st.APITokens()
 	if err != nil || len(tokens) != 1 || tokens[0].Name != "API token" || tokens[0].Scope != "full" {
 		t.Fatalf("API tokens after the import: %+v %v", tokens, err)
+	}
+}
+
+// The line of the import notice for api.token follows the rule of the import
+// itself (settings.ImportSecrets): "replaced" only when an API token named
+// "API token" exists. A secret api.token of an older version that the store
+// did not move (a downgrade made it after the migration) does not count: the
+// import adds the API token "API token" next to it. The CLI uses the same
+// rule (internal/app).
+func TestImportTokenLineFollowsTheImportRule(t *testing.T) {
+	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1"}]`)
+	if _, err := e.st.AddAPIToken("Home Assistant", "ha", "swt_ha_value", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.SetSecret(store.SecretAPIToken, "swt_old_version"); err != nil {
+		t.Fatal(err)
+	}
+	csrf := e.csrf("/settings")
+	if msg, isErr := impFile(e, csrf, "servers: [{name: AKKA, url: 'https://a:1'}]\napi: {token: swt_imported_value}\n", nil); isErr {
+		t.Fatalf("import: %s", msg)
+	}
+	if n := e.noticesText(); !strings.Contains(n, `The API token "API token" is added.`) {
+		t.Fatalf("import notice: %q", n)
+	}
+	tokens, _ := e.st.APITokens()
+	var names []string
+	for _, tok := range tokens {
+		names = append(names, tok.Name+"/"+tok.Scope)
+	}
+	if strings.Join(names, ",") != "Home Assistant/ha,API token/full" {
+		t.Fatalf("API tokens after the import: %v", names)
 	}
 }

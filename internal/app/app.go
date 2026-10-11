@@ -312,18 +312,11 @@ func importChanges(st *store.Store, old, c *config.Config) []string {
 }
 
 // hasLegacyToken reports whether an API token has the name of the single API
-// token of an older version (names are unique without regard to case).
+// token of an older version: the API token whose value an imported api.token
+// replaces (settings.ImportSecrets uses the same lookup).
 func hasLegacyToken(st *store.Store) bool {
-	tokens, err := st.APITokens()
-	if err != nil {
-		return false
-	}
-	for _, t := range tokens {
-		if strings.EqualFold(t.Name, store.LegacyTokenName) {
-			return true
-		}
-	}
-	return false
+	t, err := st.APITokenByName(store.LegacyTokenName)
+	return err == nil && t != nil
 }
 
 // keyCLINotice is the prefix of the settings that keep a settings notice for

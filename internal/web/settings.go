@@ -1532,15 +1532,14 @@ func (s *Server) confirmImport(w http.ResponseWriter, r *http.Request, info requ
 // API token "API token" (contract with fixer 5).
 const legacyTokenName = `API token "` + store.LegacyTokenName + `"`
 
-// hasLegacyToken reports whether the API token "API token" exists: a row of
-// api_tokens with that name, or the single API token of an older version
-// (the store moves it into that row at the next start).
+// hasLegacyToken reports whether the API token "API token" exists: the API
+// token whose value an imported api.token replaces (settings.ImportSecrets
+// uses the same lookup). A secret api.token of an older version that the
+// store did not move (it cannot be decrypted) does not count: the import
+// adds the API token "API token" next to it.
 func (s *Server) hasLegacyToken() bool {
-	if s.st.HasSecret(store.SecretAPIToken) {
-		return true
-	}
-	tokens, _ := s.st.APITokens()
-	return slices.ContainsFunc(tokens, func(t store.APIToken) bool { return strings.EqualFold(t.Name, store.LegacyTokenName) })
+	t, err := s.st.APITokenByName(store.LegacyTokenName)
+	return err == nil && t != nil
 }
 
 // applyImport stores the secrets of the file c, saves c as the configuration
