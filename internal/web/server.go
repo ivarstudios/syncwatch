@@ -324,8 +324,9 @@ type pageData struct {
 
 // deliveryAlert is the banner shown while notifications are failing.
 type deliveryAlert struct {
-	Since string
-	Error string // only for admins
+	Since   string
+	Error   string // only for admins
+	NextTry string // the time of the next try (21:52); "" when it is not known or not in the future
 }
 
 func (s *Server) alert(info requestInfo) *deliveryAlert {
@@ -337,6 +338,11 @@ func (s *Server) alert(info requestInfo) *deliveryAlert {
 		return nil
 	}
 	a := &deliveryAlert{Since: s.fmtTime(d.Since)}
+	// A try time that passed is the next tick of the notifier: the banner
+	// then says "automatically" (it refreshes every minute).
+	if d.NextTry.After(s.now()) {
+		a.NextTry = s.fmtClock(d.NextTry)
+	}
 	if info.Role == RoleAdmin {
 		a.Error = d.Error
 	}

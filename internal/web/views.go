@@ -35,6 +35,20 @@ func (s *Server) fmtTime(t time.Time) string {
 	return t.In(s.cfg.Get().Location()).Format("2006-01-02 15:04")
 }
 
+// fmtClock writes a time of today (in the configured zone) as 21:52, and
+// another time as fmtTime does. The rule of the gap line (C6): the date shows
+// only when it is not today.
+func (s *Server) fmtClock(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	loc := s.cfg.Get().Location()
+	if lt := t.In(loc); lt.Format("2006-01-02") == s.now().In(loc).Format("2006-01-02") {
+		return lt.Format("15:04")
+	}
+	return s.fmtTime(t)
+}
+
 func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow {
 	now := s.now()
 	var out []problemRow

@@ -218,12 +218,15 @@ func TestConnectionLossShipped(t *testing.T) {
 }
 
 // The notification banner is true when Discord itself fails: syncwatch tries
-// again, and only a refused webhook needs a new URL.
+// again (at the time of the next try, W-040), and only a refused webhook
+// needs a new URL.
 func TestNotificationBannerText(t *testing.T) {
-	e := adminEnv(t, twoServers+"access: {viewer: open}\n")
-	e.setDelivery(notify.Delivery{Failing: true, Since: time.Now(), Error: "discord: HTTP 500"})
+	e := adminEnv(t, twoServers+"access: {viewer: open}\ntimezone: Europe/Stockholm\n")
+	now := time.Date(2026, 10, 11, 21, 50, 0, 0, time.UTC) // 23:50 in Stockholm
+	e.web.now = func() time.Time { return now }
+	e.setDelivery(notify.Delivery{Failing: true, Since: now.Add(-6 * time.Minute), Error: "discord: HTTP 500"})
 	_, body := e.get("/")
-	if !strings.Contains(body, "syncwatch tries again automatically. If Discord refuses the webhook (HTTP 401, 403 or 404), type a new webhook URL in <a href=\"/settings#notifications\">") {
+	if !strings.Contains(body, "✖ <strong>Notifications fail</strong> from 2026-10-11 23:44: discord: HTTP 500. syncwatch tries again automatically. If Discord refuses the webhook (HTTP 401, 403 or 404), type a new webhook URL in <a href=\"/settings#notifications\">") {
 		t.Error("admin banner text")
 	}
 	if strings.Contains(body, "until you correct this") {
@@ -234,6 +237,16 @@ func TestNotificationBannerText(t *testing.T) {
 	anon.Body.Close()
 	if !strings.Contains(string(b), "an administrator must type a new webhook URL in Settings → Notifications.") {
 		t.Error("viewer banner text")
+	}
+	// The next try today shows the time; after midnight, also the date.
+	for try, want := range map[time.Time]string{
+		now.Add(2 * time.Minute):  "syncwatch tries again at 23:52. If Discord refuses the webhook",
+		now.Add(16 * time.Minute): "syncwatch tries again at 2026-10-12 00:06. If Discord refuses the webhook",
+	} {
+		e.setDelivery(notify.Delivery{Failing: true, Since: now.Add(-6 * time.Minute), Error: "discord: HTTP 500", NextTry: try})
+		if _, body := e.get("/frag/alert"); !strings.Contains(body, want) {
+			t.Errorf("next try %v: want %q in %s", try, want, body)
+		}
 	}
 }
 
