@@ -717,12 +717,22 @@ func perFolder(err error) bool {
 }
 
 // serverLevel reports whether an error from a per-folder request means the
-// server itself is in trouble: a transport error or timeout, or 401/403,
-// which the key gets on every request. Any other HTTP status concerns only
-// that folder or device.
+// server itself is in trouble: a transport error or timeout, 401/403, which
+// the key gets on every request, or a gate failure (see gateFailure). Any
+// other HTTP status concerns only that folder or device.
 func serverLevel(err error) bool {
 	var se *stclient.StatusError
-	return !errors.As(err, &se) || se.Code == 401 || se.Code == 403
+	return !errors.As(err, &se) || se.Code == 401 || se.Code == 403 || gateFailure(se)
+}
+
+// gateFailure reports whether a read-only gate, not Syncthing, gave the
+// answer because of a problem of the whole server: Syncthing is unreachable
+// or refused the gate's API key (5xx), or this client has too many parallel
+// requests (429). Such an answer says nothing about the folder in the
+// request. A 5xx from Syncthing itself has no gate prefix and stays a folder
+// problem.
+func gateFailure(se *stclient.StatusError) bool {
+	return strings.HasPrefix(se.Body, "syncwatch gate:") && (se.Code == 429 || se.Code >= 500)
 }
 
 // paused404 reports whether err is the 404 "folder is paused" Syncthing
