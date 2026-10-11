@@ -2,6 +2,7 @@ package web
 
 import (
 	"html"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -30,6 +31,12 @@ func TestConfigChanges(t *testing.T) {
 			[]string{"The API URL of the server AKKA changed from https://a:1 to https://a:2.", "The server NEW is added (API URL https://c:1).", "The server SOL is removed."}},
 		{"checks both ways", base + "checks: {H1: {enabled: false}, S1: {debounce: 30d}}\n", base + "checks: {H4: {urgent: false}, S1: {urgent: true}}\n",
 			[]string{"The check H1 (Server unreachable) is enabled.", "The check H4 (Folder sync stopped) does not send urgent messages now.", "The check S1 (Syncthing folder inside another) waits 5 minutes instead of 30 days before an urgent message."}},
+		// RT-1: the debounce of a check that sends no urgent messages
+		// delays no message.
+		{"debounce of a check that is not urgent", base, base + "checks: {H7: {debounce: 0s}}\n",
+			[]string{"The check H7 (PC offline) does not send urgent messages. Its debounce changed from 5 minutes to 0 seconds."}},
+		{"debounce of a check that becomes urgent", base, base + "checks: {H7: {urgent: true, debounce: 1h}}\n",
+			[]string{"The check H7 (PC offline) now sends urgent messages.", "The check H7 (PC offline) waits 60 minutes instead of 5 minutes before an urgent message."}},
 		{"thresholds and collector", base, base + "thresholds: {pc_offline: 2d}\ncollector: {mode: polled, down_after_failures: 5}\n",
 			[]string{"Mark unreachable after failures: 2 → 5", "Collector mode: events → polled", "H7 PC offline for more than: 7d → 2d"}},
 		{"notifications", base + "notifications: {discord_role_id: '420000000000000000'}\n", base + "notifications: {quiet_hours: 'off', weekly_top: 5}\ntimezone: Europe/Stockholm\npublic_url: 'http://dash.invalid'\n",
@@ -37,10 +44,10 @@ func TestConfigChanges(t *testing.T) {
 		// share_type_from_path names the group that share_must_have refers to
 		// (required since r0-g's placement validation).
 		{"structure and shares", base, base + "structure: {project_pattern: '^LIVE-', ignore_dirs: ['@*'], share_type_from_path: '/(?P<me>me)?/', placement: [{when_name_matches: '^LIVE-', share_must_have: {me: 'false'}}]}\nshares: {add: {AKKA: [/x/LIVE-1]}}\n",
-			[]string{"shares.add.AKKA: added /x/LIVE-1", "structure.ignore_dirs: removed .*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found",
-				"structure.placement[0].share_must_have.me: (none) → false", "structure.placement[0].when_name_matches: (none) → ^LIVE-", "structure.project_pattern: (none) → ^LIVE-", "structure.share_type_from_path: (none) → /(?P<me>me)?/"}},
+			[]string{"Shares to add for AKKA (shares.add): added /x/LIVE-1", "Structure rules (ignore_dirs): removed .*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found",
+				"Structure rules (placement[0].share_must_have.me): (none) → false", "Structure rules (placement[0].when_name_matches): (none) → ^LIVE-", "Structure rules (project_pattern): (none) → ^LIVE-", "Structure rules (share_type_from_path): (none) → /(?P<me>me)?/"}},
 		{"access", base, base + "access: {mode: proxy, viewer: open, session_ttl: 1d}\n",
-			[]string{"Built-in login is off (proxy mode). Each person who can reach syncwatch is an administrator.", "access.session_ttl: 30d → 1d", "Viewer access: administrator only → open (no login)"}},
+			[]string{"Built-in login is off (proxy mode). Each person who can reach syncwatch is an administrator.", "Access (session_ttl): 30d → 1d", "Viewer access: administrator only → open (no login)"}},
 	} {
 		got := configChanges(parse(tc.old), parse(tc.new))
 		if len(got) != len(tc.want) {
@@ -132,7 +139,7 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 	expect("check on again", "S7 (", "is enabled.")
 
 	post("/settings/structure", url.Values{"yaml": {"structure: {project_pattern: '^LIVE-', ignore_dirs: ['@*']}"}})
-	expect("structure", "Structure rules changed", "structure.project_pattern: (none) → ^LIVE-", "structure.ignore_dirs: removed .*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found")
+	expect("structure", "Structure rules changed", "Structure rules (project_pattern): (none) → ^LIVE-", "Structure rules (ignore_dirs): removed .*, #recycle, #snapshot, $RECYCLE.BIN, System Volume Information, lost+found")
 	_, body := e.get("/settings")
 	i := strings.Index(body, `name="yaml"`)
 	j := strings.Index(body[i:], "</textarea>")
@@ -151,8 +158,11 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 
 	// The API token steps are TestAPITokenChangesAreAnnounced (api_test.go):
 	// the API token of twoServers is still set here.
-	post("/settings/import", url.Values{"yaml": {"servers: [{name: Akka, id: akka, url: 'https://a:1', api_key: k3}, {name: SOL, url: 'https://b:1'}]\nthresholds: {paused: 1d}\napi: {token: swt_imported_token}\n"}})
-	expect("import", "Configuration imported", "H6 paused for more than: 3d → 1d", "The API token is replaced.", "The API key of the server Akka is replaced.")
+	// The import has 2 steps: the preview changes nothing (W-055).
+	if msg, isErr := impFile(e, csrf, "servers: [{name: Akka, id: akka, url: 'https://a:1', api_key: k3}, {name: SOL, url: 'https://b:1'}]\nthresholds: {paused: 1d}\napi: {token: swt_imported_token}\n", nil); isErr {
+		t.Fatalf("import: %s", msg)
+	}
+	expect("import", "Configuration imported", "H6 paused for more than: 3d → 1d", `The API token "API token" is replaced.`, "The API key of the server Akka is replaced.")
 	if n := e.noticeList()[seen-1]; strings.Contains(n, "k3") || strings.Contains(n, "swt_imported") {
 		t.Fatalf("import notice shows a secret: %q", n)
 	}
@@ -198,11 +208,13 @@ func TestHidingUrgentProblemsIsAnnounced(t *testing.T) {
 // In proxy mode no admin password may exist. A file without an access
 // section switches built-in login on, which would lock everyone out (the
 // setup token is only logged at a start in built-in mode), so it is refused.
+// The refusal comes at once, without a preview: no field of the preview can
+// change it.
 func TestImportCannotLockEveryoneOut(t *testing.T) {
 	e := newEnv(t, twoServers+"access: {mode: proxy}\n")
 	csrf := e.csrf("/settings")
 	imp := func(yaml string) (string, bool) {
-		return flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {yaml}}))
+		return impFile(e, csrf, yaml, nil)
 	}
 	file := "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\n"
 	if msg, isErr := imp(file); !isErr || !strings.Contains(msg, "administrator password") {
@@ -379,7 +391,11 @@ func TestSettingsForms(t *testing.T) {
 	if strings.Contains(exp, "k3") || strings.Contains(exp, "secret") || !strings.Contains(exp, "SIRIUS") {
 		t.Fatalf("export: %s", exp)
 	}
-	r = e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {exp}})
+	resp, _, id := impPreview(e, csrf, exp)
+	if resp.StatusCode != http.StatusOK || id == "" {
+		t.Fatalf("import preview: %d", resp.StatusCode)
+	}
+	r, _ = impConfirm(e, csrf, id, nil)
 	if !strings.Contains(r.Header.Get("Location"), "#import") {
 		t.Fatal("import redirect")
 	}
@@ -389,8 +405,8 @@ func TestSettingsForms(t *testing.T) {
 	// The API token part is TestAPITokenGenerateForm (api_test.go).
 }
 
-// The Servers form has no site field yet: a save keeps the site that an
-// import set.
+// A form without the site input (a script for an older version) keeps the
+// site of the server.
 func TestServerFormKeepsSite(t *testing.T) {
 	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: secret-key-akka, site: IVAR Office}, {name: SOL, url: "https://b:1"}]`)
 	csrf := e.csrf("/settings")

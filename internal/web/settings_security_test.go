@@ -188,7 +188,9 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 	if msg, _ := flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {"servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\nchecks: {H3: {enabled: false}}\nnotifications: {discord_webhook: 'https://evil.example/hook'}\n"}})); !strings.Contains(msg, "discord_webhook") {
 		t.Fatalf("import with an internal webhook: %q", msg)
 	}
-	e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {"servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\nchecks: {H3: {enabled: false}}\n"}})
+	if msg, isErr := impFile(e, csrf, "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\nchecks: {H3: {enabled: false}}\n", nil); isErr {
+		t.Fatalf("import: %s", msg)
+	}
 	if n := e.noticesText(); !strings.Contains(n, "The check H3 (Server certificate changed) is disabled.") {
 		t.Fatalf("import notice: %q", n)
 	}
@@ -197,11 +199,17 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 func TestImportCannotRedirectKeys(t *testing.T) {
 	e := adminEnv(t, twoServers)
 	csrf := e.csrf("/settings")
+	// The imports below remove servers: the checkbox and the administrator
+	// password confirm it in step 2 (W-055).
 	imp := func(yaml string) string {
-		msg, _ := flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "yaml": {yaml}}))
+		msg, _ := impFile(e, csrf, yaml, url.Values{"delete_servers": {"on"}, "confirm": {"correct horse battery"}})
 		return msg
 	}
 	// AKKA moves to another host without an api_key in the file; SOL is dropped.
+	// The preview says that AKKA needs its API key again.
+	if _, body, _ := impPreview(e, csrf, "servers: [{name: AKKA, url: 'https://evil.example:8384'}]\n"); !strings.Contains(body, "The API URL of the server AKKA changes. Type the API key again for AKKA.") {
+		t.Fatalf("preview: %s", section(t, body, "import"))
+	}
 	if msg := imp("servers: [{name: AKKA, url: 'https://evil.example:8384'}]\n"); !strings.Contains(msg, "Type the API key again for AKKA") {
 		t.Fatalf("import message: %q", msg)
 	}
@@ -225,8 +233,9 @@ func TestImportCannotRedirectKeys(t *testing.T) {
 		t.Fatal("key not usable at its own URL")
 	}
 	// Switching login off by import is announced too.
-	e.post("/settings/import", url.Values{"csrf": {csrf}, "confirm": {"correct horse battery"},
-		"yaml": {"servers: [{name: AKKA, url: 'https://a:1'}]\naccess: {mode: proxy}\n"}})
+	if msg, isErr := impFile(e, csrf, "servers: [{name: AKKA, url: 'https://a:1'}]\naccess: {mode: proxy}\n", url.Values{"confirm": {"correct horse battery"}}); isErr {
+		t.Fatalf("import to proxy mode: %s", msg)
+	}
 	if !strings.Contains(e.noticesText(), "Built-in login is off") {
 		t.Fatalf("notices: %q", e.noticesText())
 	}
@@ -269,13 +278,20 @@ func TestWeakeningAccessNeedsAdminPassword(t *testing.T) {
 		t.Fatalf("closing viewing: %q %v", msg, isErr)
 	}
 
-	// Import: refused before anything from the file is stored.
+	// Import: refused before anything from the file is stored. The preview
+	// asks for the password; step 2 checks it (W-055).
 	imp := func(confirm, yaml string) (string, bool) {
-		return flash(e.post("/settings/import", url.Values{"csrf": {csrf}, "confirm": {confirm}, "yaml": {yaml}}))
+		return impFile(e, csrf, yaml, url.Values{"confirm": {confirm}})
 	}
-	file := "servers: [{name: AKKA, url: 'https://a:1'}]\naccess: {mode: proxy}\napi: {token: swt_from_the_file}\n"
-	if msg, isErr := imp("", file); !isErr || !strings.Contains(msg, "Not imported") {
-		t.Fatalf("import to proxy mode without the password: %q %v", msg, isErr)
+	file := "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\naccess: {mode: proxy}\napi: {token: swt_from_the_file}\n"
+	if _, body, _ := impPreview(e, csrf, file); !strings.Contains(section(t, body, "import"), `name="confirm"`) ||
+		!strings.Contains(body, "Built-in login is off (proxy mode). Each person who can reach syncwatch is an administrator.") {
+		t.Fatalf("the preview does not ask for the password: %s", section(t, body, "import"))
+	}
+	for _, confirm := range []string{"", "wrong password"} {
+		if msg, isErr := imp(confirm, file); !isErr || !strings.Contains(msg, "Not imported") || !strings.Contains(msg, "administrator password") {
+			t.Fatalf("import to proxy mode with the password %q: %q %v", confirm, msg, isErr)
+		}
 	}
 	if e.hasAPIToken("swt_from_the_file") {
 		t.Fatal("secret from a refused import was stored")
@@ -283,7 +299,7 @@ func TestWeakeningAccessNeedsAdminPassword(t *testing.T) {
 	if e.cfg.Get().Access.Mode != "builtin" || len(e.cfg.Get().Servers) != 2 {
 		t.Fatal("refused import changed the configuration")
 	}
-	if msg, isErr := imp("", "servers: [{name: AKKA, url: 'https://a:1'}]\n"); isErr {
+	if msg, isErr := imp("", "servers: [{name: AKKA, url: 'https://a:1'}, {name: SOL, url: 'https://b:1'}]\n"); isErr {
 		t.Fatalf("import that keeps access as it is: %q", msg)
 	}
 	if msg, isErr := imp("correct horse battery", file); isErr || e.cfg.Get().Access.Mode != "proxy" {

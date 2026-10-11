@@ -1,6 +1,6 @@
 {{define "settings"}}{{template "head" .}}{{$d := .Data}}{{$csrf := .CSRF}}{{$cfg := $d.Cfg}}{{$f := $d.Form}}{{$bad := $d.Bad}}
 <nav class="subnav" aria-label="Settings sections">
-  <a href="#servers">Servers</a><a href="#notifications">Notifications</a><a href="#checks">Checks</a>
+  <a href="#servers">Servers</a><a href="#devices">Devices</a><a href="#notifications">Notifications</a><a href="#checks">Checks</a>
   <a href="#structure">Structure</a><a href="#collector">Collector</a><a href="#access">Access</a><a href="#api">API</a><a href="#import">Export and import</a>
 </nav>
 
@@ -30,6 +30,7 @@
       <label>Name <input name="name" value="{{.Name}}" required></label>
       <label>API URL <input name="url" value="{{.URL}}" placeholder="https://192.168.1.10:8384" required></label>
       <label>GUI URL for links (optional) <input name="gui_url" value="{{.GUIURL}}"></label>
+      <label>Site (optional) <input name="site" value="{{.Site}}" list="site-names" placeholder="IVAR Office" autocomplete="off"></label>
       <label>API key {{if .KeyLost}}<span class="c-err">(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)</span>{{else if .HasKey}}<span class="muted">(Set. Keep the field empty to keep the API key. A new URL needs the API key again.)</span>{{else if .KeyForOtherURL}}<span class="c-err">(The API key is for a different URL. Type it again.)</span>{{else}}<span class="c-err">(not set)</span>{{end}} <input type="password" name="api_key" autocomplete="off"></label>
       <p class="small">ID <code>{{.ID}}</code> · certificate {{if .PinShort}}<span class="mono">{{.PinShort}}</span>{{else}}not pinned{{end}}</p>
       <label class="check"><input type="checkbox" name="reset_pin"> Remove the pinned certificate (syncwatch accepts the next certificate on first use)</label>
@@ -50,21 +51,54 @@
       <label>Name <input name="name" required placeholder="AKKA"></label>
       <label>API URL <input name="url" required placeholder="https://192.168.1.10:8384"></label>
       <label>GUI URL for links (optional) <input name="gui_url"></label>
+      <label>Site (optional) <input name="site" list="site-names" placeholder="IVAR Office" autocomplete="off"></label>
       <label>API key <input type="password" name="api_key" required autocomplete="off"></label>
       <label class="check"><input type="checkbox" name="allow_http"> Permit a plain http:// URL (sends the API key unencrypted)</label>
       <div class="actions"><button type="submit">Add server</button></div>
     </form>
   </details>
+  <datalist id="site-names">{{range $d.Sites}}<option value="{{.}}">{{end}}</datalist>
+</section>
+
+<section class="card" id="devices">
+  <h2>Devices</h2>
+  <p class="muted">For a device that connects only through a relay: syncwatch does not report H11 for it. H12 opens when the device has no connection for more than {{$d.RelayLost}}.</p>
+  {{if $d.Devices}}
+  <form method="post" action="/settings/devices">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
+    <div class="scroll">
+    <table class="list">
+      <thead><tr><th>Device</th><th>Device ID</th><th>State</th><th>Relay</th></tr></thead>
+      <tbody>
+      {{range $d.Devices}}
+      <tr><td>{{.Name}}</td><td class="mono">{{.Short}}</td><td>{{.State}}</td>
+        <td><label class="check"><input type="checkbox" name="relay" value="{{.ID}}" {{if .Relay}}checked{{end}}> Always connects through a relay</label></td></tr>
+      {{end}}
+      </tbody>
+    </table>
+    </div>
+    <div class="actions"><button type="submit">Save devices</button></div>
+  </form>
+  {{else}}
+  <p>There are no PCs. syncwatch shows the PCs after the first full check of a server.</p>
+  {{end}}
 </section>
 
 <section class="card" id="notifications">
   <h2>Notifications</h2>
+  {{with $d.NoticesKept}}<p class="c-err">{{plural . "settings notice waits" "settings notices wait"}} for a channel that accepts {{if eq . 1}}it{{else}}them{{end}}.</p>{{end}}
   <form method="post" action="/settings/notifications" class="grid-form">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label{{if index $bad "discord_webhook"}} class="c-err"{{end}}>Discord webhook URL {{if $d.WebhookLost}}<span class="c-err">(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)</span>{{else if $d.HasWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
       <input type="password" name="discord_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"{{if index $bad "discord_webhook"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     {{if $d.HasWebhook}}<label class="check"><input type="checkbox" name="discord_webhook_clear" {{if eq (index $f "discord_webhook_clear") "on"}}checked{{end}}> Remove the webhook</label>{{end}}
+    <label{{if index $bad "discord_notices_webhook"}} class="c-err"{{end}}>Discord webhook for settings notices (optional) {{if $d.NoticesWebhookLost}}<span class="c-err">(Set, but syncwatch cannot decrypt it: the secret key changed. Type it again or restore the old secret key.)</span>{{else if $d.HasNoticesWebhook}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{else}}<span class="muted">(not set)</span>{{end}}
+      <input type="password" name="discord_notices_webhook" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"{{if index $bad "discord_notices_webhook"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    {{if $d.HasNoticesWebhook}}<label class="check"><input type="checkbox" name="discord_notices_webhook_clear" {{if eq (index $f "discord_notices_webhook_clear") "on"}}checked{{end}}> Remove the webhook for settings notices</label>{{end}}
+    <p class="small muted">Settings notices go to this webhook. Without it, they go to the webhook above.</p>
     <label{{if index $bad "discord_role_id"}} class="c-err"{{end}}>Role to mention in urgent messages (role ID) <input name="discord_role_id" value="{{index $f "discord_role_id"}}" inputmode="numeric" placeholder="123456789012345678"{{if index $bad "discord_role_id"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "repeat_urgent"}} class="c-err"{{end}}>Repeat urgent messages <select name="repeat_urgent"{{if index $bad "repeat_urgent"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}>{{range $d.RepeatOptions}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}</select></label>
+    <p class="small muted">syncwatch sends the urgent message again while an ERROR finding of a server stays open. Not in the quiet hours.</p>
     <label{{if index $bad "quiet_hours"}} class="c-err"{{end}}>Quiet hours (HH:MM-HH:MM or off) <input name="quiet_hours" value="{{index $f "quiet_hours"}}"{{if index $bad "quiet_hours"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "reminder_time"}} class="c-err"{{end}}>Daily reminder (HH:MM or off) <input name="reminder_time" value="{{index $f "reminder_time"}}"{{if index $bad "reminder_time"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "weekly_day"}} class="c-err"{{end}}>Weekly report day <select name="weekly_day"{{if index $bad "weekly_day"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}>{{range $d.Weekdays}}<option {{if eq . (index $f "weekly_day")}}selected{{end}}>{{.}}</option>{{end}}</select></label>
@@ -72,10 +106,15 @@
     <label{{if index $bad "weekly_top"}} class="c-err"{{end}}>Findings listed in the weekly report <input type="number" name="weekly_top" min="1" max="50" value="{{index $f "weekly_top"}}"{{if index $bad "weekly_top"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "timezone"}} class="c-err"{{end}}>Time zone <input name="timezone" value="{{index $f "timezone"}}" placeholder="Europe/Stockholm"{{if index $bad "timezone"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "public_url"}} class="c-err"{{end}}>Dashboard URL for links in messages <input name="public_url" value="{{index $f "public_url"}}" placeholder="http://192.168.1.10:8080"{{if index $bad "public_url"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "site"}} class="c-err"{{end}}>Site where syncwatch runs (optional) <input name="site" value="{{index $f "site"}}" list="site-names" placeholder="IVAR Office" autocomplete="off"{{if index $bad "site"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <p class="small muted">syncwatch names the sites in messages, for example: unreachable from IVAR Office.</p>
     {{with index $d.Errors "notifications"}}<p id="notifications-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
     <div class="actions"><button type="submit">Save</button></div>
   </form>
-  <form method="post" action="/settings/notifications/test"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
+  <div class="actions">
+    <form method="post" action="/settings/notifications/test" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
+    {{if $d.HasNoticesWebhook}}<form method="post" action="/settings/notifications/test-notices" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test settings notice</button></form>{{end}}
+  </div>
   {{if $d.Log}}
   <details data-key="notify-log"><summary>Recent notifications</summary>
     <table class="list small"><thead><tr><th>Time</th><th>Type</th><th>Channel</th><th>Result</th><th>Title</th></tr></thead><tbody>
@@ -113,6 +152,7 @@
       <label{{if index $bad "paused"}} class="c-err"{{end}}>H6 paused for more than <input name="paused" value="{{index $f "paused"}}"{{if index $bad "paused"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
       <label{{if index $bad "pc_offline"}} class="c-err"{{end}}>H7 PC offline for more than <input name="pc_offline" value="{{index $f "pc_offline"}}"{{if index $bad "pc_offline"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
       <label{{if index $bad "conflict_window"}} class="c-err"{{end}}>H10 conflicts in the last <input name="conflict_window" value="{{index $f "conflict_window"}}"{{if index $bad "conflict_window"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
+      <label{{if index $bad "relay_lost"}} class="c-err"{{end}}>H12 no relay connection for more than <input name="relay_lost" value="{{index $f "relay_lost"}}"{{if index $bad "relay_lost"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
       <label{{if index $bad "inactive_project"}} class="c-err"{{end}}>C1 no file change for <input name="inactive_project" value="{{index $f "inactive_project"}}"{{if index $bad "inactive_project"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
       <label{{if index $bad "old_device"}} class="c-err"{{end}}>C2 device not seen for <input name="old_device" value="{{index $f "old_device"}}"{{if index $bad "old_device"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
       <label{{if index $bad "dead_share"}} class="c-err"{{end}}>C3 folder not used by device after <input name="dead_share" value="{{index $f "dead_share"}}"{{if index $bad "dead_share"}} aria-invalid="true" aria-describedby="checks-error"{{end}}></label>
@@ -165,6 +205,7 @@
       <option value="password" {{if eq $cfg.Access.Viewer "password"}}selected{{end}}>with the viewer password</option>
       <option value="open" {{if eq $cfg.Access.Viewer "open"}}selected{{end}}>open, without login</option>
     </select></label>
+    <p class="small muted">With open access, each person who can reach syncwatch sees the dashboard: the names of servers, PCs and folders, the folder paths and the findings. The JSON API needs an API token or a login.</p>
     <label>Viewer password {{if $d.HasViewerPW}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{end}} <input type="password" name="viewer_password" autocomplete="new-password"></label>
     <label>Administrator password <span class="muted">(this change permits access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
     <div class="actions"><button type="submit">Save access</button></div>
@@ -183,15 +224,40 @@
 
 <section class="card" id="import">
   <h2>Export and import</h2>
-  <p><a href="/settings/export">Download the configuration as YAML</a> (without the API keys, the webhook URL and the API token).</p>
-  <form method="post" action="/settings/import" enctype="multipart/form-data" data-confirm="Replace the complete configuration with the imported file?">
+  {{with $d.ImportPreview}}
+  <h3 id="import-preview" tabindex="-1"{{if not .Error}} autofocus{{end}}>Preview of the import</h3>
+  <p>syncwatch did not change the configuration. The import replaces the complete configuration. Read the changes below. Then select Import or Cancel.</p>
+  {{if .Sections}}<p><strong>Sections that the file changes:</strong> {{join .Sections ", "}}.</p>{{else}}<p>The file changes no settings.</p>{{end}}
+  {{if .Defaults}}<p><strong>Not in the file:</strong> syncwatch sets these sections to their default values.</p>
+  <ul>{{range .Defaults}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{if .Removed}}<p class="c-err"><strong>Servers that the import removes:</strong></p>
+  <ul>{{range .Removed}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{if .KeyAgain}}<p><strong>API keys:</strong></p>
+  <ul>{{range .KeyAgain}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{if .Secrets}}<p><strong>Secrets in the file:</strong> {{join .Secrets ", "}}. syncwatch encrypts them. This page does not show them.</p>{{else}}<p>The file has no secrets. The stored secrets stay as they are.</p>{{end}}
+  {{if .Weakens}}<p class="c-err"><strong>The file gives access to more people:</strong></p>
+  <ul>{{range .Weakens}}<li>{{.}}</li>{{end}}</ul>{{end}}
+  {{if .Changes}}<details data-key="import-changes"><summary>All changes ({{len .Changes}})</summary>
+    <ul class="small">{{range .Changes}}<li>{{.}}</li>{{end}}</ul>
+  </details>{{end}}
+  <form method="post" action="/settings/import" class="grid-form">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}"><input type="hidden" name="import_id" value="{{.ID}}">
+    {{with .DeleteLabel}}<label class="check"><input type="checkbox" name="delete_servers"> {{.}}</label>{{end}}
+    {{if .NeedPassword}}<label>Administrator password <span class="muted">(necessary to remove servers or to give access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>{{end}}
+    {{with .Error}}<p id="import-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
+    <div class="actions"><button type="submit">Import</button> <a href="/settings#import">Cancel</a></div>
+  </form>
+  {{else}}
+  <p><a href="/settings/export">Download the configuration as YAML</a> (without the API keys, the webhook URLs and the API token).</p>
+  <form method="post" action="/settings/import" enctype="multipart/form-data">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <label>YAML file <input type="file" name="file" accept=".yaml,.yml,text/yaml"></label>
     <label>…or paste YAML <textarea name="yaml" rows="6" class="mono" spellcheck="false"></textarea></label>
-    <p class="small muted">The import replaces the configuration. syncwatch encrypts the secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>api.token</code>). Secrets that are not in the file stay as they are. syncwatch uses a kept API key only while the URL of its server does not change.</p>
-    <label>Administrator password <span class="muted">(necessary if the file sets login to off or gives viewer access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
-    <div class="actions"><button type="submit">Import</button></div>
+    <p class="small muted">The import replaces the complete configuration. Sections that are not in the file get their default values. First, syncwatch shows a preview of the changes. The preview also shows the servers that the import removes.</p>
+    <p class="small muted">syncwatch encrypts the secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>discord_notices_webhook</code>, <code>api.token</code>). Secrets that are not in the file stay as they are. syncwatch uses a kept API key only while the URL of its server does not change.</p>
+    <div class="actions"><button type="submit">Show the preview</button></div>
   </form>
+  {{end}}
 </section>
 <p class="muted small">Current time {{$d.Now}}</p>
 {{template "foot" .}}{{end}}

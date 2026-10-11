@@ -62,7 +62,8 @@ notifications:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"site: IVAR Office\n", "    site: Branch office\n", "devices:\n", "relay: true", "relay_lost: 45m", "repeat_urgent: 2h"} {
+	for _, want := range []string{"site: IVAR Office\n", "    site: Branch office\n", "devices:\n", "relay: true", "relay_lost: 45m", "repeat_urgent: 2h",
+		"# syncwatch configuration export. The file does not contain the API keys, the webhook URLs or the API token.\n"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("export lacks %q:\n%s", want, out)
 		}
@@ -129,9 +130,9 @@ func TestR2Validation(t *testing.T) {
 		fmt.Fprintf(&many, "  - {id: %s}\n", deviceID(i))
 	}
 	bad := map[string]string{
-		"site: '" + long + "'":                                               "Site (site): the value must have at most 40 characters and no control characters.",
-		"site: \"IVAR\\aOffice\"":                                            "Site (site): the value must have at most 40 characters and no control characters.",
-		"site: \"IVAR\\u200bOffice\"":                                        "Site (site): the value must have at most 40 characters and no control characters.",
+		"site: '" + long + "'":                                               "Site where syncwatch runs (site): the value must have at most 40 characters and no control characters.",
+		"site: \"IVAR\\aOffice\"":                                            "Site where syncwatch runs (site): the value must have at most 40 characters and no control characters.",
+		"site: \"IVAR\\u200bOffice\"":                                        "Site where syncwatch runs (site): the value must have at most 40 characters and no control characters.",
 		"devices: [{id: ABC}]":                                               `Devices (devices): "ABC" is not a Syncthing device ID. Use the complete device ID, 8 groups of 7 characters.`,
 		"devices: [{id: " + deviceID(1) + "-ABCDEFG}]":                       "is not a Syncthing device ID",
 		"devices: [{id: " + strings.Replace(deviceID(1), "A", "1", 1) + "}]": "is not a Syncthing device ID",

@@ -439,7 +439,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if !siteOK(c.Site) {
-		errs = append(errs, fmt.Errorf("Site (site): the value must have at most %d characters and no control characters.", MaxSiteLen))
+		errs = append(errs, fmt.Errorf("%s: the value must have at most %d characters and no control characters.", FieldLabel("site"), MaxSiteLen))
 	}
 	if len(c.Devices) > MaxDevices {
 		errs = append(errs, fmt.Errorf("Devices (devices): the list has %d entries. The maximum is %d.", len(c.Devices), MaxDevices))
@@ -809,7 +809,7 @@ func ParseYAML(b []byte) (*Config, error) {
 func (c *Config) ExportYAML() ([]byte, error) {
 	r := c.Redacted()
 	var buf bytes.Buffer
-	buf.WriteString("# syncwatch configuration export. The file does not contain the API keys, the webhook URL or the API token.\n")
+	buf.WriteString("# syncwatch configuration export. The file does not contain the API keys, the webhook URLs or the API token.\n")
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(r); err != nil {
@@ -884,6 +884,7 @@ var fieldLabels = map[string]string{
 	"collector.down_after_failures": "Mark unreachable after failures",
 	"notifications.weekly_top":      "Findings listed in the weekly report",
 	"notifications.repeat_urgent":   "Repeat urgent messages every",
+	"site":                          "Site where syncwatch runs",
 	"thresholds.failing_files":      "H4 with only failed items after",
 	"thresholds.stuck_sync":         "H5 stuck sync after",
 	"thresholds.paused":             "H6 paused for more than",
