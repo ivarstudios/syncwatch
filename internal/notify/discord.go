@@ -31,15 +31,29 @@ const (
 	maxTitle       = 256
 )
 
+// Channel names in the notification log.
+const (
+	channelDiscord = "discord"         // the webhook of all notifications
+	channelNotices = "discord-notices" // the webhook only for settings notices
+)
+
 // Discord posts to a Discord webhook.
 type Discord struct {
 	URL    string
 	RoleID string
 	HTTP   *http.Client
+	// Channel is the name of the channel in the notification log: "discord"
+	// when empty, "discord-notices" for the webhook of settings notices.
+	Channel string
 }
 
 // Name implements Sender.
-func (d *Discord) Name() string { return "discord" }
+func (d *Discord) Name() string {
+	if d.Channel != "" {
+		return d.Channel
+	}
+	return channelDiscord
+}
 
 type discordEmbed struct {
 	Title       string        `json:"title,omitempty"`
@@ -233,6 +247,13 @@ func (e *httpError) Error() string {
 func rejected(err error) bool {
 	var e *httpError
 	return errors.As(err, &e) && e.code >= 400 && e.code < 500 && e.code != http.StatusTooManyRequests
+}
+
+// invalidMessage says whether Discord refuses the message itself (HTTP 400):
+// no channel accepts it. 401, 403 and 404 blame the webhook.
+func invalidMessage(err error) bool {
+	var e *httpError
+	return errors.As(err, &e) && e.code == http.StatusBadRequest
 }
 
 // unusableError is a webhook that syncwatch cannot use until an

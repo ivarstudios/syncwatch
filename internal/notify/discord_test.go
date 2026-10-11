@@ -145,9 +145,9 @@ func TestHostileNamesAreNeutralised(t *testing.T) {
 			Snapshot: &model.Snapshot{Servers: []*model.Server{{ID: "akka", Name: name, Status: model.StatusDown}}}}
 		msgs := map[string]Message{
 			"urgent":    UrgentMessage(cfg, []*store.Record{rec}),
-			"resolved":  ResolvedMessage(cfg, []*store.Record{&res}),
+			"resolved":  ResolvedMessage(cfg, []*store.Record{&res}, nil),
 			"reminder":  ReminderMessage(cfg, []*store.Record{rec}, now),
-			"overnight": OvernightMessage(cfg, []*store.Record{rec}, []*store.Record{&res}, []store.HistoryEntry{h}, []*store.Record{rec}),
+			"overnight": OvernightMessage(cfg, []*store.Record{rec}, []*store.Record{&res}, []store.HistoryEntry{h}, []*store.Record{rec}, nil),
 			"weekly":    WeeklyMessage(cfg, v, []store.HistoryEntry{h}, now),
 			"missed":    MissedMessage(cfg, nil, []store.HistoryEntry{h, h}, now.Add(-time.Hour), now),
 			"missed1":   MissedMessage(cfg, nil, []store.HistoryEntry{h}, now.Add(-time.Hour), now),
