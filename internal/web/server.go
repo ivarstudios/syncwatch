@@ -62,6 +62,7 @@ type Server struct {
 	hosts   []string       // names answered besides addresses, localhost and public_url's host
 	trusted []netip.Prefix // the reverse proxies whose X-Forwarded-Proto counts (TrustProxies)
 	health  HealthOptions  // the rules of /healthz (SetHealth)
+	imports pendingImports // the files of the import previews (importpreview.go)
 
 	setupMu    sync.Mutex
 	setupToken string

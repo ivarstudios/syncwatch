@@ -43,14 +43,8 @@ type pendingImports struct {
 	items []*pendingImport // oldest first
 }
 
-// importsOf holds the pending imports of each web server (the Server struct
-// in server.go has no field for them).
-var importsOf sync.Map // *Server → *pendingImports
-
-func (s *Server) pendingImports() *pendingImports {
-	p, _ := importsOf.LoadOrStore(s, &pendingImports{})
-	return p.(*pendingImports)
-}
+// pendingImports returns the pending imports of the web server.
+func (s *Server) pendingImports() *pendingImports { return &s.imports }
 
 // add keeps the file of a preview and returns the ID of the pending import.
 func (p *pendingImports) add(data []byte, rev, key string, now time.Time) string {
