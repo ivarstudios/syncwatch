@@ -6,6 +6,7 @@ package web
 import (
 	"html"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -210,5 +211,98 @@ func TestOverviewAndLobbyWriteTheSameLinkRows(t *testing.T) {
 		if strings.Join(ov, " | ") != tc.want || strings.Join(lb, " | ") != tc.want {
 			t.Errorf("Overview %q, lobby %q, want %q", ov, lb, tc.want)
 		}
+	}
+}
+
+// C1 end to end: the keys that the Settings forms write (fixer 1) are the
+// keys that the checks read (fixer 2). The Devices card sets devices[].relay:
+// no H11 for the device, and H12 after thresholds.relay_lost of the Checks
+// form. The site of a server (Servers form) and the site of syncwatch
+// (Notifications form) go into the H1 message and its causes, and into
+// /api/v1/status (fixer 5).
+func TestSettingsKeysReachTheChecks(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	const laptop = "LAPTOPD-AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG"
+	save := func(path string, form url.Values) {
+		t.Helper()
+		form.Set("csrf", csrf)
+		if msg, isErr := flash(e.post(path, form)); isErr {
+			t.Fatalf("POST %s: %s", path, msg)
+		}
+	}
+	laptopOn := func(connected bool, lastSeen time.Time) {
+		e.hub.Update("akka", func(s *model.Server) {
+			s.Status, s.Loaded, s.MyID, s.LastContact, s.LastError = model.StatusUp, true, "AKKAAAA-1111111", time.Now(), ""
+			s.Devices = map[string]*model.Device{laptop: {ID: laptop, Name: "LAPTOP-DANI", LastSeen: lastSeen}}
+			s.Connections = map[string]*model.Connection{laptop: {Connected: connected, Type: "relay-client", Address: "relay://10.0.0.9:22067"}}
+		})
+		e.eng.Evaluate()
+	}
+	open := func(check, part string) bool {
+		for _, r := range e.eng.View().Open {
+			if r.Check == check && strings.Contains(r.Subject+" "+r.Message, part) {
+				return true
+			}
+		}
+		return false
+	}
+	laptopOn(true, time.Now())
+	if !open("H11", "LAPTOP-DANI") {
+		t.Fatal("a device that connects through a relay must have H11 before the Devices form")
+	}
+	save("/settings/devices", url.Values{"relay": {laptop}})
+	if d := e.cfg.Get().Devices; len(d) != 1 || d[0].ID != laptop || !d[0].Relay {
+		t.Fatalf("devices: %+v", d)
+	}
+	laptopOn(true, time.Now())
+	if open("H11", "LAPTOP-DANI") {
+		t.Fatal("H11 for a device with devices[].relay")
+	}
+	// The Checks form sets relay_lost: 2 hours, the laptop was seen 1 hour
+	// ago: no H12. 30 minutes: H12.
+	f := checksForm(e.cfg.Get(), csrf)
+	f.Set("relay_lost", "2h")
+	save("/settings/checks", f)
+	laptopOn(false, time.Now().Add(-time.Hour))
+	if open("H12", "LAPTOP-DANI") {
+		t.Fatal("H12 before relay_lost (2 hours)")
+	}
+	f.Set("relay_lost", "30m")
+	save("/settings/checks", f)
+	if e.eng.Evaluate(); !open("H12", "LAPTOP-DANI") {
+		t.Fatalf("no H12 after relay_lost (30 minutes): %v", e.cfg.Get().Thresholds.RelayLost)
+	}
+
+	// Sites.
+	save("/settings/servers", url.Values{"orig_id": {"sol"}, "name": {"SOL"}, "url": {"https://b:1"}, "site": {"Branch office"}})
+	nf := notifyForm(e.cfg.Get(), csrf)
+	nf.Set("site", "IVAR Office")
+	save("/settings/notifications", nf)
+	e.hub.Update("sol", func(s *model.Server) {
+		s.Status, s.DownSince, s.LastError = model.StatusDown, time.Now(), "dial tcp 10.0.0.2:8384: i/o timeout"
+	})
+	e.eng.Evaluate()
+	var h1 *store.Record
+	for _, r := range e.eng.View().Open {
+		if r.Check == "H1" && r.Server == "sol" {
+			h1 = r
+		}
+	}
+	if h1 == nil || !strings.HasPrefix(h1.Message, "Server SOL (Branch office) is unreachable from IVAR Office: ") {
+		t.Fatalf("H1 of SOL: %+v", h1)
+	}
+	causes := ""
+	for _, d := range h1.Details {
+		if d.Key == "Possible causes" {
+			causes = d.Value
+		}
+	}
+	if causes != "The VPN between IVAR Office and Branch office is down, or the server is off or does not answer." {
+		t.Errorf("H1 causes: %q", causes)
+	}
+	_, st := e.apiGet("/api/v1/status", "Bearer swt_test_token", "")
+	if sv := apiServers(st); sv["sol"]["site"] != "Branch office" || sv["akka"]["site"] != "" {
+		t.Errorf("/api/v1/status sites: %v", st["servers"])
 	}
 }
