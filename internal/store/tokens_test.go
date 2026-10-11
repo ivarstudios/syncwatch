@@ -51,6 +51,16 @@ func TestAPITokens(t *testing.T) {
 	if err := s.TouchAPIToken("nope", t0); !errors.Is(err, ErrNoToken) {
 		t.Fatalf("touch of an unknown ID: %v", err)
 	}
+	// The lookup by name compares without regard to case, as the rule
+	// for a unique name.
+	for _, name := range []string{"Home Assistant", "home assistant", " HOME ASSISTANT "} {
+		if got, err := s.APITokenByName(name); err != nil || got == nil || got.ID != ha.ID {
+			t.Fatalf("lookup by the name %q: %+v %v", name, got, err)
+		}
+	}
+	if got, err := s.APITokenByName("Home"); err != nil || got != nil {
+		t.Fatalf("lookup by a name that no API token has: %+v %v", got, err)
+	}
 
 	// A new value: the old one stops working, the name and the scope stay.
 	if err := s.ReplaceAPIToken(ha.ID, "swt_ha2", t0.Add(2*time.Hour)); err != nil {

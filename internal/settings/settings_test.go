@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/store"
@@ -63,7 +64,7 @@ func TestLoadAndSave(t *testing.T) {
 // configuration. Secrets that the file does not have stay as they are.
 func TestImportSecrets(t *testing.T) {
 	st := memStore(t)
-	if err := st.SetSecret(store.SecretAPIToken, "swt_kept"); err != nil {
+	if _, err := st.AddAPIToken(store.LegacyTokenName, store.ScopeFull, "swt_kept", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	c := config.Default()
@@ -85,8 +86,8 @@ func TestImportSecrets(t *testing.T) {
 	if hook, _ := st.Secret(store.SecretDiscordWebhook); hook != "https://discord.com/api/webhooks/1/hook" {
 		t.Fatalf("webhook %q", hook)
 	}
-	if token, _ := st.Secret(store.SecretAPIToken); token != "swt_kept" {
-		t.Fatalf("a secret that the file does not have changed: %q", token)
+	if tok, _ := st.APITokenByValue("swt_kept"); tok == nil {
+		t.Fatal("an API token that the file does not have changed")
 	}
 	if st.HasSecret(store.ServerAPIKeySecret("sol")) {
 		t.Fatal("an API key for a server without one in the file")
