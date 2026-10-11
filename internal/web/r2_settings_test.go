@@ -310,6 +310,13 @@ func TestImportPreviewIsBoundToSessionAndTime(t *testing.T) {
 		t.Fatalf("second session: %v", err)
 	}
 	resp.Body.Close()
+	// The login made a new CSRF token for the second session (W-027).
+	if resp, err = c2.Get(e.srv.URL + "/settings"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	csrf2 = csrfRe.FindStringSubmatch(string(b))[1]
 	if resp, err = c2.PostForm(e.srv.URL+"/settings/import", url.Values{"csrf": {csrf2}, "import_id": {id}}); err != nil {
 		t.Fatal(err)
 	}
@@ -648,6 +655,7 @@ func TestSecurityFlagOfEachNotice(t *testing.T) {
 	expect("administrator password", true, func() {
 		post("/settings/password", url.Values{"current": {"correct horse battery"}, "password": {"another long password"}, "password2": {"another long password"}})
 	})
+	csrf = e.csrf("/settings") // the new session has a new CSRF token (W-027)
 	expect("import", true, func() {
 		if msg, isErr := impFile(e, csrf, "servers: [{name: Akka, id: akka, url: 'https://a2:1'}, {name: SOL, url: 'https://b:1'}]\n", nil); isErr {
 			t.Fatal(msg)

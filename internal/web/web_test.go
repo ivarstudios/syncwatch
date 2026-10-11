@@ -306,6 +306,7 @@ func TestLoginPageWithStaleViewerSession(t *testing.T) {
 	if r, body := e.get("/login?next=/"); r.StatusCode != http.StatusOK || !strings.Contains(body, `name="password"`) {
 		t.Fatalf("/login with a stale viewer session: %d, want the login form", r.StatusCode)
 	}
+	csrf = e.csrf("/login?next=/") // the viewer login made a new CSRF token (W-027)
 	// The admin password still gets in.
 	if r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}, "next": {"/"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/" {
 		t.Fatalf("admin login: %d %q", r.StatusCode, r.Header.Get("Location"))

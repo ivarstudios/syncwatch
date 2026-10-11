@@ -508,10 +508,11 @@ func TestCLINoticesAreSecurityNotices(t *testing.T) {
 		!strings.Contains(n.Summary, "The Discord webhook for settings notices is added.") {
 		t.Fatalf("first import: %+v", n)
 	}
-	// A token with the name of the single API token of an older version
-	// exists: the import replaces its value.
-	if _, err := st.AddAPIToken(store.LegacyTokenName, store.ScopeFull, "swt_cli_token_2", time.Now()); err != nil {
-		t.Fatal(err)
+	// The first import made the API token "API token" (fixer 5's
+	// ImportSecrets: an imported api.token is the value of that API token,
+	// scope full). The next import replaces its value.
+	if tok, err := st.APITokenByName(store.LegacyTokenName); err != nil || tok == nil || tok.Scope != store.ScopeFull {
+		t.Fatalf("the API token \"API token\" after the first import: %+v %v", tok, err)
 	}
 	importYAML("servers:\n  - name: SOL\n    url: https://sol.invalid:8384\napi: {token: swt_cli_token_3}\n")
 	n = last()
@@ -519,6 +520,12 @@ func TestCLINoticesAreSecurityNotices(t *testing.T) {
 		if !strings.Contains(n.Summary, want) {
 			t.Errorf("second import: no %q in %q", want, n.Summary)
 		}
+	}
+	if tok, err := st.APITokenByValue("swt_cli_token_3"); err != nil || tok == nil || tok.Name != store.LegacyTokenName {
+		t.Errorf("the imported value is not the value of the API token \"API token\": %+v %v", tok, err)
+	}
+	if tok, _ := st.APITokenByValue("swt_cli_token_1"); tok != nil {
+		t.Errorf("the value of the first import still works: %+v", tok)
 	}
 	if !n.Security {
 		t.Error("the import notice is not a security notice")

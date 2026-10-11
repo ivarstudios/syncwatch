@@ -155,6 +155,7 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 
 	post("/settings/password", url.Values{"current": {"correct horse battery"}, "password": {"another long password"}, "password2": {"another long password"}})
 	expect("password", "Administrator password changed")
+	csrf = e.csrf("/settings") // the new session has a new CSRF token (W-027)
 
 	// The API token steps are TestAPITokenChangesAreAnnounced (api_test.go):
 	// the API token of twoServers is still set here.
