@@ -134,7 +134,7 @@ func TestR2DetailKeys(t *testing.T) {
 	db := folder("db", "LIVE-DB", "/s/AKKA-LIVE-1SOURCE/LIVE-DB")
 	db.State, db.Error = "error", "insufficient space on disk for database (/config/index-v2): current 1 % < required 99.9 %"
 	akka.Folders["db"] = db
-	sol.Status, sol.LastError, sol.LastContact = model.StatusDown, "timeout", now.Add(-10*time.Minute)
+	sol.Status, sol.LastError, sol.LastContact = model.StatusDown, "timeout", now.Add(-11*time.Minute)
 	fs := run(t, c, akka, sol)
 
 	for _, tc := range []struct {

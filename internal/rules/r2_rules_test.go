@@ -317,10 +317,11 @@ func TestSiteTexts(t *testing.T) {
 		t.Fatalf("row: %q", got)
 	}
 	// In the first minutes after the last contact, Syncthing can still keep
-	// a connection whose network path is down (a silent cut of the VPN).
-	sol.LastContact = now.Add(-3 * time.Minute)
+	// a connection whose network path is down (a silent cut of the VPN: up
+	// to 7.5 minutes on the kit).
+	sol.LastContact = now.Add(-8 * time.Minute)
 	if f := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL"); f.DetailValue("What AKKA sees") != "" {
-		t.Fatal("a row 3 minutes after the last contact")
+		t.Fatal("a row 8 minutes after the last contact")
 	}
 	sol.LastContact = now.Add(-11 * time.Minute)
 	// The connections of a server that is down are old data.
