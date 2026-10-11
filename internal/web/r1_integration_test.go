@@ -76,7 +76,7 @@ thresholds: {pc_offline: 1h}
 	}
 	// The Folders grid has no column for the disabled server (it would
 	// have only "–" cells), and its device is not a PC column either.
-	for _, d := range e.web.grid(e.eng.View()).Devices {
+	for _, d := range e.web.grid(e.eng.View(), RoleAdmin).Devices {
 		if d.ID == "SIRIUSS-3333333" {
 			t.Errorf("grid: a column for the disabled server (server=%v)", d.Server)
 		}

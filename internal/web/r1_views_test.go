@@ -289,7 +289,7 @@ func TestGridPCUnknownWhileServerDown(t *testing.T) {
 		s.Folders = shared()
 	})
 	e.eng.Evaluate()
-	vm := e.web.grid(e.eng.View())
+	vm := e.web.grid(e.eng.View(), RoleAdmin)
 	cells := map[string]gridCell{}
 	for i, d := range vm.Devices {
 		cells[d.Name] = vm.Groups[0].Items[0].Cells[i]

@@ -49,7 +49,10 @@ func (s *Server) fmtClock(t time.Time) string {
 	return s.fmtTime(t)
 }
 
-func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow {
+// problemRows builds the rows of findings. For a viewer (admin false) the
+// device IDs in the details are short and there is no link to Syncthing
+// (C12, W-048).
+func (s *Server) problemRows(v *engine.View, recs []*store.Record, admin bool) []problemRow {
 	now := s.now()
 	var out []problemRow
 	for _, r := range recs {
@@ -57,8 +60,12 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record) []problemRow 
 			ID: r.ID, Check: r.Check, Checks: strings.Join(r.Checks, "+"), Severity: r.Severity.Lower(),
 			SeverityLabel: r.Severity.Label(), Icon: notify.Icon(r.Severity), Category: r.Category,
 			Server: r.Server, Subject: showControls(r.Subject), Message: showControls(r.Message), Urgent: r.Urgent, Stale: r.Stale,
-			Details: s.detailRows(r.Details), Paths: showAll(r.Paths), Link: r.Link,
-			Title: config.CatalogByID[r.Check].Title,
+			Paths: showAll(r.Paths), Title: config.CatalogByID[r.Check].Title,
+		}
+		if admin {
+			row.Details, row.Link = s.detailRows(r.Details), r.Link
+		} else {
+			row.Details = s.detailRows(viewerDetails(r.Details))
 		}
 		if sv := v.Snapshot.Server(r.Server); sv != nil {
 			row.ServerName = showControls(sv.Name)
@@ -152,7 +159,9 @@ func (s *Server) overview(v *engine.View) overviewVM {
 	if len(visible) > 8 {
 		visible = visible[:8]
 	}
-	vm.Top = s.problemRows(v, visible)
+	// The list shows no details and no links: the viewer form is enough
+	// for every role.
+	vm.Top = s.problemRows(v, visible, false)
 	for _, sv := range v.Snapshot.Servers {
 		label, icon, class := statusLabel(sv.Status)
 		t := serverTile{ID: sv.ID, Name: showControls(sv.Name), Status: class, StatusLabel: label, StatusIcon: icon,
@@ -292,7 +301,9 @@ func plural(n int, one, many string) string {
 	return fmt.Sprintf("%d %s", n, many)
 }
 
-func (s *Server) grid(v *engine.View) gridVM {
+// grid builds the Folders grid. A viewer (role other than admin) gets the
+// device IDs of the column titles in their short form (C12, W-048).
+func (s *Server) grid(v *engine.View, role string) gridVM {
 	snap := v.Snapshot
 	// A disabled server is a server (r1-3, contract C4), but syncwatch does
 	// not poll it: its column would have only "–" cells. The Overview shows
@@ -305,7 +316,11 @@ func (s *Server) grid(v *engine.View) gridVM {
 	}
 	vm := gridVM{}
 	for _, d := range devs {
-		vm.Devices = append(vm.Devices, gridDevice{ID: d.ID, Name: showControls(d.Name), Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected})
+		id := d.ID
+		if role != RoleAdmin {
+			id = shortDeviceID(id)
+		}
+		vm.Devices = append(vm.Devices, gridDevice{ID: id, Name: showControls(d.Name), Short: model.ShortID(d.ID), Server: d.IsServer, Online: d.Connected})
 	}
 	cs := s.cfg.Structure()
 	cfg := s.cfg.Get()
@@ -531,7 +546,9 @@ var severityOptions = []severityOption{
 	{model.Error.Lower(), model.Error.Label()}, {model.Warn.Lower(), model.Warn.Label()}, {model.Info.Lower(), model.Info.Label()},
 }
 
-func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
+// problems builds the Findings page. A viewer (role other than admin) gets
+// the short device IDs and no links to Syncthing (C12, W-048).
+func (s *Server) problems(v *engine.View, f problemFilter, role string) problemsVM {
 	now := s.now()
 	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions,
 		Today: now.In(s.cfg.Get().Location()).Format("2006-01-02")}
@@ -564,8 +581,9 @@ func (s *Server) problems(v *engine.View, f problemFilter) problemsVM {
 		}
 		recs = append(recs, r)
 	}
-	vm.Rows = s.problemRows(v, recs)
-	vm.Snoozed = s.problemRows(v, hidden)
+	admin := role == RoleAdmin
+	vm.Rows = s.problemRows(v, recs, admin)
+	vm.Snoozed = s.problemRows(v, hidden, admin)
 	vm.Hidden = len(hidden)
 	if hist, err := s.st.HistoryBetween(now.Add(-7*24*time.Hour), now.Add(time.Second)); err == nil {
 		from := now.Add(-7 * 24 * time.Hour)

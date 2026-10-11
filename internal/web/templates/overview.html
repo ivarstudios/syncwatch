@@ -28,7 +28,7 @@
         <dt>Last contact</dt><dd>{{.LastContact}}{{if .Mode}} · {{.Mode}}{{end}}</dd>
       </dl>
       {{range .ShareErrors}}<p class="c-warn small">⚠ {{.}}</p>{{end}}
-      {{if .Link}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
+      {{if and .Link (eq $.Role "admin")}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
       {{end}}
     </article>
     {{else}}

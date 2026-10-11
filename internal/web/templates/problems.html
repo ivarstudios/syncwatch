@@ -66,7 +66,7 @@
           </table>
           {{if .Paths}}<p><strong>Failed items</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
           <p class="mono small muted">Finding ID {{.ID}}</p>
-          {{if .Link}}<p><a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a></p>{{end}}
+          {{if and .Link $admin}}<p><a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a></p>{{end}}
           {{if $admin}}
           <div class="actions">
             {{if .Snoozed}}

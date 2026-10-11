@@ -612,21 +612,21 @@ func (s *Server) fragOverview(w http.ResponseWriter, r *http.Request, info reque
 }
 
 func (s *Server) handleGrid(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	s.render(w, r, http.StatusOK, "grid", info, map[string]any{"Title": "Folders", "VM": s.grid(s.eng.View())})
+	s.render(w, r, http.StatusOK, "grid", info, map[string]any{"Title": "Folders", "VM": s.grid(s.eng.View(), info.Role)})
 }
 
 func (s *Server) fragGrid(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	s.fragment(w, "grid-body", info, map[string]any{"VM": s.grid(s.eng.View())})
+	s.fragment(w, "grid-body", info, map[string]any{"VM": s.grid(s.eng.View(), info.Role)})
 }
 
 func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	f := parseFilter(r.URL.Query())
-	s.render(w, r, http.StatusOK, "problems", info, map[string]any{"Title": "Findings", "VM": s.problems(s.eng.View(), f), "Admin": info.Role == RoleAdmin})
+	s.render(w, r, http.StatusOK, "problems", info, map[string]any{"Title": "Findings", "VM": s.problems(s.eng.View(), f, info.Role), "Admin": info.Role == RoleAdmin})
 }
 
 func (s *Server) fragProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	f := parseFilter(r.URL.Query())
-	s.fragment(w, "problems-body", info, map[string]any{"VM": s.problems(s.eng.View(), f), "Admin": info.Role == RoleAdmin})
+	s.fragment(w, "problems-body", info, map[string]any{"VM": s.problems(s.eng.View(), f, info.Role), "Admin": info.Role == RoleAdmin})
 }
 
 // fragAlert refreshes the notification banner on open pages.
