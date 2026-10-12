@@ -82,15 +82,18 @@ func (s *Server) apiSettings() apiSettingsView {
 	return v
 }
 
-// touchAPIToken records the use of an API token, at most once a minute for
-// each API token: the last use in the row that the request read decides.
-// Thus the time on the Settings page is at most 1 minute late.
-func (s *Server) touchAPIToken(t *store.APIToken) {
+// touchAPIToken records the use of the API token t, which the request read
+// with the value token, at most once a minute for each API token: the last
+// use in the row that the request read decides. Thus the time on the
+// Settings page is at most 1 minute late. The record goes by the value:
+// after a replace between the read and the record, the new value stays
+// unused.
+func (s *Server) touchAPIToken(t *store.APIToken, token string) {
 	now := s.now()
 	if d := now.Sub(t.LastUsed); !t.LastUsed.IsZero() && d >= 0 && d < time.Minute {
 		return
 	}
-	if err := s.st.TouchAPIToken(t.ID, now); err != nil && !errors.Is(err, store.ErrNoToken) {
+	if err := s.st.TouchAPIToken(token, now); err != nil && !errors.Is(err, store.ErrNoToken) {
 		if n := s.logs.count("touch "+t.ID, now); n > 0 {
 			s.log.Warn("cannot record the use of the API token", "token", t.Name, "err", err, "count", n)
 		}

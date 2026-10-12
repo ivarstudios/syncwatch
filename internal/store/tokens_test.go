@@ -42,14 +42,16 @@ func TestAPITokens(t *testing.T) {
 		}
 	}
 
-	if err := s.TouchAPIToken(ha.ID, t0.Add(time.Hour)); err != nil {
+	if err := s.TouchAPIToken("swt_ha", t0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := s.APITokenByValue("swt_ha"); !got.LastUsed.Equal(t0.Add(time.Hour)) {
 		t.Fatalf("last used %v", got.LastUsed)
 	}
-	if err := s.TouchAPIToken("nope", t0); !errors.Is(err, ErrNoToken) {
-		t.Fatalf("touch of an unknown ID: %v", err)
+	for _, v := range []string{"swt_nope", "", ha.ID, HashAPIToken("swt_ha")} {
+		if err := s.TouchAPIToken(v, t0); !errors.Is(err, ErrNoToken) {
+			t.Fatalf("touch of the value %q: %v", v, err)
+		}
 	}
 	// The lookup by name compares without regard to case, as the rule
 	// for a unique name.
@@ -72,6 +74,14 @@ func TestAPITokens(t *testing.T) {
 	got, _ := s.APITokenByValue("swt_ha2")
 	if got == nil || got.ID != ha.ID || got.Name != "Home Assistant" || got.Scope != ScopeHA || !got.LastUsed.IsZero() || !got.CreatedAt.Equal(t0.Add(2*time.Hour)) {
 		t.Fatalf("replaced: %+v", got)
+	}
+	// A request that read the row with the old value records its use after
+	// the replace: the new value stays unused.
+	if err := s.TouchAPIToken("swt_ha", t0.Add(3*time.Hour)); !errors.Is(err, ErrNoToken) {
+		t.Fatalf("touch of the old value after the replace: %v", err)
+	}
+	if got, _ := s.APITokenByValue("swt_ha2"); got == nil || !got.LastUsed.IsZero() {
+		t.Fatalf("the new value after a touch of the old value: %+v", got)
 	}
 	if err := s.ReplaceAPIToken("nope", "swt_x", t0); !errors.Is(err, ErrNoToken) {
 		t.Fatalf("replace of an unknown ID: %v", err)

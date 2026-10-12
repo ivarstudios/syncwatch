@@ -177,7 +177,8 @@ func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request, need stri
 	info := s.resolve(r)
 	caller := apiCaller{admin: info.Role == RoleAdmin}
 	if scheme, tok, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
-		t, err := s.st.APITokenByValue(strings.TrimSpace(tok))
+		tok = strings.TrimSpace(tok)
+		t, err := s.st.APITokenByValue(tok)
 		if err != nil {
 			s.log.Error("cannot read the API tokens", "err", err)
 			apiError(w, http.StatusInternalServerError, "internal error")
@@ -193,7 +194,7 @@ func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request, need stri
 			return caller, false
 		}
 		// The API token is in use, also when its scope refuses the address.
-		s.touchAPIToken(t)
+		s.touchAPIToken(t, tok)
 		if !scopeCovers(t.Scope, need) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch", error="insufficient_scope", scope="`+need+`"`)
 			apiError(w, http.StatusForbidden, "the API token permits only /api/v1/ha")

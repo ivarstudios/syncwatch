@@ -214,9 +214,12 @@ func (s *Store) APITokenByName(name string) (*APIToken, error) {
 	return nil, nil
 }
 
-// TouchAPIToken records that an API token was used at at.
-func (s *Store) TouchAPIToken(id string, at time.Time) error {
-	return oneRow(s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE id=?`, ms(at), id))
+// TouchAPIToken records that the API token with the value token was used at
+// at. It finds the row by the value, not by the ID: a value that a replace
+// or a revoke ended after the request read the row changes no row
+// (ErrNoToken), thus the use does not go to the new value.
+func (s *Store) TouchAPIToken(token string, at time.Time) error {
+	return oneRow(s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE hash=?`, ms(at), HashAPIToken(token)))
 }
 
 // oneRow gives ErrNoToken for a statement that changed no row.
