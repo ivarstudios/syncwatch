@@ -29,6 +29,70 @@ const (
 // an older version becomes (see migrateAPIToken).
 const LegacyTokenName = "API token"
 
+// keyOldTokenRefused is the setting with the time of the secret api.token
+// (its updated_at) that moveOldAPIToken did not move. Settings showed that
+// value as refused, thus a later open does not move it. A new value of an
+// older version has a different time.
+const keyOldTokenRefused = "api.token_refused"
+
+// moveOldAPIToken moves the value token of the single API token of an older
+// version (the secret api.token, saved at created) into api_tokens in the
+// transaction tx. The rule is the rule of an imported api.token: the value
+// replaces the value of the API token "API token" (its scope stays), or
+// becomes the API token "API token" with the scope full. Thus after a
+// downgrade, the API token that the older version made works, and the value
+// from before the downgrade, which the older version refused, does not. A
+// value that an API token has already changes nothing. moved is false when
+// there are MaxAPITokens and none of them is "API token": then the value
+// stays a secret, and Settings shows it as refused. It stays refused also at
+// a later open with fewer API tokens (keyOldTokenRefused).
+func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err error) {
+	hash := HashAPIToken(token)
+	var refused int64
+	if err := tx.QueryRow(`SELECT CAST(value AS INTEGER) FROM settings WHERE key=?`, keyOldTokenRefused).Scan(&refused); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	rows, err := tx.Query(`SELECT id, name, hash FROM api_tokens`)
+	if err != nil {
+		return false, err
+	}
+	var legacy string
+	n, same := 0, false
+	for rows.Next() {
+		var id, name, h string
+		if err := rows.Scan(&id, &name, &h); err != nil {
+			rows.Close()
+			return false, err
+		}
+		n, same = n+1, same || h == hash
+		if strings.EqualFold(name, LegacyTokenName) {
+			legacy = id
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	switch {
+	case same:
+		return true, nil
+	case refused == created:
+		return false, nil
+	case legacy != "":
+		_, err = tx.Exec(`UPDATE api_tokens SET hash=?, created_at=?, last_used=0 WHERE id=?`, hash, created, legacy)
+	case n < MaxAPITokens:
+		var id string
+		if id, err = newTokenID(tx); err == nil {
+			_, err = tx.Exec(`INSERT INTO api_tokens(id, name, scope, hash, created_at, last_used) VALUES(?,?,?,?,?,0)`,
+				id, LegacyTokenName, ScopeFull, hash, created)
+		}
+	default:
+		_, err = tx.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, keyOldTokenRefused, created)
+		return false, err
+	}
+	return err == nil, err
+}
+
 // Errors of the API token functions, with the texts for the dashboard.
 var (
 	ErrTooManyTokens = fmt.Errorf("There are %d API tokens. Revoke an API token first.", MaxAPITokens)
@@ -214,9 +278,12 @@ func (s *Store) APITokenByName(name string) (*APIToken, error) {
 	return nil, nil
 }
 
-// TouchAPIToken records that an API token was used at at.
-func (s *Store) TouchAPIToken(id string, at time.Time) error {
-	return oneRow(s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE id=?`, ms(at), id))
+// TouchAPIToken records that the API token with the value token was used at
+// at. It finds the row by the value, not by the ID: a value that a replace
+// or a revoke ended after the request read the row changes no row
+// (ErrNoToken), thus the use does not go to the new value.
+func (s *Store) TouchAPIToken(token string, at time.Time) error {
+	return oneRow(s.db.Exec(`UPDATE api_tokens SET last_used=? WHERE hash=?`, ms(at), HashAPIToken(token)))
 }
 
 // oneRow gives ErrNoToken for a statement that changed no row.

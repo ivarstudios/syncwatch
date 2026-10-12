@@ -287,7 +287,8 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 		http.Error(w, "login necessary", http.StatusUnauthorized)
 		return
 	}
-	if info.Role != RoleNone {
+	page := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if info.Role != RoleNone && !page {
 		s.render(w, r, http.StatusForbidden, "error", info, map[string]any{"Title": "Not permitted", "Message": "This page needs the administrator password."})
 		return
 	}
@@ -296,9 +297,15 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 		return
 	}
 	to := "/login"
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+	if page {
 		// Only a page can be returned to; a form has to be sent again.
 		to += "?next=" + urlQueryEscape(r.URL.RequestURI())
+	}
+	if info.Role != RoleNone {
+		// A viewer gets the login form with the reason: an administrator
+		// can log in also in a browser with a viewer session.
+		s.redirect(w, r, to, "This page needs the administrator password.", true)
+		return
 	}
 	http.Redirect(w, r, to, http.StatusSeeOther)
 }
@@ -466,10 +473,12 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request, info re
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	if info.Session != nil && info.Role != RoleNone {
+	if info.Session != nil && info.Role == RoleAdmin {
 		// Already logged in, for example through a link from Discord. A
-		// viewer session from before viewing was switched off gives no
-		// role; it gets the form rather than a page that sends it back.
+		// viewer session gets the form: an administrator can log in in the
+		// browser of a lobby screen or a colleague. A viewer session from
+		// before viewing was switched off gives no role; it gets the form
+		// rather than a page that sends it back.
 		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}
