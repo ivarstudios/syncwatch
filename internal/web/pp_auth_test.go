@@ -7,7 +7,9 @@ package web
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -187,4 +189,98 @@ func TestLoginSlowDownWithParallelGuessesFromManyAddresses(t *testing.T) {
 	if code := login("10.9.9.9", "correct horse battery"); code != http.StatusSeeOther {
 		t.Fatalf("the administrator at another address: %d", code)
 	}
+}
+
+// sessions-3: access.session_ttl 365d for a lobby screen (README) gives the
+// viewer session 365 days. An administrator session ends after 30 days at
+// most: a browser on a shared PC that an administrator did not log out is
+// not an administrator for a year. A session of an older version with a
+// longer life also ends after 30 days.
+func TestAdminSessionLasts30DaysAtMost(t *testing.T) {
+	e := newEnv(t, twoServers+"access: {viewer: password, session_ttl: 365d}\n")
+	ah, _ := HashPassword("correct horse battery")
+	vh, _ := HashPassword("viewer password 1")
+	_ = e.st.SetSetting(KeyAdminHash, ah)
+	_ = e.st.SetSetting(KeyViewerHash, vh)
+	start := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(start.UnixNano())
+	e.web.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	day := func(n int) { clock.Store(start.Add(time.Duration(n) * 24 * time.Hour).UnixNano()) }
+	// login logs a new browser in and returns the browser and its session cookie.
+	login := func(password string) (*http.Client, *http.Cookie) {
+		t.Helper()
+		jar, _ := cookiejar.New(nil)
+		c := &http.Client{Jar: jar, CheckRedirect: e.http.CheckRedirect}
+		_, body := pageOf(t, c, e.srv.URL+"/login")
+		resp, err := c.PostForm(e.srv.URL+"/login", url.Values{"csrf": {csrfRe.FindStringSubmatch(body)[1]}, "password": {password}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		for _, ck := range resp.Cookies() {
+			if ck.Name == sessionCookie {
+				return c, ck
+			}
+		}
+		t.Fatalf("login: %d without a session cookie", resp.StatusCode)
+		return nil, nil
+	}
+	lobby, vc := login("viewer password 1")
+	if vc.MaxAge != 365*24*3600 {
+		t.Errorf("viewer session cookie: Max-Age %d, want 365 days", vc.MaxAge)
+	}
+	admin, ac := login("correct horse battery")
+	if ac.MaxAge != 30*24*3600 || !ac.Expires.Equal(start.Add(maxAdminSession)) {
+		t.Errorf("administrator session cookie: Max-Age %d, Expires %v, want 30 days", ac.MaxAge, ac.Expires)
+	}
+	if z, err := e.st.Session(hashToken(ac.Value), start); err != nil || z == nil || z.Role != RoleAdmin || !z.ExpiresAt.Equal(start.Add(maxAdminSession)) {
+		t.Fatalf("administrator session: %+v %v", z, err)
+	}
+	// A session that an older version made for 365 days.
+	if err := e.st.CreateSession(store.Session{TokenHash: hashToken("older version session"), Role: RoleAdmin, CSRF: "x",
+		CreatedAt: start, ExpiresAt: start.Add(365 * 24 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	older := func() int {
+		req, _ := http.NewRequest(http.MethodGet, e.srv.URL+"/settings", nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "older version session"})
+		resp, err := e.http.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	day(29)
+	if code, _ := pageOf(t, admin, e.srv.URL+"/settings"); code != http.StatusOK {
+		t.Fatalf("day 29, administrator: %d", code)
+	}
+	if code := older(); code != http.StatusOK {
+		t.Fatalf("day 29, administrator session of an older version: %d", code)
+	}
+	day(31)
+	if code, _ := pageOf(t, admin, e.srv.URL+"/settings"); code != http.StatusSeeOther {
+		t.Errorf("day 31, administrator: %d, want the login (303)", code)
+	}
+	if code := older(); code != http.StatusSeeOther {
+		t.Errorf("day 31, administrator session of an older version: %d, want the login (303)", code)
+	}
+	day(364)
+	if code, _ := pageOf(t, lobby, e.srv.URL+"/lobby"); code != http.StatusOK {
+		t.Errorf("day 364, lobby screen: %d", code)
+	}
+}
+
+// pageOf sends a GET through the browser c and returns the status code and
+// the body.
+func pageOf(t *testing.T, c *http.Client, u string) (int, string) {
+	t.Helper()
+	resp, err := c.Get(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
 }

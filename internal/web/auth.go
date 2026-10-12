@@ -110,6 +110,12 @@ func CheckPassword(pw, encoded string) bool {
 // MinPasswordLength for admin and viewer passwords.
 const MinPasswordLength = 10
 
+// maxAdminSession is the longest administrator session, also with a longer
+// access.session_ttl: a long session is for a lobby screen with the viewer
+// password. A browser on a shared PC that an administrator did not log out
+// is an administrator for at most this time.
+const maxAdminSession = 30 * 24 * time.Hour
+
 func checkNewPassword(pw string) error {
 	if len([]rune(pw)) < MinPasswordLength {
 		return fmt.Errorf("The password must have at least %d characters.", MinPasswordLength)
@@ -157,7 +163,10 @@ func (s *Server) resolve(r *http.Request) requestInfo {
 		return info
 	}
 	if c, err := r.Cookie(cookieName(info.HTTPS, sessionCookie)); err == nil && c.Value != "" {
-		if z, err := s.st.Session(hashToken(c.Value), s.now()); err == nil && z != nil {
+		// An administrator session ends after maxAdminSession, also a
+		// session that an older version made with a longer session_ttl.
+		now := s.now()
+		if z, err := s.st.Session(hashToken(c.Value), now); err == nil && z != nil && (z.Role != RoleAdmin || now.Sub(z.CreatedAt) < maxAdminSession) {
 			info.Role, info.Session = z.Role, z
 			// A session from before the CSRF token of the session (older
 			// version) uses the cookie, as before.
@@ -303,6 +312,9 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, role strin
 	tok, csrf := randomToken(32), randomToken(24)
 	now := s.now()
 	ttl := s.cfg.Get().Access.SessionTTL.D()
+	if role == RoleAdmin {
+		ttl = min(ttl, maxAdminSession)
+	}
 	if err := s.st.CreateSession(store.Session{TokenHash: hashToken(tok), Role: role, CSRF: csrf, CreatedAt: now, ExpiresAt: now.Add(ttl)}); err != nil {
 		return err
 	}
