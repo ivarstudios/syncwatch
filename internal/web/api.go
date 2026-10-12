@@ -40,8 +40,9 @@ type apiServer struct {
 	UptimeS     *int64   `json:"uptime_s"` // null while the server is not up
 	LastContact *apiTime `json:"last_contact"`
 	CertExpires *apiTime `json:"cert_expires"`
-	// The end of the last structure scan (W-056); null before the first
-	// scan after the start of syncwatch, and for a disabled server.
+	// The end of the last structure scan that listed a share of the server,
+	// or that found no share (W-056); null before the first such scan after
+	// the start of syncwatch, and for a disabled server.
 	LastStructureScan *apiTime `json:"last_structure_scan"`
 	Error             string   `json:"error,omitempty"`
 	Folders           struct {

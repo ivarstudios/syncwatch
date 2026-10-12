@@ -76,7 +76,7 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record, admin bool) [
 		if sv := v.Snapshot.Server(r.Server); sv != nil {
 			row.ServerName = showControls(sv.Name)
 			if r.Category == model.CatStructure {
-				row.Scan, row.ScanServer = s.lastScanOf(sv), sv.ID
+				row.Scan, row.ScanServer = s.lastScanOf(sv, &r.Finding), sv.ID
 			}
 		}
 		since := r.Since

@@ -11,6 +11,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/engine"
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/pathx"
 )
 
 // "Scan now" (W-056): an administrator starts a structure scan of a server
@@ -96,9 +97,15 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 		name := showControls(sc.Name)
 		switch st.State {
 		case collector.ScanStarted, collector.ScanRunning:
+			// The collector tells how the scan ended (End): the last scan
+			// of the server does not move for a scan that listed no share.
 			sv := v.Snapshot.Server(sc.ID)
-			if ended[i] && sv != nil && !sv.LastStructureScan.Before(st.Started) {
-				ok = append(ok, scanCompleteText(name, before[sc.ID], after[sc.ID]))
+			if ended[i] && sv != nil && (st.End == nil || st.End.Stopped == "") {
+				done, failed := scanCompleteText(name, sv, before[sc.ID], after[sc.ID])
+				if done != "" {
+					ok = append(ok, done)
+				}
+				refused = append(refused, failed...)
 			} else {
 				ok = append(ok, fmt.Sprintf("The structure scan of server %s started at %s. The result follows on this page.", name, s.fmtClockSeconds(st.Started)))
 			}
@@ -133,8 +140,23 @@ func openStructure(v *engine.View) map[string]map[string]bool {
 }
 
 // scanCompleteText is the answer for a complete scan: the findings that it
-// resolved and opened, and the open structure findings of the server.
-func scanCompleteText(name string, before, after map[string]bool) string {
+// resolved and opened, and the open structure findings of the server. Each
+// share that the scan could not list gets a red sentence: its findings show
+// the last known state. A scan that listed no share gets no green answer.
+func scanCompleteText(name string, sv *model.Server, before, after map[string]bool) (done string, failed []string) {
+	shares := 0
+	if sv.Structure != nil {
+		shares = len(sv.Structure.Shares)
+		for _, sh := range sv.Structure.Shares {
+			if sh.Error != "" {
+				failed = append(failed, fmt.Sprintf("The findings of share %s on server %s show the last known state. syncwatch cannot list the share: %s.",
+					showControls(sh.Name), name, strings.TrimSuffix(showControls(sh.Error), ".")))
+			}
+		}
+	}
+	if shares > 0 && len(failed) == shares {
+		return "", failed
+	}
 	resolved, opened := 0, 0
 	for id := range before {
 		if !after[id] {
@@ -147,6 +169,9 @@ func scanCompleteText(name string, before, after map[string]bool) string {
 		}
 	}
 	out := []string{"The structure scan of server " + name + " is complete."}
+	if len(failed) > 0 {
+		out[0] = fmt.Sprintf("The structure scan of server %s is complete for %d of %d shares.", name, shares-len(failed), shares)
+	}
 	if resolved > 0 {
 		out = append(out, "syncwatch resolved "+plural(resolved, "finding", "findings")+".")
 	}
@@ -161,7 +186,7 @@ func scanCompleteText(name string, before, after map[string]bool) string {
 	default:
 		out = append(out, fmt.Sprintf("%d structure findings of the server are open.", n))
 	}
-	return strings.Join(out, " ")
+	return strings.Join(out, " "), failed
 }
 
 // notUpText is the answer for a server that syncwatch cannot scan now: its
@@ -214,24 +239,57 @@ func agoWords(d time.Duration) string {
 	}
 }
 
-// lastScan is the time of the last structure scan of a server, as the
-// dashboard shows it: the clock time (with the date when it is not today),
-// how long ago, and that age in seconds for app.js.
+// lastScan is the time of the last structure scan of a server, or of the
+// share of a structure finding, as the dashboard shows it: the clock time
+// (with the date when it is not today), how long ago, and that age in
+// seconds for app.js.
 type lastScan struct {
 	Server   string // the name of the server (Settings → Structure)
 	At, Ago  string
 	AgeS     int64
-	Complete bool // a scan completed after the start of syncwatch
+	Complete bool   // a scan (that listed the share) ended after the start of syncwatch
+	Share    bool   // the time is that of the share of the finding
+	Error    string // why syncwatch cannot list the share now: the time is that of its last listing
 }
 
-// lastScanOf gives the last structure scan of a server.
-func (s *Server) lastScanOf(sv *model.Server) lastScan {
+// lastScanOf gives the last structure scan of a server (f nil), or of a
+// structure finding: the end of the last scan that listed the share of the
+// finding (S3 to S7), else of the server (S1, S2). The findings of a share
+// that the scan cannot list keep the last known state (the engine shows
+// them as stale): they show the time of its last listing and the error.
+func (s *Server) lastScanOf(sv *model.Server, f *model.Finding) lastScan {
 	ls := lastScan{Server: showControls(sv.Name)}
-	if t := sv.LastStructureScan; !t.IsZero() {
+	t := sv.LastStructureScan
+	if sh := findingShare(sv, f); sh != nil {
+		t, ls.Share, ls.Error = sh.ListedAt, true, showControls(sh.Error)
+	}
+	if !t.IsZero() {
 		age := max(s.now().Sub(t), 0)
 		ls.At, ls.Ago, ls.AgeS, ls.Complete = s.fmtClock(t), agoWords(age), int64(age/time.Second), true
 	}
 	return ls
+}
+
+// findingShare gives the share that has the path of a structure finding
+// (its Path detail) inside it, as the engine finds the findings of a share
+// that the scan cannot list. Nil for f nil, and for a finding without such
+// a path (S1, S2).
+func findingShare(sv *model.Server, f *model.Finding) *model.Share {
+	if f == nil || sv.Structure == nil {
+		return nil
+	}
+	p := f.DetailValue("Path")
+	if p == "" {
+		return nil
+	}
+	st := pathx.StyleFor(sv.PathSep)
+	var best *model.Share
+	for _, sh := range sv.Structure.Shares {
+		if st.Within(p, sh.Path) && (best == nil || len(sh.Path) > len(best.Path)) {
+			best = sh
+		}
+	}
+	return best
 }
 
 // lastScans gives the last structure scan of each server that syncwatch
@@ -242,7 +300,7 @@ func (s *Server) lastScans(v *engine.View) []lastScan {
 		return nil
 	}
 	for _, sv := range v.Snapshot.Servers {
-		out = append(out, s.lastScanOf(sv))
+		out = append(out, s.lastScanOf(sv, nil))
 	}
 	return out
 }

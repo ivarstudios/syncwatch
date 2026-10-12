@@ -67,11 +67,12 @@ func withScanHook(e *env, reply func(id string) collector.ScanStart) *scanHook {
 
 // shareWith makes AKKA up with 1 share that has the directories. A name that
 // starts with LIVE- is a project folder in a Syncthing folder; a different
-// name gets S4. The last structure scan ended at scanned.
+// name gets S4. The last structure scan ended at scanned, and it listed the
+// share.
 func shareWith(e *env, scanned time.Time, dirs ...string) {
 	e.hub.Update("akka", func(s *model.Server) {
 		s.Status, s.Loaded, s.MyID, s.PathSep, s.LastContact, s.LastError = model.StatusUp, true, "AKKAAAA-1111111", "/", time.Now(), ""
-		sh := &model.Share{Path: "/share/AKKA-LIVE-1SOURCE", Name: "AKKA-LIVE-1SOURCE", ScannedAt: scanned}
+		sh := &model.Share{Path: "/share/AKKA-LIVE-1SOURCE", Name: "AKKA-LIVE-1SOURCE", ScannedAt: scanned, ListedAt: scanned}
 		for _, d := range dirs {
 			dir := &model.Dir{Name: d, Path: sh.Path + "/" + d}
 			if strings.HasPrefix(d, "LIVE-") {
@@ -465,21 +466,36 @@ func TestScanNowInSettings(t *testing.T) {
 	}
 }
 
-// Each structure finding shows the end of the last structure scan of its
-// server: the clock time today, with the date on another day (the
+// Each structure finding shows the end of the last structure scan that
+// listed its share (S3 to S7), or of the last structure scan of its server
+// (S1, S2): the clock time today, with the date on another day (the
 // configured zone), and how long ago. The details say when no scan
 // completed after the start. Other findings have no last scan.
 func TestStructureFindingShowsTheLastScan(t *testing.T) {
 	e := scanEnv(t, "")
 	e.web.now = func() time.Time { return today(e, 9, 8, 0) }
 	shareWith(e, today(e, 9, 5, 0), "Wrong")
+	// S2: a Syncthing folder (outer) is the root of a share (the parent of
+	// inner). The last scan of the server ended after the listing of the
+	// share of Wrong.
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Folders = map[string]*model.Folder{"outer": {ID: "outer", Path: "/data/outer"}, "inner": {ID: "inner", Path: "/data/outer/inner"}}
+		s.LastStructureScan = today(e, 9, 6, 0)
+	})
 	e.eng.Evaluate()
 	_, page := e.get("/problems")
 	row := findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA")
 	for _, want := range []string{`<span class="muted nowrap">· last scan 09:05 (<span data-ago="180">3 minutes ago</span>)</span>`,
-		`<th title="The end of the last structure scan of the server">Last scan</th><td>09:05 (<span data-ago="180">3 minutes ago</span>)</td>`} {
+		`<th title="The end of the last structure scan that listed the share">Last scan</th><td>09:05 (<span data-ago="180">3 minutes ago</span>)</td>`} {
 		if !strings.Contains(row, want) {
 			t.Errorf("the S4 row has no %q:\n%s", want, row)
+		}
+	}
+	s2 := findingRow(t, e, page, "S2", "outer on AKKA")
+	for _, want := range []string{`<span class="muted nowrap">· last scan 09:06 (<span data-ago="120">2 minutes ago</span>)</span>`,
+		`<th title="The end of the last structure scan of the server">Last scan</th><td>09:06 (<span data-ago="120">2 minutes ago</span>)</td>`} {
+		if !strings.Contains(s2, want) {
+			t.Errorf("the S2 row has no %q:\n%s", want, s2)
 		}
 	}
 	if h1 := findingRow(t, e, page, "H1", "SOL"); strings.Contains(h1, "ast scan") || strings.Contains(h1, "Scan now") {
@@ -490,19 +506,20 @@ func TestStructureFindingShowsTheLastScan(t *testing.T) {
 	// is between these 2 times (it is at 02:00 or 03:00).
 	e.web.now = func() time.Time { return today(e, 1, 30, 0) }
 	yesterday := today(e, 0, 0, 0).Add(-10 * time.Minute)
-	e.hub.Update("akka", func(s *model.Server) { s.LastStructureScan = yesterday })
+	e.hub.Update("akka", func(s *model.Server) { s.LastStructureScan, s.Structure.Shares[0].ListedAt = yesterday, yesterday })
 	e.eng.Evaluate()
 	_, page = e.get("/problems")
 	if row := findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA"); !strings.Contains(row, "· last scan "+yesterday.Format("2006-01-02 15:04")+` (<span data-ago="6000">1 hour ago</span>)`) {
 		t.Errorf("a scan of yesterday must have its date:\n%s", row)
 	}
 
-	e.hub.Update("akka", func(s *model.Server) { s.LastStructureScan = time.Time{} })
+	e.hub.Update("akka", func(s *model.Server) { s.LastStructureScan, s.Structure.Shares[0].ListedAt = time.Time{}, time.Time{} })
 	e.eng.Evaluate()
 	_, page = e.get("/problems")
-	row = findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA")
-	if strings.Contains(row, "· last scan") || !strings.Contains(row, "<td>no scan after the start of syncwatch</td>") {
-		t.Errorf("before the first scan:\n%s", row)
+	for _, f := range [][2]string{{"S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA"}, {"S2", "outer on AKKA"}} {
+		if row := findingRow(t, e, page, f[0], f[1]); strings.Contains(row, "· last scan") || !strings.Contains(row, "<td>no scan after the start of syncwatch</td>") {
+			t.Errorf("%s before the first scan:\n%s", f[0], row)
+		}
 	}
 }
 
@@ -551,4 +568,91 @@ func TestAPILastStructureScan(t *testing.T) {
 		}
 	}
 	checkTimes(t, "status", st)
+}
+
+// A share that the scan cannot list keeps the last known state: its
+// findings show the end of its last listing, with the error in the details,
+// and the answer to Scan now names the share in red. A scan that listed no
+// share is not complete (review of W-056, finding 1).
+func TestScanNowShareThatCannotBeListed(t *testing.T) {
+	e := scanEnv(t, "")
+	e.web.now = func() time.Time { return today(e, 10, 0, 20) }
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		e.eng.Run(ctx)
+	}()
+	defer func() { cancel(); <-stopped }()
+	listed := today(e, 9, 20, 0)
+	shareWith(e, listed, "Wrong", "LIVE-RIGHT")
+	finals := &model.Share{Path: "/share/AKKA-LIVE-4FINALS", Name: "AKKA-LIVE-4FINALS", ScannedAt: listed, ListedAt: listed,
+		Dirs: []*model.Dir{{Name: "LIVE-X-4FINALS", Path: "/share/AKKA-LIVE-4FINALS/LIVE-X-4FINALS", FolderIDs: []string{"live-x-4finals"}}}}
+	e.hub.Update("akka", func(s *model.Server) { s.Structure.Shares = append(s.Structure.Shares, finals) })
+	if !e.eng.Settle(ctx, 5*time.Second) || len(structureOpen(e)) != 1 {
+		t.Fatalf("open structure findings: %v, want the S4 of Wrong", structureOpen(e))
+	}
+
+	// The data steward renamed Wrong, but the listing of its share fails
+	// (a timeout on a busy NAS). The scan lists the other share, as
+	// collector.scan does: the failed share keeps its directories and times.
+	scan := func(fail map[string]string, end time.Time) collector.ScanStart {
+		done := make(chan struct{})
+		go func() {
+			e.hub.Update("akka", func(s *model.Server) {
+				for _, sh := range s.Structure.Shares {
+					if sh.Error = fail[sh.Name]; sh.Error == "" {
+						sh.ScannedAt, sh.ListedAt = end.Add(-time.Second), end
+					}
+				}
+				s.Structure.ScannedAt = end.Add(-time.Second)
+				if len(fail) < len(s.Structure.Shares) {
+					s.LastStructureScan = end
+				}
+			})
+			close(done)
+		}()
+		return collector.ScanStart{State: collector.ScanStarted, Started: end.Add(-time.Second), Done: done, End: &collector.ScanEnd{}}
+	}
+	const notMounted = "not found on the server (check that the directory is mounted in the Syncthing container)"
+	withScanHook(e, func(string) collector.ScanStart {
+		return scan(map[string]string{"AKKA-LIVE-1SOURCE": "timeout"}, today(e, 10, 0, 21))
+	})
+	ok, failed := flashes(e.post("/structure/scan", url.Values{"csrf": {e.csrf("/problems")}, "server": {"akka"}}))
+	if want := "The structure scan of server AKKA is complete for 1 of 2 shares. 1 structure finding of the server is open."; ok != want {
+		t.Errorf("1 of 2 shares listed: %q, want %q", ok, want)
+	}
+	if want := "The findings of share AKKA-LIVE-1SOURCE on server AKKA show the last known state. syncwatch cannot list the share: timeout."; failed != want {
+		t.Errorf("1 of 2 shares listed: %q, want %q", failed, want)
+	}
+	_, page := e.get("/problems")
+	row := findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA")
+	for _, want := range []string{`<span class="tag stale"`, `<span class="muted nowrap">· last scan 09:20 (<span data-ago="2420">40 minutes ago</span>)</span>`,
+		`Last scan</th><td>09:20 (<span data-ago="2420">40 minutes ago</span>) · syncwatch cannot list the share: timeout</td>`} {
+		if !strings.Contains(row, want) {
+			t.Errorf("the S4 row of the share that the scan cannot list has no %q:\n%s", want, row)
+		}
+	}
+	apiLast := func() any {
+		_, st := e.apiGet("/api/v1/status", "Bearer swt_test_token", "")
+		return apiServers(st)["akka"]["last_structure_scan"]
+	}
+	end1 := today(e, 10, 0, 21).UTC().Format("2006-01-02T15:04:05Z")
+	if got := apiLast(); got != end1 {
+		t.Errorf("1 of 2 shares listed: last_structure_scan %v, want %v", got, end1)
+	}
+
+	// No share can be listed: no green answer, a red sentence for each
+	// share, and the last scan of the server does not move.
+	withScanHook(e, func(string) collector.ScanStart {
+		return scan(map[string]string{"AKKA-LIVE-1SOURCE": "timeout", "AKKA-LIVE-4FINALS": notMounted}, today(e, 10, 0, 52))
+	})
+	ok, failed = flashes(e.post("/structure/scan", url.Values{"csrf": {e.csrf("/problems")}, "server": {"akka"}}))
+	if want := "The findings of share AKKA-LIVE-1SOURCE on server AKKA show the last known state. syncwatch cannot list the share: timeout.\n" +
+		"The findings of share AKKA-LIVE-4FINALS on server AKKA show the last known state. syncwatch cannot list the share: " + notMounted + "."; ok != "" || failed != want {
+		t.Errorf("no share listed: %q / %q, want no green answer and %q", ok, failed, want)
+	}
+	if got := apiLast(); got != end1 {
+		t.Errorf("no share listed: last_structure_scan %v, want %v (no move)", got, end1)
+	}
 }

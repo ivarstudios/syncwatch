@@ -63,7 +63,7 @@
             {{if .ServerName}}<tr><th>Server</th><td>{{.ServerName}}</td></tr>{{end}}
             <tr><th title="The time when the condition started">Started</th><td>{{.Since}}</td></tr>
             <tr><th title="The time when syncwatch opened the finding">Reported</th><td>{{.OpenedAt}}{{if .Pinged}} · urgent message sent at {{.Pinged}}{{end}}</td></tr>
-            {{if .ScanServer}}<tr><th title="The end of the last structure scan of the server">Last scan</th><td>{{if .Scan.Complete}}{{.Scan.At}} (<span data-ago="{{.Scan.AgeS}}">{{.Scan.Ago}}</span>){{else}}no scan after the start of syncwatch{{end}}</td></tr>{{end}}
+            {{if .ScanServer}}<tr><th title="{{if .Scan.Share}}The end of the last structure scan that listed the share{{else}}The end of the last structure scan of the server{{end}}">Last scan</th><td>{{if .Scan.Complete}}{{.Scan.At}} (<span data-ago="{{.Scan.AgeS}}">{{.Scan.Ago}}</span>){{if .Scan.Error}} · {{end}}{{else if not .Scan.Error}}no scan after the start of syncwatch{{end}}{{if .Scan.Error}}syncwatch cannot list the share: {{.Scan.Error}}{{end}}</td></tr>{{end}}
             {{range .Details}}<tr><th>{{.Label}}</th><td class="mono">{{.Value}}</td></tr>{{end}}
           </table>
           {{if .Paths}}<p><strong>Failed items</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
