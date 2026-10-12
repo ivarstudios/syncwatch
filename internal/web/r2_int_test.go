@@ -247,6 +247,9 @@ func TestSettingsKeysReachTheChecks(t *testing.T) {
 		}
 		return false
 	}
+	// SOL finished a full check and does not have the laptop configured:
+	// H12 waits for every server that is not loaded (pp-rules, data-5).
+	e.hub.Update("sol", func(s *model.Server) { s.Status, s.Loaded, s.LastError = model.StatusUp, true, "" })
 	laptopOn(true, time.Now())
 	if !open("H11", "LAPTOP-DANI") {
 		t.Fatal("a device that connects through a relay must have H11 before the Devices form")

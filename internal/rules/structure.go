@@ -46,9 +46,24 @@ func (e *evaluator) shareRootFolders(sv *model.Server) map[string]ShareRef {
 	return roots
 }
 
+// s2Covers reports whether the S2 finding of a share-root folder reports
+// the Syncthing folders inside it in place of their S1 findings (one
+// finding for one cause): while S2 is not snoozed or ignored, and is urgent
+// when S1 is urgent. Else each folder inside gets its S1, as before W-046:
+// a folder that Syncthing syncs 2 times always has a finding that a person
+// sees, with the urgency of S1.
+func (e *evaluator) s2Covers(sv *model.Server, root *model.Folder) bool {
+	return !e.Hidden[model.FindingID("S2", sv.ID, shareRootKey(root.ID))] && (e.Config.Urgent("S2") || !e.Config.Urgent("S1"))
+}
+
+// shareRootKey and overlapKey are the ID keys of the S2 finding of a
+// share-root folder and of the S1 finding of a folder inside another.
+func shareRootKey(folderID string) string   { return "share-root:" + folderID }
+func overlapKey(inner, outer string) string { return "overlap:" + inner + ":" + outer }
+
 // S1: one Syncthing folder inside another, or two at the same path. A
-// folder inside a share-root folder gets no S1: the S2 finding of the share
-// root lists it (one finding for one cause).
+// folder inside a share-root folder gets no S1 while the S2 finding of the
+// share root lists it in its place (s2Covers).
 func (e *evaluator) overlaps(sv *model.Server, roots map[string]ShareRef) {
 	st := pathx.StyleFor(sv.PathSep)
 	ids := sortedFolderIDs(sv)
@@ -75,10 +90,10 @@ func (e *evaluator) overlaps(sv *model.Server, roots map[string]ShareRef) {
 			if !st.Within(fb.Path, fa.Path) {
 				continue
 			}
-			if _, root := roots[fa.ID]; root {
+			if _, root := roots[fa.ID]; root && e.s2Covers(sv, fa) {
 				continue // S2
 			}
-			e.add("S1", sv.ID, "overlap:"+fb.ID+":"+fa.ID, model.Finding{
+			e.add("S1", sv.ID, overlapKey(fb.ID, fa.ID), model.Finding{
 				Subject: fmt.Sprintf("%s inside %s on %s", fb.DisplayName(), fa.DisplayName(), sv.Name),
 				Message: fmt.Sprintf("Syncthing folder %s is inside Syncthing folder %s on %s. Syncthing syncs the files 2 times", fb.DisplayName(), fa.DisplayName(), sv.Name),
 				Details: []model.Detail{
@@ -96,7 +111,8 @@ func (e *evaluator) overlaps(sv *model.Server, roots map[string]ShareRef) {
 const maxListed = 20
 
 // S2: a share root that is itself a Syncthing folder. The Syncthing folders
-// inside it are rows of this finding, not S1 findings of their own.
+// inside it are rows of this finding, and while it covers their S1
+// findings, not S1 findings of their own.
 func (e *evaluator) shareRoots(sv *model.Server, roots map[string]ShareRef) {
 	st := pathx.StyleFor(sv.PathSep)
 	ids := sortedFolderIDs(sv)
@@ -106,7 +122,9 @@ func (e *evaluator) shareRoots(sv *model.Server, roots map[string]ShareRef) {
 			continue
 		}
 		f := sv.Folders[id]
+		covers := e.s2Covers(sv, f)
 		details := []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path)}
+		var covered []string
 		inside := 0
 		for _, other := range ids {
 			o := sv.Folders[other]
@@ -117,6 +135,9 @@ func (e *evaluator) shareRoots(sv *model.Server, roots map[string]ShareRef) {
 			if inside <= maxListed {
 				details = append(details, detail("Syncthing folder inside", o.ID+" — "+o.Path))
 			}
+			if covers {
+				covered = append(covered, model.FindingID("S1", sv.ID, overlapKey(o.ID, f.ID)))
+			}
 		}
 		if inside > maxListed {
 			details = append(details, detail("More folders inside", fmt.Sprint(inside-maxListed)))
@@ -125,10 +146,11 @@ func (e *evaluator) shareRoots(sv *model.Server, roots map[string]ShareRef) {
 		if inside > 0 {
 			msg += fmt.Sprintf("It contains %s. ", Plural(inside, "other Syncthing folder", "other Syncthing folders"))
 		}
-		e.add("S2", sv.ID, "share-root:"+f.ID, model.Finding{
+		e.add("S2", sv.ID, shareRootKey(f.ID), model.Finding{
 			Subject:      fmt.Sprintf("%s on %s", sh.Name, sv.Name),
 			Message:      msg + "Sync each project folder as a separate Syncthing folder",
 			Details:      details,
+			Covers:       covered,
 			ResolvedText: fmt.Sprintf("Share root %s on %s is not a Syncthing folder now.", sh.Name, sv.Name),
 		})
 	}

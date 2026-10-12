@@ -20,6 +20,8 @@ type Input struct {
 	// Conflicts is the number of new sync conflicts per server ID and folder
 	// ID within the conflict window.
 	Conflicts map[string]map[string]int64
+	// Hidden are the IDs of the findings that are snoozed or ignored now.
+	Hidden map[string]bool
 }
 
 type evaluator struct {
