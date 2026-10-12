@@ -306,7 +306,7 @@ func (s *Server) stale(w http.ResponseWriter, r *http.Request, old *config.Confi
 
 // staleText is the message for a form from a page that is older than the
 // configuration.
-const staleText = "Not saved. The settings changed after this page was loaded. Reload the page and make the change again."
+const staleText = "Not saved. The settings changed after you opened this page. Reload the page. Then make the change again."
 
 // save applies a configuration change, announces what changed and redirects
 // back to a settings section. When the change is refused, it writes no

@@ -192,7 +192,7 @@ func TestNoticesWebhookGetsTheNotices(t *testing.T) {
 	if err := r.n.SendNoticesTest(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if ps := got("/api/webhooks/2/notices"); len(ps) != 2 || ps[1].Embeds[0].Title != "syncwatch test notice" || strings.Contains(ps[1].Content, "<@") {
+	if ps := got("/api/webhooks/2/notices"); len(ps) != 2 || ps[1].Embeds[0].Title != "syncwatch test settings notice" || strings.Contains(ps[1].Content, "<@") {
 		t.Fatalf("test notice: %+v", ps)
 	}
 	log, _ := r.st.Notifications(10)

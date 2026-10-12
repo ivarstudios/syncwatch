@@ -38,6 +38,11 @@ ENV SYNCWATCH_DATA=/data \
 VOLUME ["/data"]
 EXPOSE 8080
 USER 65532:65532
+# The healthcheck asks /healthz. It fails when the database does not answer,
+# or when syncwatch did not evaluate the checks for more than 5 minutes. It
+# also fails when notifications fail for more than the time in
+# SYNCWATCH_HEALTH_NOTIFY_LIMIT (15 minutes by default).
+# A gate container needs SYNCWATCH_HEALTHCHECK_URL (examples/gate-compose.yml).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD ["/usr/local/bin/syncwatch", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/syncwatch"]
