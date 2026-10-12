@@ -478,8 +478,8 @@ func (g *Gate) upstream(path, rawQuery string) string {
 
 // checkQuery parses a request's query and refuses what syncwatch's client
 // never sends: parameters the endpoint doesn't take, repeated ones, event
-// long-polls over 10 minutes, event masks other than the collector's own.
-// What it returns is what is passed on.
+// long-polls over 10 minutes, event long-polls without the collector's own
+// event mask. What it returns is what is passed on.
 func checkQuery(path, raw string) (url.Values, error) {
 	q, err := url.ParseQuery(raw)
 	if err != nil {
@@ -511,7 +511,11 @@ func checkQuery(path, raw string) (url.Values, error) {
 				return nil, fmt.Errorf("the parameter timeout must be between 0 and %d seconds", maxEventTimeout)
 			}
 		}
-		if v := q.Get("events"); v != "" && !sameMask(strings.Split(v, ",")) {
+		// Also when events is missing or empty: Syncthing then answers from
+		// its default subscription, which has the events that the collector
+		// does not ask for (LoginAttempt with the GUI user name,
+		// ListenAddressesChanged with the token of a private relay).
+		if !sameMask(strings.Split(q.Get("events"), ",")) {
 			return nil, errors.New("the parameter events must be the event mask of the collector")
 		}
 	case pathFolderErrors:

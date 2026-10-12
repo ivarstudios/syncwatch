@@ -307,9 +307,13 @@ func TestGateQueryAllowlist(t *testing.T) {
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=20&perpage=20", 400},
 		{"/rest/db/remoteneed?folder=f&folder=g&device=" + devA + "&perpage=20", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&device=" + devA + "&perpage=20", 400},
-		{"/rest/events", 200},
+		// Without the mask Syncthing answers from its default subscription,
+		// with events that the collector does not ask for (LoginAttempt).
+		{"/rest/events", 400},
+		{"/rest/events?since=0&timeout=1", 400},
+		{"/rest/events?since=0&timeout=1&events=", 400},
 		{"/rest/events?since=0&timeout=1&events=" + mask, 200},
-		{"/rest/events?since=7&timeout=600", 200},
+		{"/rest/events?since=7&timeout=600&events=" + mask, 200},
 		{"/rest/events?timeout=601", 400},
 		{"/rest/events?timeout=-1", 400},
 		{"/rest/events?timeout=1s", 400},
@@ -742,6 +746,7 @@ func TestGateLimitsParallelRequests(t *testing.T) {
 	defer gs.Close()
 	var once sync.Once
 	defer once.Do(func() { close(release) })
+	mask := strings.Join(stclient.EventMask, ",")
 	var wg sync.WaitGroup
 	codes := make(chan int, 100)
 	hold := func(path string, n int) {
@@ -769,8 +774,8 @@ func TestGateLimitsParallelRequests(t *testing.T) {
 			}
 		}
 	}
-	hold("/rest/events", 4)
-	if code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=60", token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel long-polls\n" {
+	hold("/rest/events?events="+mask, 4)
+	if code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=60&events="+mask, token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel long-polls\n" {
 		t.Fatalf("5th long-poll: %d %q", code, body)
 	}
 	if code, _ := get(t, gs, http.MethodGet, "/rest/system/status", token); code != 200 {
@@ -798,7 +803,7 @@ func TestGateLimitsParallelRequests(t *testing.T) {
 		}
 	}
 	// The ended requests free their places.
-	if code, _ := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1", token); code != 200 {
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1&events="+mask, token); code != 200 {
 		t.Fatalf("a long-poll after the others ended: %d", code)
 	}
 	g.imu.Lock()
@@ -868,10 +873,11 @@ func TestGateUpstreamTimeouts(t *testing.T) {
 	if code, body := get(t, gs, http.MethodGet, "/rest/system/version", token); code != http.StatusBadGateway || time.Since(start) > 500*time.Millisecond {
 		t.Fatalf("slow Syncthing: %d %s after %v", code, strings.TrimSpace(body), time.Since(start))
 	}
-	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=0", token); code != http.StatusBadGateway {
+	mask := strings.Join(stclient.EventMask, ",")
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=0&events="+mask, token); code != http.StatusBadGateway {
 		t.Fatalf("long-poll over its timeout plus the margin: %d", code)
 	}
-	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=1", token); code != 200 {
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=1&events="+mask, token); code != 200 {
 		t.Fatalf("long-poll within its timeout: %d", code)
 	}
 }
