@@ -312,6 +312,46 @@ func TestImportConfigNamesRemovedServers(t *testing.T) {
 	}
 }
 
+// import-config refuses a file that sets built-in login to on while syncwatch
+// runs in proxy mode without an administrator password (internal/app
+// TestImportRefusesALockOut). The command fails with the reason and the 2 ways
+// out, and it does not say that it imported the file.
+func TestImportConfigRefusesALockOut(t *testing.T) {
+	t.Setenv("SYNCWATCH_SECRET_KEY", "")
+	dir := t.TempDir()
+	st, err := app.OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	run := func(yaml string) (string, error) {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "new.yaml")
+		if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stderr := os.Stderr
+		os.Stderr = w
+		err = importConfig([]string{"--data", dir, p})
+		os.Stderr = stderr
+		w.Close()
+		out, _ := io.ReadAll(r)
+		return string(out), err
+	}
+	if _, err := run("access: {mode: proxy}\nservers:\n  - name: NAS\n    url: https://nas.invalid:8384\n"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := run("servers:\n  - name: NAS\n    url: https://nas.invalid:8384\n")
+	if err == nil || !strings.HasPrefix(err.Error(), "Not imported. ") || !strings.Contains(err.Error(), "syncwatch reset-admin-password") ||
+		!strings.Contains(err.Error(), "access: {mode: proxy}") || strings.Contains(out, "imported") {
+		t.Fatalf("error %v, output %q", err, out)
+	}
+}
+
 // The maintenance commands work on an existing instance; a wrong --data must
 // not become a fresh, empty one that reports success.
 func TestMaintenanceCommandsNeedExistingData(t *testing.T) {

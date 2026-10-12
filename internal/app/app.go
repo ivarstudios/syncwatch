@@ -195,6 +195,17 @@ func saveConfig(st *store.Store, c *config.Config) (int64, error) {
 	return st.BumpConfigRevision()
 }
 
+// errLocksEveryoneOut refuses a file that sets built-in login to on while the
+// stored configuration is in proxy mode and no administrator password is set.
+// A server that runs in proxy mode did not log a setup token: after the
+// reload, each page asks for a setup token that nobody has. The dashboard
+// refuses the same file (web: locksEveryoneOut). In built-in mode without an
+// administrator password (the first start), the start logged the setup token
+// and the import is permitted. A file without an access section has built-in
+// login.
+var errLocksEveryoneOut = errors.New("Not imported. The file sets built-in login to on, but no administrator password is set. " +
+	"First set an administrator password with syncwatch reset-admin-password. Or add access: {mode: proxy} to the file.")
+
 // Imported is the result of ImportFile.
 type Imported struct {
 	Config  *config.Config
@@ -205,7 +216,8 @@ type Imported struct {
 // ImportFile replaces the stored configuration with a YAML file. A running
 // server applies it within configCheckInterval and sends a settings notice.
 // The command line asks for no confirmation: a person who can run it can
-// also change the database.
+// also change the database. A file that locks everyone out is refused
+// (errLocksEveryoneOut), as in the dashboard.
 func ImportFile(st *store.Store, path string) (*Imported, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -218,6 +230,15 @@ func ImportFile(st *store.Store, path string) (*Imported, error) {
 	old, err := settings.Load(st)
 	if err != nil {
 		return nil, err
+	}
+	if old != nil && old.Access.Mode == config.AccessProxy && c.Access.Mode == config.AccessBuiltin {
+		h, err := st.Setting(web.KeyAdminHash)
+		if err != nil {
+			return nil, err
+		}
+		if h == "" {
+			return nil, errLocksEveryoneOut
+		}
 	}
 	removed := removedServers(old, c)
 	changes := importChanges(st, old, c)
@@ -533,14 +554,6 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("the stored configuration is not valid: %w", err)
 	}
-	// The time when syncwatch did not run, before the first heartbeat of
-	// this start replaces the last one.
-	if err := noteGap(st, started, holder.Get().Location(), log); err != nil {
-		log.Warn("cannot record the time when syncwatch did not run", "err", err)
-	}
-	if err := st.SetAliveAt(started); err != nil {
-		log.Warn("cannot record the heartbeat", "err", err)
-	}
 	if o.AdminPassword != "" {
 		if h, _ := st.Setting(web.KeyAdminHash); h == "" {
 			if len([]rune(o.AdminPassword)) < web.MinPasswordLength {
@@ -622,7 +635,7 @@ func Run(ctx context.Context, o Options) error {
 	srvWeb.TrustProxies(o.TrustedProxies)
 	srvWeb.SetHealth(web.HealthOptions{Started: started, NotifyLimit: o.NotifyLimit, EvalLimit: evalLimit})
 	srvWeb.LogSetupToken(os.Stderr)
-	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run, heartbeat(st, log)}
+	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run}
 	deadmanAt := "off"
 	if o.DeadmanURL != "" {
 		dm, err := newDeadman(o.DeadmanURL, srvWeb.Ready, o.Version, log)
@@ -648,6 +661,21 @@ func Run(ctx context.Context, o Options) error {
 	if tc != nil {
 		ln = tls.NewListener(ln, tc)
 	}
+	// The time when syncwatch did not run, before the first heartbeat of
+	// this start replaces the last one. Only a start that listens counts: a
+	// start that fails before this point (the TLS files, an address in use)
+	// did not run. Docker starts such a container again and again, and a
+	// heartbeat of each failed start would cut the gap.
+	prev, err := noteGap(st, started, holder.Get().Location(), log)
+	if err != nil {
+		log.Warn("cannot record the time when syncwatch did not run", "err", err)
+	}
+	if err := st.SetAliveAt(started); err != nil {
+		log.Warn("cannot record the heartbeat", "err", err)
+	}
+	// The heartbeat corrects the gap when the clock was behind at the start.
+	clock := &clockCheck{st: st, log: log, loc: holder.Get().Location(), prev: prev, started: started}
+	workerFuncs = append(workerFuncs, heartbeat(st, log, clock))
 	// Requests, the dashboard's event streams among them, end with reqCtx:
 	// shutdown cancels it first, so open tabs don't hold Shutdown back.
 	reqCtx, reqCancel := context.WithCancel(context.Background())
