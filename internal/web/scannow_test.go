@@ -721,3 +721,53 @@ func TestScanNowStoppedScan(t *testing.T) {
 		}
 	}
 }
+
+// The Overview tile of a server and its structure findings show the same
+// last scan: the end of the scan, with the date only when it is not today
+// (review of W-056, finding 4). A scan that listed no share does not move
+// it, and the tile shows no last scan before the first scan ends.
+func TestOverviewShowsTheLastScanOfTheFindings(t *testing.T) {
+	e := scanEnv(t, "")
+	e.web.now = func() time.Time { return today(e, 9, 30, 0) }
+	start, end := today(e, 9, 5, 50), today(e, 9, 6, 25) // a scan of 35 seconds
+	shareWith(e, end, "Wrong")
+	e.hub.Update("akka", func(s *model.Server) { s.Structure.ScannedAt = start })
+	e.eng.Evaluate()
+	tile := func() string {
+		t.Helper()
+		_, page := e.get("/")
+		i := strings.Index(page, "<h2>AKKA</h2>")
+		if i < 0 {
+			t.Fatalf("no tile of AKKA:\n%s", page)
+		}
+		if j := strings.Index(page[i:], "</article>"); j >= 0 {
+			return page[i : i+j]
+		}
+		return page[i:]
+	}
+	if got := tile(); !strings.Contains(got, "<dt>Shares</dt><dd>1 · last scan 09:06</dd>") {
+		t.Errorf("the tile must show the end of the scan, 09:06:\n%s", got)
+	}
+	_, page := e.get("/problems")
+	if row := findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA"); !strings.Contains(row, "· last scan 09:06 (") {
+		t.Errorf("the finding must show the end of the scan, 09:06:\n%s", row)
+	}
+
+	// A scan at 09:20 that cannot list the share: the tile keeps 09:06,
+	// and it shows the error of the share.
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Structure.Shares[0].Error = "timeout"
+		s.Structure.ScannedAt = today(e, 9, 20, 0)
+	})
+	e.eng.Evaluate()
+	if got := tile(); !strings.Contains(got, "<dt>Shares</dt><dd>1 · last scan 09:06</dd>") || !strings.Contains(got, "⚠ AKKA-LIVE-1SOURCE: timeout") {
+		t.Errorf("a scan that listed no share: the tile must keep 09:06 and show the error:\n%s", got)
+	}
+
+	// No scan ended after the start of syncwatch.
+	e.hub.Update("akka", func(s *model.Server) { s.LastStructureScan, s.Structure.Shares[0].ListedAt = time.Time{}, time.Time{} })
+	e.eng.Evaluate()
+	if got := tile(); !strings.Contains(got, "<dt>Shares</dt><dd>1</dd>") {
+		t.Errorf("before the end of the first scan, the tile must show no last scan:\n%s", got)
+	}
+}

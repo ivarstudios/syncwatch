@@ -377,7 +377,11 @@ func (s *Server) overview(v *engine.View) overviewVM {
 		}
 		if sv.Structure != nil {
 			t.Shares = len(sv.Structure.Shares)
-			t.LastScan = s.fmtTime(sv.Structure.ScannedAt)
+			// The end of the last scan that listed a share, as on the
+			// structure findings (W-056). Empty before the first one.
+			if !sv.LastStructureScan.IsZero() {
+				t.LastScan = s.fmtClock(sv.LastStructureScan)
+			}
 			if n := sv.Structure.ScanListings; n > 0 {
 				t.ScanCost = fmt.Sprintf("%s in %s", plural(n, "directory listing", "directory listings"), sv.Structure.ScanTook.Round(100*time.Millisecond))
 			}

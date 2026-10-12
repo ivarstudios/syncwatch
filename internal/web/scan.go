@@ -21,7 +21,9 @@ import (
 // the timed scan of the collector (collector.ScanNow): it only reads, one
 // scan of a server runs at a time, and an administrator starts at most 1
 // scan of a server in 30 seconds. Each structure finding shows the end of
-// the last scan of its server.
+// the last scan that listed its share (S3 to S7), or of the last scan of its
+// server (S1, S2). The Overview tile of the server shows the end of its last
+// scan.
 
 // scanWait is how long the answer to "Scan now" waits for the scans and for
 // the evaluation of their result. The page after a complete scan thus shows
