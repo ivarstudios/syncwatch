@@ -700,13 +700,17 @@ func (n *Notifier) repeat(ctx context.Context, cfg *config.Config, v *engine.Vie
 
 // repeatDue returns the findings whose urgent message falls due again: open
 // urgent ERROR findings of one server that are not stale, snoozed or
-// ignored, announced at least one interval ago.
+// ignored, announced at least one interval ago. When one is due, the ones
+// announced more than half an interval ago go with it: then they share one
+// clock, and the role gets one mention in each interval, not one for each
+// finding.
 func repeatDue(cfg *config.Config, v *engine.View, now time.Time) []*store.Record {
 	every := cfg.Notify.RepeatUrgent.D()
 	if every <= 0 {
 		return nil
 	}
 	var due []*store.Record
+	anyDue := false
 	for _, r := range v.Open {
 		if !r.Urgent || r.Severity != model.Error || r.Server == "" || r.Stale || !r.Open() || r.PingedAt.IsZero() {
 			continue
@@ -714,9 +718,13 @@ func repeatDue(cfg *config.Config, v *engine.View, now time.Time) []*store.Recor
 		if _, z := v.Snoozed(r.ID, now); z {
 			continue
 		}
-		if now.Sub(announcedAt(r)) >= every {
+		if age := now.Sub(announcedAt(r)); age > every/2 {
 			due = append(due, r)
+			anyDue = anyDue || age >= every
 		}
+	}
+	if !anyDue {
+		return nil
 	}
 	return due
 }

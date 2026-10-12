@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/engine"
 	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -399,5 +400,57 @@ func TestFallbackIsNotBlockedByAnOlderNotice(t *testing.T) {
 		if pendingNotices(r) != 1 {
 			t.Errorf("%v: %d notices kept, want 1 (Checks changed)", ownErr, pendingNotices(r))
 		}
+	}
+}
+
+// Repeat every hour. SOL stops at 09:00 and SIRIUS at 09:21: the role gets
+// the repeat once in each hour, for both findings, not one repeat for each
+// finding (notify-5). The first urgent message of each finding stays its
+// own.
+func TestRepeatMentionsTheRoleOnceEachInterval(t *testing.T) {
+	start := local(2026, 10, 6, 9, 0)
+	r := newRig(t, start, "AKKA", "SOL", "SIRIUS")
+	setNotify(t, r, func(c *config.Config) { c.Notify.RepeatUrgent = config.Duration(time.Hour) })
+	r.setDown("SOL", true)
+	byHour := map[int][]string{}
+	for at := start; at.Before(local(2026, 10, 6, 13, 0)); at = at.Add(30 * time.Second) {
+		if at.Equal(local(2026, 10, 6, 9, 21)) {
+			r.setDown("SIRIUS", true)
+		}
+		r.at(at)
+		for _, m := range r.sender.take() {
+			if m.Kind == KindRepeat && m.Mention {
+				byHour[at.Hour()] = append(byHour[at.Hour()], at.Format("15:04:05")+" "+m.Title)
+			}
+		}
+	}
+	for h := 10; h <= 12; h++ {
+		t.Logf("%02d:00: %q", h, byHour[h])
+		if len(byHour[h]) != 1 {
+			t.Errorf("%02d:00-%02d:59: %d repeats with the mention, want 1", h, h, len(byHour[h]))
+		}
+	}
+	if len(byHour[11]) == 1 && !strings.Contains(byHour[11][0], "2 urgent findings are still open on SOL, SIRIUS") {
+		t.Errorf("the repeat does not name both findings: %q", byHour[11][0])
+	}
+}
+
+// A finding announced less than half an interval before does not join the
+// repeat of the others: its own urgent message is too recent.
+func TestRepeatTakesOnlyFindingsAnnouncedHalfAnIntervalBefore(t *testing.T) {
+	now := local(2026, 10, 6, 12, 0)
+	cfg := config.Default()
+	cfg.Notify.RepeatUrgent = config.Duration(2 * time.Hour)
+	rec := func(id string, announced time.Duration) *store.Record {
+		return &store.Record{Finding: model.Finding{ID: id, Check: "H1", Checks: []string{"H1"}, Severity: model.Error, Server: "sol", Subject: "SOL", Urgent: true},
+			OpenedAt: now.Add(-5 * time.Hour), PingedAt: now.Add(-announced)}
+	}
+	v := &engine.View{Open: []*store.Record{rec("due", 2*time.Hour), rec("older", 61*time.Minute), rec("half", time.Hour), rec("recent", 10*time.Minute)}}
+	if got := ids(repeatDue(cfg, v, now)); strings.Join(got, ",") != "due,older" {
+		t.Fatalf("due: %v", got)
+	}
+	v.Open = v.Open[1:] // nothing is due on its own clock
+	if got := repeatDue(cfg, v, now); len(got) != 0 {
+		t.Fatalf("without a due finding: %v", ids(got))
 	}
 }
