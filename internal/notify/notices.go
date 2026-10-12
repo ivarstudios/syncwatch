@@ -57,7 +57,7 @@ func (n *Notifier) SendNoticesTest(ctx context.Context) error {
 	if len(senders) == 0 {
 		return errNoNoticesChannel
 	}
-	m := Message{Kind: KindTest, Title: "syncwatch test notice", Summary: "Settings notices from syncwatch reach this channel. They mention no role.",
+	m := Message{Kind: KindTest, Title: "syncwatch test settings notice", Summary: "Settings notices from syncwatch reach this channel. They mention no role.",
 		Color: ColorNotice, URL: n.cfg.Get().PublicURL}
 	gen, now := n.generation(), n.now()
 	var errs []error
