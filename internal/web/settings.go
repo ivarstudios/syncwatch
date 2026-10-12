@@ -939,7 +939,7 @@ func repeatWords(v string) string {
 // reports no H11 for a device that always connects through a relay.
 func deviceChanges(old, c *config.Config, deviceName func(id string) string) []string {
 	device := func(id string) string {
-		name := deviceName(id)
+		name := notify.OneLine(deviceName(id)) // the PC names itself
 		if short := model.ShortID(id); name != short {
 			name += " (" + short + ")"
 		}

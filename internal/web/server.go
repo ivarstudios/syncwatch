@@ -747,7 +747,7 @@ func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info reque
 func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
 	for _, f := range s.eng.View().Open {
 		if f.ID == id && f.Urgent {
-			s.announce(r, notify.Notice{Title: "Urgent finding " + what, Summary: f.Check + " " + f.Subject + ": " + f.Message + "\n" + detail, Security: false})
+			s.announce(r, notify.Notice{Title: "Urgent finding " + what, Summary: notify.OneLine(f.Check+" "+f.Subject+": "+f.Message) + "\n" + notify.OneLine(detail), Security: false})
 			return
 		}
 	}

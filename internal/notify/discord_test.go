@@ -151,6 +151,13 @@ func TestHostileNamesAreNeutralised(t *testing.T) {
 			"weekly":    WeeklyMessage(cfg, v, []store.HistoryEntry{h}, now),
 			"missed":    MissedMessage(cfg, nil, []store.HistoryEntry{h, h}, now.Add(-time.Hour), now),
 			"missed1":   MissedMessage(cfg, nil, []store.HistoryEntry{h}, now.Add(-time.Hour), now),
+			// Settings notices with a name, as the dashboard words them: the
+			// name on one line (OneLine) in syncwatch's own lines (import-1,
+			// text-1, notify-1).
+			"devices notice": {Kind: KindNotice, Title: noticeIcon + "Devices changed",
+				Summary: "The device " + OneLine(name) + " (ANNAPCX) always connects through a relay. H11 is off for it.\nChanged from 127.0.0.1."},
+			"hidden notice": {Kind: KindNotice, Title: noticeIcon + "Urgent finding ignored",
+				Summary: OneLine("H9 "+rec.Subject+": "+rec.Message) + "\n" + OneLine("The finding is ignored. Reason: "+name) + "\nChanged from 127.0.0.1."},
 		}
 		for kind, m := range msgs {
 			p := d.Payload(m)
@@ -175,6 +182,13 @@ func TestHostileNamesAreNeutralised(t *testing.T) {
 			// What is harmless stays: emoji sequences and syncwatch's own markdown.
 			if i == 6 && !strings.Contains(e.Description, "👨\u200d👩\u200d👧 🇸🇪") {
 				t.Errorf("%s: emoji damaged: %s", kind, e.Description)
+			}
+			if m.Kind == KindNotice {
+				// The lines of syncwatch stay, the name adds none.
+				if lines := strings.Split(e.Description, "\n"); len(lines) != strings.Count(m.Summary, "\n")+1 || lines[len(lines)-1] != "Changed from 127.0.0.1." {
+					t.Errorf("name %d %s: lines %q", i, kind, lines)
+				}
+				continue
 			}
 			if !strings.Contains(e.Description, "**H9**") {
 				t.Errorf("name %d %s: bold check ID lost: %s", i, kind, e.Description)

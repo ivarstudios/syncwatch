@@ -97,8 +97,14 @@ func (d *Discord) Payload(m Message) DiscordPayload {
 
 	var desc strings.Builder
 	budget := maxDescription - 40
-	if m.Summary != "" {
-		desc.WriteString(clipBytes(m.Summary, budget))
+	if s := m.Summary; s != "" {
+		if m.Kind == KindNotice {
+			// The lines of a settings notice have no formatting of their
+			// own, but names and labels from Syncthing: each line is
+			// escaped. The line breaks are syncwatch's (see OneLine).
+			s = escapeLines(s)
+		}
+		desc.WriteString(clipBytes(s, budget))
 	}
 	for _, s := range m.Sections {
 		if len(s.Lines) == 0 {

@@ -182,10 +182,10 @@ func TestRunWiring(t *testing.T) {
 	noSecrets(t, logs.String())
 
 	// The collector pins a certificate at the first contact: a settings
-	// notice goes to Discord.
+	// notice goes to Discord, escaped (a zero-width space stops the link).
 	(<-mgr).OnPin("sol", strings.Repeat("ab", 32), false)
 	waitFor(t, "the settings notice of the pinned certificate", func() bool {
-		return discord.has("Server SOL: certificate pinned\nsyncwatch pinned the certificate AB:AB:AB:AB:AB:AB:AB:AB of https://127.0.0.1:1 at the first contact.")
+		return discord.has("Server SOL: certificate pinned\nsyncwatch pinned the certificate AB:AB:AB:AB:AB:AB:AB:AB of https:\u200b//127.0.0.1:1 at the first contact.")
 	})
 
 	time.Sleep(50 * time.Millisecond)

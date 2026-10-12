@@ -117,7 +117,8 @@ type Delivery struct {
 }
 
 // Notice is a settings notice: a change of a setting that the channels must
-// hear about.
+// hear about. The Summary has lines of text without formatting; a name or
+// another text from Syncthing in a line goes through OneLine first.
 type Notice struct {
 	Title, Summary string
 	// Security marks a change of a secret (an API key, a webhook, an API
