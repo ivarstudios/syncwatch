@@ -97,10 +97,10 @@ var queryParams = map[string][]string{
 
 // The limit of a remoteneed request: syncwatch asks for the first page of
 // 100 entries and keeps 20 names (internal/collector/need.go). Only the
-// first page: for a device that does not share the folder, and for a device
-// ID that Syncthing does not know, Syncthing lists every file of the
-// folder, and more pages would give the token the complete list. Each file
-// costs Syncthing a database read, and an invalid device ID is a 500 there.
+// first page, and only for a device that shares the folder (checkNeed): for
+// another device, and for a device ID that Syncthing does not know,
+// Syncthing lists every file of the folder. Each file costs Syncthing a
+// database read, and an invalid device ID is a 500 there.
 const maxNeedPerPage = 100
 
 // deviceID is the form of a complete Syncthing device ID.
@@ -141,11 +141,13 @@ type Gate struct {
 	mu  sync.Mutex
 	pin string
 
-	// The directories a browse request may list, from Syncthing's folder
-	// list, and when it was read.
+	// The directories a browse request may list and the devices of each
+	// folder (remoteneed), from Syncthing's folder list, and when it was
+	// read.
 	rmu     sync.Mutex
 	roots   []browsePath
-	windows bool // Syncthing's path separator is \
+	shared  map[string]map[string]bool // by folder ID: the IDs of the devices that share it
+	windows bool                       // Syncthing's path separator is \
 	rootsAt time.Time
 	tryAt   time.Time
 	tryErr  error
@@ -363,6 +365,17 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		q.Set("current", dir)
+	}
+	if r.URL.Path == pathRemoteNeed {
+		ok, err := g.checkNeed(q.Get("folder"), q.Get("device"))
+		if err != nil {
+			http.Error(w, upstreamError(err, "cannot read the folder list of Syncthing"), http.StatusBadGateway)
+			return
+		}
+		if !ok {
+			g.deny(w, r, http.StatusBadRequest, "query not permitted", "the device does not share the folder")
+			return
+		}
 	}
 	hc, ctx := g.hc, r.Context()
 	if r.URL.Path == pathEvents {
@@ -679,6 +692,26 @@ func (g *Gate) checkBrowse(current string) (dir string, ok bool, err error) {
 	return p.String(g.windows), true, nil
 }
 
+// checkNeed reports whether Syncthing shares folder with device. For a
+// device that does not share the folder, and for a device ID that Syncthing
+// does not know, Syncthing lists every file of the folder in remoteneed;
+// syncwatch asks only for the devices of the folder. err means Syncthing's
+// folder list isn't known yet.
+func (g *Gate) checkNeed(folder, device string) (ok bool, err error) {
+	g.rmu.Lock()
+	defer g.rmu.Unlock()
+	if err := g.refreshRootsLocked(rootsMaxAge); err != nil && g.rootsAt.IsZero() {
+		return false, err
+	}
+	if !g.shared[folder][device] {
+		// The device may just have been added: look again, at most once a minute.
+		if g.refreshRootsLocked(rootsMissAge) != nil || !g.shared[folder][device] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func (g *Gate) underRootLocked(p browsePath) bool {
 	for _, r := range g.roots {
 		if p.under(r, g.windows) {
@@ -700,31 +733,37 @@ func (g *Gate) refreshRootsLocked(maxAge time.Duration) error {
 		return g.tryErr
 	}
 	g.tryAt = now
-	roots, windows, err := g.fetchRoots()
+	roots, shared, windows, err := g.fetchRoots()
 	if g.tryErr = err; err != nil {
-		g.o.Log.Warn("cannot read the folder list of Syncthing, browse requests need it", "err", cleanErr(err))
+		g.o.Log.Warn("cannot read the folder list of Syncthing, browse and remoteneed requests need it", "err", cleanErr(err))
 		return err
 	}
-	g.roots, g.windows, g.rootsAt = roots, windows, now
+	g.roots, g.shared, g.windows, g.rootsAt = roots, shared, windows, now
 	return nil
 }
 
 // fetchRoots reads Syncthing's path separator and folder list and returns
 // the directories the token may list: each folder's parent (a drive root
-// counts, / doesn't: syncwatch never lists it) and the extra roots.
-func (g *Gate) fetchRoots() (roots []browsePath, windows bool, err error) {
+// counts, / doesn't: syncwatch never lists it) and the extra roots. shared
+// has the devices of each folder.
+func (g *Gate) fetchRoots() (roots []browsePath, shared map[string]map[string]bool, windows bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), headerTimeout)
 	defer cancel()
 	var st stclient.SystemStatus
 	if err := g.getJSON(ctx, pathSystemStatus, &st); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	var folders []stclient.FolderConfig
 	if err := g.getJSON(ctx, pathConfigFolders, &folders); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	windows = st.PathSeparator == `\`
+	shared = map[string]map[string]bool{}
 	for _, f := range folders {
+		shared[f.ID] = map[string]bool{}
+		for _, d := range f.Devices {
+			shared[f.ID][d.DeviceID] = true
+		}
 		p := parseBrowsePath(f.Path, windows)
 		if n := len(p.elems); n > 0 {
 			p.elems = p.elems[:n-1]
@@ -739,7 +778,7 @@ func (g *Gate) fetchRoots() (roots []browsePath, windows bool, err error) {
 			roots = append(roots, p)
 		}
 	}
-	return roots, windows, nil
+	return roots, shared, windows, nil
 }
 
 // getJSON is the gate's own request to Syncthing.
