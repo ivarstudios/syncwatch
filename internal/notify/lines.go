@@ -25,11 +25,15 @@ import (
 //   - or have a subject and a message that are the same apart from the name
 //     of their own server: an S3 for a directory that both servers sync.
 // A finding about a server itself (H1: the subject is the server name), and
-// a finding of no server or of several (H2, X1), has its own line.
+// a finding of no server or of several (H2, X1), has its own line. Syncthing
+// does not make device names unique: findings about a device (its device ID
+// in the details) share a line only when it is the same device. An
+// occurrence in the history has no device ID.
 
 // mergeItem is what the merge rule compares of a finding or an occurrence.
 type mergeItem struct {
 	checks, server, subject, message string
+	device                           string // the device ID of the details, if any
 	severity                         model.Severity
 	stale                            bool
 }
@@ -38,6 +42,11 @@ func recordItems(rs []*store.Record) []mergeItem {
 	out := make([]mergeItem, len(rs))
 	for i, r := range rs {
 		out[i] = mergeItem{checks: strings.Join(r.Checks, "+"), server: r.Server, subject: r.Subject, message: r.Message, severity: r.Severity, stale: r.Stale}
+		for _, d := range r.Details {
+			if d.Key == "Device ID" || d.Key == "Offered by" {
+				out[i].device = d.Value
+			}
+		}
 	}
 	return out
 }
@@ -103,7 +112,7 @@ func mergeKey(cfg *config.Config, it mergeItem) (key string, seen bool) {
 	if strings.TrimSpace(strings.ReplaceAll(subject, "\x01", "")) == "" {
 		return "", false // about the server itself
 	}
-	head := fmt.Sprint(it.checks, "\x00", int(it.severity), "\x00", it.stale, "\x00")
+	head := fmt.Sprint(it.checks, "\x00", int(it.severity), "\x00", it.stale, "\x00", it.device, "\x00")
 	if subject == it.subject {
 		return head + "same\x00" + it.subject, true
 	}
