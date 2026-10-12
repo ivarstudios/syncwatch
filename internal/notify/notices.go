@@ -370,6 +370,10 @@ func (n *Notifier) retryNotices(ctx context.Context, now time.Time) error {
 // about findings and never show in Delivery. A kept security notice also
 // goes to the channel of the findings while that webhook fails for more
 // than noticeFallbackAfter; the first channel that accepts it ends the wait.
+// After the first failure of the webhook in a pass, it gets nothing more in
+// that pass, but the security notices behind the failed one still get the
+// fallback: an older notice that the webhook does not take must not hold
+// them up for its day.
 func (n *Notifier) retryOwnNotices(ctx context.Context, now time.Time, own []Sender) {
 	n.dmu.Lock()
 	wait := now.Before(n.own.retryAt)
@@ -385,14 +389,23 @@ func (n *Notifier) retryOwnNotices(ctx context.Context, now time.Time, own []Sen
 			n.ownResult(now, gen, last)
 		}
 	}()
+	down := false // the webhook failed in this pass
 	for _, p := range n.keptNotices() {
 		if n.expired(p, now) {
 			continue
 		}
+		fallback := p.Security && n.ownFailingFor(p, now) > noticeFallbackAfter
+		if down && !fallback {
+			continue
+		}
 		m := n.keptMessage(p)
-		failed, err := n.sendNotice(ctx, now, m, own, false, gen)
-		tried, last = true, err
-		if err != nil && p.Security && !invalidMessage(err) && n.ownFailingFor(p, now) > noticeFallbackAfter {
+		var failed []chanErr
+		var err error
+		if !down {
+			failed, err = n.sendNotice(ctx, now, m, own, false, gen)
+			tried, last = true, err
+		}
+		if fallback && (down || err != nil && !invalidMessage(err)) {
 			more, aerr := n.sendNotice(ctx, now, m, n.senders(), false, gen)
 			if aerr == nil {
 				err = nil
@@ -405,8 +418,10 @@ func (n *Notifier) retryOwnNotices(ctx context.Context, now time.Time, own []Sen
 			n.dropNotice(p.Key)
 		case invalidMessage(err) || (!p.Security && rejected(err)):
 			n.discardKept(now, p, failed, err)
+		case down:
+			return // the channel of the findings fails too
 		default:
-			return
+			down = true
 		}
 	}
 }

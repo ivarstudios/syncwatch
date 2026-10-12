@@ -364,3 +364,40 @@ func TestRestartKeepsTheFailure(t *testing.T) {
 		t.Fatalf("after a new webhook and a restart: %+v", d)
 	}
 }
+
+// The webhook for settings notices fails with an error that keeps a notice
+// that is not about security for a day (HTTP 503, a redirect). A security
+// notice behind such an older notice still goes to the channel of the
+// findings after 1 hour, not after the day of the older notice (notify-3).
+func TestFallbackIsNotBlockedByAnOlderNotice(t *testing.T) {
+	for _, ownErr := range []error{&httpError{code: 503}, &httpError{code: 301, text: "redirect"}, errNoticesUndecryptable} {
+		start := local(2026, 10, 6, 10, 0)
+		r := newRig(t, start, "AKKA")
+		r.n.now = func() time.Time { return r.now }
+		own := &fakeSender{name: "discord-notices"}
+		own.fail(ownErr)
+		r.n.SetNoticeSenders(func() []Sender { return []Sender{own} })
+		r.n.Notice(Notice{Title: "Checks changed", Summary: "H7 is off."})
+		waitFor(t, func() bool { return own.tries() == 1 && pendingNotices(r) == 1 })
+		r.now = start.Add(5 * time.Minute)
+		r.n.Notice(Notice{Title: "Server AKKA changed", Summary: "The API key is replaced.", Security: true})
+		waitFor(t, func() bool { return own.tries() == 2 && pendingNotices(r) == 2 })
+		var arrived time.Time
+		for at := r.now; at.Before(start.Add(3 * time.Hour)); at = at.Add(30 * time.Second) {
+			r.at(at)
+			for _, m := range r.sender.take() {
+				if m.Title != "🔧 Server AKKA changed" {
+					t.Fatalf("%v: the channel of the findings got %q", ownErr, m.Title)
+				}
+				arrived = at
+			}
+		}
+		t.Logf("%v: the security notice reached the channel of the findings at %s", ownErr, arrived.Format("15:04:05"))
+		if arrived.IsZero() || arrived.After(start.Add(time.Hour+11*time.Minute)) {
+			t.Errorf("%v: the security notice reached the channel of the findings at %v, want by 11:11", ownErr, arrived)
+		}
+		if pendingNotices(r) != 1 {
+			t.Errorf("%v: %d notices kept, want 1 (Checks changed)", ownErr, pendingNotices(r))
+		}
+	}
+}
