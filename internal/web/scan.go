@@ -66,7 +66,8 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 	}
 
 	// The scans, then an evaluation of their result. A scan counts as
-	// ended only when its channel is closed: the wait can end first.
+	// ended only when its channel is closed: the wait can end first. A scan
+	// that stopped before the end wrote no result: it needs no evaluation.
 	ctx, cancel := context.WithTimeout(r.Context(), scanWait)
 	defer cancel()
 	ended := make([]bool, len(starts))
@@ -81,7 +82,8 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 		}
 		select {
 		case <-st.Done:
-			ended[i], settle = true, true
+			ended[i] = true
+			settle = settle || !scanStopped(st)
 		default:
 		}
 	}
@@ -95,12 +97,16 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 	for i, sc := range targets {
 		st := starts[i]
 		name := showControls(sc.Name)
-		switch st.State {
-		case collector.ScanStarted, collector.ScanRunning:
+		switch {
+		case ended[i] && scanStopped(st):
+			// The scan wrote no result, and the collector does not count
+			// it: the next press can start a scan.
+			refused = append(refused, scanStoppedText(name, st.End.Stopped))
+		case st.State == collector.ScanStarted, st.State == collector.ScanRunning:
 			// The collector tells how the scan ended (End): the last scan
 			// of the server does not move for a scan that listed no share.
 			sv := v.Snapshot.Server(sc.ID)
-			if ended[i] && sv != nil && (st.End == nil || st.End.Stopped == "") {
+			if ended[i] && sv != nil {
 				done, failed := scanCompleteText(name, sv, before[sc.ID], after[sc.ID])
 				if done != "" {
 					ok = append(ok, done)
@@ -109,7 +115,7 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 			} else {
 				ok = append(ok, fmt.Sprintf("The structure scan of server %s started at %s. The result follows on this page.", name, s.fmtClockSeconds(st.Started)))
 			}
-		case collector.ScanTooSoon:
+		case st.State == collector.ScanTooSoon:
 			result := "The result is on this page."
 			if st.Done != nil && !ended[i] {
 				result = "The result follows on this page."
@@ -187,6 +193,22 @@ func scanCompleteText(name string, sv *model.Server, before, after map[string]bo
 		out = append(out, fmt.Sprintf("%d structure findings of the server are open.", n))
 	}
 	return strings.Join(out, " "), failed
+}
+
+// scanStopped reports whether the scan of st stopped before the end. Read
+// it only after st.Done is closed.
+func scanStopped(st collector.ScanStart) bool {
+	return st.End != nil && st.End.Stopped != ""
+}
+
+// scanStoppedText is the answer for a scan that stopped before the end
+// (collector.ScanEnd): the scan wrote no result.
+func scanStoppedText(name, why string) string {
+	reason := "the connection to the server ended"
+	if why == collector.ScanStopNotLoaded {
+		reason = "the first full check of the server is not complete"
+	}
+	return fmt.Sprintf("The structure scan of server %s stopped before the end: %s. Try again in 1 minute.", name, reason)
 }
 
 // notUpText is the answer for a server that syncwatch cannot scan now: its

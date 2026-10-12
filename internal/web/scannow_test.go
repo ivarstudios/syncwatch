@@ -656,3 +656,45 @@ func TestScanNowShareThatCannotBeListed(t *testing.T) {
 		t.Errorf("no share listed: last_structure_scan %v, want %v (no move)", got, end1)
 	}
 }
+
+// A scan that stops before the end (its session ends, or the first full
+// check of the server is not complete) writes no result. The answer says so
+// in red and promises no result, and it does not wait for an evaluation.
+// The collector does not count the scan: the next press can start a scan
+// (review of W-056, finding 3).
+func TestScanNowStoppedScan(t *testing.T) {
+	old := scanWait
+	scanWait = 2 * time.Second
+	defer func() { scanWait = old }()
+	e := scanEnv(t, "")
+	e.web.now = func() time.Time { return today(e, 10, 0, 20) }
+	shareWith(e, today(e, 9, 0, 0), "Wrong", "LIVE-RIGHT")
+	e.eng.Evaluate()
+	stopped := func(state, why string) collector.ScanStart {
+		done := make(chan struct{})
+		close(done) // the scan stopped: Done closes, and the hub does not change
+		return collector.ScanStart{State: state, Started: today(e, 10, 0, 20), Next: today(e, 10, 0, 50), Done: done, End: &collector.ScanEnd{Stopped: why}}
+	}
+	const session = "The structure scan of server AKKA stopped before the end: the connection to the server ended. Try again in 1 minute."
+	for _, c := range []struct {
+		name  string
+		reply collector.ScanStart
+		want  string
+	}{
+		{"the session ends during the scan", stopped(collector.ScanStarted, collector.ScanStopSession), session},
+		{"the timed scan that runs stops", stopped(collector.ScanRunning, collector.ScanStopSession), session},
+		{"the scan of a second press stops", stopped(collector.ScanTooSoon, collector.ScanStopSession), session},
+		{"the first full check is not complete", stopped(collector.ScanStarted, collector.ScanStopNotLoaded),
+			"The structure scan of server AKKA stopped before the end: the first full check of the server is not complete. Try again in 1 minute."},
+	} {
+		withScanHook(e, func(string) collector.ScanStart { return c.reply })
+		start := time.Now()
+		ok, failed := flashes(e.post("/structure/scan", url.Values{"csrf": {e.csrf("/problems")}, "server": {"akka"}}))
+		if ok != "" || failed != c.want {
+			t.Errorf("%s: %q / %q, want no green answer and %q", c.name, ok, failed, c.want)
+		}
+		if d := time.Since(start); d >= scanWait {
+			t.Errorf("%s: the answer waited %v for an evaluation of a scan without a result", c.name, d.Round(time.Millisecond))
+		}
+	}
+}
