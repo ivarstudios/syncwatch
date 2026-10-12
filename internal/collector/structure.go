@@ -345,6 +345,8 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	// The previous results. A share that can't be listed now keeps its last
 	// directory list, marked stale by the error and the old ScannedAt, so
 	// that S4–S7 don't resolve and re-open around every outage or slow listing.
+	// It also keeps the end of its last listing: its findings show that
+	// time as their last scan (W-056).
 	var prevShares []*model.Share
 	c.hub.View(c.id, func(s *model.Server) {
 		if s.Structure != nil {
@@ -354,7 +356,7 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	stale := func(sh *model.Share) {
 		for _, old := range prevShares {
 			if st.Equal(old.Path, sh.Path) {
-				sh.Dirs, sh.ScannedAt = old.Dirs, old.ScannedAt
+				sh.Dirs, sh.ScannedAt, sh.ListedAt = old.Dirs, old.ScannedAt, old.ListedAt
 			}
 		}
 	}
@@ -471,6 +473,14 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	}
 
 	took := time.Since(now)
+	end, failed := now.Add(took), 0
+	for _, sh := range shares {
+		if sh.Error != "" {
+			failed++
+		} else {
+			sh.ListedAt = end
+		}
+	}
 	c.update(func(s *model.Server) {
 		if s.Structure == nil {
 			s.Structure = &model.Structure{}
@@ -488,12 +498,16 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 		}
 		s.Structure.Nested = found
 		// The end of the scan: the structure findings show it as the time
-		// of the last scan (W-056).
-		s.LastStructureScan = now.Add(took)
+		// of the last scan (W-056). A scan that could list none of the
+		// shares checked nothing: the time stays that of the last scan that
+		// listed a share (or found no share).
+		if failed == 0 || failed < len(shares) {
+			s.LastStructureScan = end
+		}
 		s.Structure.ScanListings, s.Structure.ScanTook, s.Structure.ScanBaseline = int(listings.Load()), took, baseline
 	})
 	// Info level: what the scan costs the server is worth seeing.
-	c.log.Info("structure scan done", "baseline", baseline, "shares", len(shares), "listings", listings.Load(), "took", took.Round(time.Millisecond))
+	c.log.Info("structure scan done", "baseline", baseline, "shares", len(shares), "share_errors", failed, "listings", listings.Load(), "took", took.Round(time.Millisecond))
 	if baseline {
 		c.noteBaseline(took)
 	}

@@ -185,3 +185,84 @@ func TestScanNowNotUp(t *testing.T) {
 		t.Fatalf("after the session: %+v", r)
 	}
 }
+
+// A scan that cannot list a share keeps the last known state of the share
+// (TestScanKeepsDirsWhenListingFails), and also its time: ListedAt stays the
+// end of the last scan that listed the share. The last scan of the server
+// moves only for a scan that listed at least 1 share, or for a server
+// without shares (review of W-056, finding 1).
+func TestScanThatCannotListAShareKeepsItsTime(t *testing.T) {
+	fake := newFakeST(t)
+	bl := &browseLog{fail: map[string]bool{}}
+	c, hub, h, stop := startCollector(t, bl.wrap(fake), "")
+	defer stop()
+	scan := func() *model.Structure {
+		t.Helper()
+		time.Sleep(10 * time.Millisecond) // a later end
+		if err := c.scan(context.Background(), false); err != nil {
+			t.Fatal(err)
+		}
+		return structureOf(hub)
+	}
+	last := func() (at time.Time) {
+		hub.View("akka", func(s *model.Server) { at = s.LastStructureScan })
+		return at
+	}
+	fail := func(paths ...string) {
+		bl.mu.Lock()
+		bl.fail = map[string]bool{}
+		for _, p := range paths {
+			bl.fail[p+`\`] = true
+		}
+		bl.mu.Unlock()
+	}
+	const src, pf = "AKKA-LIVE-1SOURCE", "AKKA-LIVE-2PROJECTFILES"
+
+	first := scan()
+	end1 := last()
+	srcPath, pfPath := shareByName(t, first, src).Path, shareByName(t, first, pf).Path
+	if end1.Before(first.ScannedAt) || !shareByName(t, first, src).ListedAt.Equal(end1) || !shareByName(t, first, pf).ListedAt.Equal(end1) {
+		t.Fatalf("first scan: end %v (start %v), shares listed at %v and %v", end1, first.ScannedAt,
+			shareByName(t, first, src).ListedAt, shareByName(t, first, pf).ListedAt)
+	}
+
+	// 1 of 2 shares cannot be listed: the server and the other share get
+	// the end of this scan, the failed share keeps its time.
+	fail(srcPath)
+	second := scan()
+	end2 := last()
+	if s := shareByName(t, second, src); s.Error == "" || !s.ListedAt.Equal(end1) {
+		t.Fatalf("the share that the scan cannot list: error %q, listed at %v, want %v", s.Error, s.ListedAt, end1)
+	}
+	if !end2.After(end1) || !shareByName(t, second, pf).ListedAt.Equal(end2) {
+		t.Fatalf("1 share listed: the last scan %v (before %v), the share listed at %v", end2, end1, shareByName(t, second, pf).ListedAt)
+	}
+
+	// No share can be listed: the scan claims no check.
+	fail(srcPath, pfPath)
+	third := scan()
+	if got := last(); !got.Equal(end2) {
+		t.Fatalf("no share listed: the last scan moved from %v to %v", end2, got)
+	}
+	if s, p := shareByName(t, third, src), shareByName(t, third, pf); s.Error == "" || p.Error == "" || !s.ListedAt.Equal(end1) || !p.ListedAt.Equal(end2) {
+		t.Fatalf("no share listed: %+v, %+v", s, p)
+	}
+
+	// The listings work again.
+	fail()
+	fourth := scan()
+	end4 := last()
+	if !end4.After(end2) || !shareByName(t, fourth, src).ListedAt.Equal(end4) || !shareByName(t, fourth, pf).ListedAt.Equal(end4) {
+		t.Fatalf("listings again: the last scan %v, shares listed at %v and %v", end4, shareByName(t, fourth, src).ListedAt, shareByName(t, fourth, pf).ListedAt)
+	}
+
+	// A server without shares: each scan is complete.
+	next := h.Get().Clone()
+	next.Shares.Exclude = map[string][]string{"akka": {srcPath, pfPath}}
+	if err := h.Set(next); err != nil {
+		t.Fatal(err)
+	}
+	if none := scan(); len(none.Shares) != 0 || !last().After(end4) {
+		t.Fatalf("no shares: %d shares, the last scan %v (before %v)", len(none.Shares), last(), end4)
+	}
+}

@@ -124,7 +124,7 @@ type Server struct {
 	Loaded            bool // at least one full re-check completed
 	LastFullCheck     time.Time
 	LastEvent         time.Time
-	LastStructureScan time.Time // the end of the last completed structure scan; zero before the first one
+	LastStructureScan time.Time // the end of the last structure scan that listed a share (or found none); zero before the first one
 
 	Folders        map[string]*Folder     // by folder ID
 	Devices        map[string]*Device     // configured devices, including itself
@@ -493,6 +493,10 @@ type Share struct {
 	Dirs      []*Dir
 	Error     string
 	ScannedAt time.Time
+	// ListedAt is the end of the last structure scan that listed the share
+	// (W-056). A share that a scan cannot list keeps the Dirs, ScannedAt
+	// and ListedAt of its last listing. Zero before the first listing.
+	ListedAt time.Time
 }
 
 // Dir is a top-level directory in a share.
