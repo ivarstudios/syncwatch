@@ -95,14 +95,13 @@ var queryParams = map[string][]string{
 	pathFolderErrors: {"folder", "page", "perpage"},
 }
 
-// Limits of a remoteneed request: syncwatch asks for the first page of 100
-// entries and keeps 20 names (internal/collector/need.go). The answer has
-// no secrets of Syncthing, but each file costs Syncthing a database read,
-// and an invalid device ID is a 500 there.
-const (
-	maxNeedPerPage = 100
-	maxNeedPage    = 1000
-)
+// The limit of a remoteneed request: syncwatch asks for the first page of
+// 100 entries and keeps 20 names (internal/collector/need.go). Only the
+// first page: for a device that does not share the folder, and for a device
+// ID that Syncthing does not know, Syncthing lists every file of the
+// folder, and more pages would give the token the complete list. Each file
+// costs Syncthing a database read, and an invalid device ID is a 500 there.
+const maxNeedPerPage = 100
 
 // deviceID is the form of a complete Syncthing device ID.
 var deviceID = regexp.MustCompile(`^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$`)
@@ -537,8 +536,8 @@ func checkQuery(path, raw string) (url.Values, error) {
 		if !q.Has("perpage") || !inRange(q.Get("perpage"), 1, maxNeedPerPage) {
 			return nil, fmt.Errorf("the parameter perpage must be between 1 and %d", maxNeedPerPage)
 		}
-		if q.Has("page") && !inRange(q.Get("page"), 1, maxNeedPage) {
-			return nil, fmt.Errorf("the parameter page must be between 1 and %d", maxNeedPage)
+		if q.Has("page") && q.Get("page") != "1" {
+			return nil, errors.New("the parameter page must be 1")
 		}
 	}
 	return q, nil

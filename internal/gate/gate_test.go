@@ -287,8 +287,12 @@ func TestGateQueryAllowlist(t *testing.T) {
 		{"/rest/folder/errors?folder=f&page=0&perpage=5", 400},
 		{"/rest/folder/errors?folder=f&page=1&perpage=x", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1&perpage=20", 200},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1&perpage=100", 200},
 		{"/rest/db/remoteneed?perpage=100&device=" + devA + "&folder=f", 200},
-		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1000&perpage=1", 200},
+		// Only the first page: for a device that does not share the folder,
+		// Syncthing lists every file of the folder.
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=2&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1000&perpage=1", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=0", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=101", 400},
@@ -362,22 +366,23 @@ func TestGateRemoteNeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cl.RemoteNeed(context.Background(), "live-fjord-4finals", devA, 20); err != nil {
+	if _, err := cl.RemoteNeed(context.Background(), "live-fjord-4finals", devA, 100); err != nil {
 		t.Fatalf("RemoteNeed through the gate: %v", err)
 	}
 	last := st.last()
 	if last.URL.Path != "/rest/db/remoteneed" || last.Header.Get("X-API-Key") != realKey {
 		t.Fatalf("Syncthing got %s with key %q", last.URL.Path, last.Header.Get("X-API-Key"))
 	}
-	if q := last.URL.Query(); q.Get("folder") != "live-fjord-4finals" || q.Get("device") != devA || q.Get("page") != "1" || q.Get("perpage") != "20" || len(q) != 4 {
+	if q := last.URL.Query(); q.Get("folder") != "live-fjord-4finals" || q.Get("device") != devA || q.Get("page") != "1" || q.Get("perpage") != "100" || len(q) != 4 {
 		t.Fatalf("forwarded query %q", last.URL.RawQuery)
 	}
 	for path, want := range map[string]string{
-		"/rest/db/remoteneed?folder=f&device=" + devA:                       "the parameter perpage must be between 1 and 100",
-		"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=500":      "the parameter perpage must be between 1 and 100",
-		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=0&perpage=1": "the parameter page must be between 1 and 1000",
-		"/rest/db/remoteneed?folder=f&device=WS-CARL&perpage=20":            "the parameter device must be a complete device ID",
-		"/rest/db/remoteneed?device=" + devA + "&perpage=20":                "the parameter folder is necessary",
+		"/rest/db/remoteneed?folder=f&device=" + devA:                        "the parameter perpage must be between 1 and 100",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=500":       "the parameter perpage must be between 1 and 100",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=0&perpage=1":  "the parameter page must be 1",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=2&perpage=20": "the parameter page must be 1",
+		"/rest/db/remoteneed?folder=f&device=WS-CARL&perpage=20":             "the parameter device must be a complete device ID",
+		"/rest/db/remoteneed?device=" + devA + "&perpage=20":                 "the parameter folder is necessary",
 	} {
 		code, body := get(t, gs, http.MethodGet, path, token)
 		if code != http.StatusBadRequest || strings.TrimSpace(body) != "syncwatch gate: query not permitted: "+want {
