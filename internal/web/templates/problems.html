@@ -32,7 +32,7 @@
 {{template "foot" .}}{{end}}
 
 {{define "problems-body"}}{{$vm := .Data.VM}}{{$admin := .Data.Admin}}{{$csrf := .CSRF}}
-<div id="problems-body" hx-get="/frag/problems?{{$vm.Query}}" hx-trigger="sse:update" hx-swap="outerHTML">
+<div id="problems-body" hx-get="/frag/problems?{{$vm.Query}}" hx-trigger="sse:update" hx-swap="outerHTML" data-day="{{$vm.Today}}">
   <p class="summary">
     <span class="sev sev-error">🔴 ERROR {{$vm.Errors}}</span>
     <span class="sev sev-warn">🟠 WARNING {{$vm.Warns}}</span>
@@ -54,6 +54,7 @@
           {{if .Snoozed}}<span class="tag snoozed">{{.SnoozeLabel}}</span>{{end}}
           <span class="msg">{{.Message}}</span>
           <span class="muted nowrap">· open {{.OpenFor}}</span>
+          {{if .Scan.Complete}}<span class="muted nowrap">· last scan {{.Scan.At}} (<span data-ago="{{.Scan.AgeS}}">{{.Scan.Ago}}</span>)</span>{{end}}
         </summary>
         <div class="fold">
           <table class="kv">
@@ -62,6 +63,7 @@
             {{if .ServerName}}<tr><th>Server</th><td>{{.ServerName}}</td></tr>{{end}}
             <tr><th title="The time when the condition started">Started</th><td>{{.Since}}</td></tr>
             <tr><th title="The time when syncwatch opened the finding">Reported</th><td>{{.OpenedAt}}{{if .Pinged}} · urgent message sent at {{.Pinged}}{{end}}</td></tr>
+            {{if .ScanServer}}<tr><th title="The end of the last structure scan of the server">Last scan</th><td>{{if .Scan.Complete}}{{.Scan.At}} (<span data-ago="{{.Scan.AgeS}}">{{.Scan.Ago}}</span>){{else}}no scan after the start of syncwatch{{end}}</td></tr>{{end}}
             {{range .Details}}<tr><th>{{.Label}}</th><td class="mono">{{.Value}}</td></tr>{{end}}
           </table>
           {{if .Paths}}<p><strong>Failed items</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
@@ -69,6 +71,14 @@
           {{if and .Link $admin}}<p><a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a></p>{{end}}
           {{if $admin}}
           <div class="actions">
+            {{if .ScanServer}}
+            <form method="post" action="/structure/scan" class="inline">
+              <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="server" value="{{.ScanServer}}">
+              <input type="hidden" name="back" value="/problems{{with $vm.Query}}?{{.}}{{end}}#f-{{.ID}}">
+              <button type="submit">Scan now</button>
+              <span class="muted small">syncwatch scans the shares of {{.ServerName}} now. The scan only reads the shares.</span>
+            </form>
+            {{end}}
             {{if .Snoozed}}
             <form method="post" action="/problems/{{.ID}}/unsnooze"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">{{if .Ignored}}Stop ignoring{{else}}Remove snooze{{end}}</button></form>
             {{else}}

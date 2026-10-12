@@ -69,6 +69,7 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 		"RelayLost":          cfg.Thresholds.RelayLost.Words(),
 		"Checks":             checks,
 		"StructureYAML":      string(sdoc),
+		"LastScans":          s.lastScans(v),
 		"HasWebhook":         s.st.HasSecret(store.SecretDiscordWebhook),
 		"WebhookLost":        s.undecryptable(store.SecretDiscordWebhook),
 		"HasNoticesWebhook":  s.st.HasSecret(store.SecretNoticesWebhook),

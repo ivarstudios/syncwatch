@@ -171,6 +171,12 @@
     <textarea name="yaml" rows="22" class="mono" spellcheck="false" aria-label="Structure rules YAML">{{$d.StructureYAML}}</textarea>
     <div class="actions"><button type="submit">Save rules</button></div>
   </form>
+  <form method="post" action="/structure/scan" class="inline">
+    <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="back" value="/settings#structure">
+    <button type="submit">Scan now</button>
+    <span class="muted small">syncwatch scans the shares of each enabled server now, with the saved structure rules. The scan only reads the shares.</span>
+  </form>
+  {{with $d.LastScans}}<p class="small muted">Last scan: {{range $i, $l := .}}{{if $i}} · {{end}}{{$l.Server}} {{if $l.Complete}}{{$l.At}} (<span data-ago="{{$l.AgeS}}">{{$l.Ago}}</span>){{else}}no scan after the start of syncwatch{{end}}{{end}}</p>{{end}}
 </section>
 
 <section class="card" id="collector">

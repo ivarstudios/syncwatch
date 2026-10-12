@@ -404,7 +404,7 @@ func TestAPINeedsTokenOrLogin(t *testing.T) {
 }
 
 // timeKeys are the keys of time values in both answers.
-var timeKeys = map[string]bool{"generated_at": true, "last_contact": true, "cert_expires": true, "last_seen": true, "since": true,
+var timeKeys = map[string]bool{"generated_at": true, "last_contact": true, "cert_expires": true, "last_structure_scan": true, "last_seen": true, "since": true,
 	"opened_at": true, "next_try": true, "snooze_until": true, "notifications_failing_since": true}
 
 var utcSecond = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)

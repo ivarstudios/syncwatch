@@ -30,6 +30,8 @@ type problemRow struct {
 	Link                                                       string
 	Sites                                                      []string // the sites of its servers, for the site filter of the Overview (findingSites)
 	Over                                                       bool     // past the limit of the Overview list until the site filter selects it
+	Scan                                                       lastScan // structure findings: the last structure scan of the server (W-056)
+	ScanServer                                                 string   // structure findings: the server that "Scan now" scans
 }
 
 func (s *Server) fmtTime(t time.Time) string {
@@ -73,6 +75,9 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record, admin bool) [
 		}
 		if sv := v.Snapshot.Server(r.Server); sv != nil {
 			row.ServerName = showControls(sv.Name)
+			if r.Category == model.CatStructure {
+				row.Scan, row.ScanServer = s.lastScanOf(sv), sv.ID
+			}
 		}
 		since := r.Since
 		if since.IsZero() || since.After(r.OpenedAt) {
