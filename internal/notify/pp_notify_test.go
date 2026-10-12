@@ -540,3 +540,42 @@ func TestSecurityNoticeSentAtOnceIsNotKept(t *testing.T) {
 		t.Fatalf("sent: %+v", msgs)
 	}
 }
+
+// In the night of the clock change (Europe/Stockholm, 2026-10-25, 03:00
+// CEST is 02:00 CET), a time of 1 hour can start and end at the same clock
+// time. The messages then add the zone to each clock time, else a gap reads
+// "from 02:30 to 02:30" (notify-7). On other days nothing changes.
+func TestTimesInTheNightOfTheClockChange(t *testing.T) {
+	utc := func(mo time.Month, d, h, m int) time.Time { return time.Date(2026, mo, d, h, m, 0, 0, time.UTC) }
+	r := newRig(t, utc(10, 25, 6, 0), "AKKA", "SOL")
+	cfg := r.n.cfg.Get()
+	if err := r.st.AddGap(store.Gap{From: utc(10, 25, 0, 30), To: utc(10, 25, 1, 30)}); err != nil {
+		t.Fatal(err)
+	}
+	autumn, _ := r.n.gapLines(utc(10, 25, 6, 0))
+	spring := newRig(t, utc(3, 29, 6, 0), "AKKA")
+	if err := spring.st.AddGap(store.Gap{From: utc(3, 29, 0, 30), To: utc(3, 29, 1, 30)}); err != nil {
+		t.Fatal(err)
+	}
+	springLines, _ := spring.n.gapLines(utc(3, 29, 6, 0))
+	rec := &store.Record{Finding: model.Finding{ID: "f", Check: "H1", Checks: []string{"H1"}, Severity: model.Error, Server: "sol", Subject: "SOL",
+		Message: "Server SOL is unreachable: connection refused", ResolvedText: "Server SOL is reachable again."},
+		OpenedAt: utc(10, 25, 0, 15), ResolvedAt: utc(10, 25, 1, 15), LastSeen: utc(10, 25, 1, 14)}
+	h := store.HistoryEntry{FindingID: "f", Check: "H1", Server: "sol", Subject: "SOL", Message: rec.Message, Severity: model.Error,
+		Urgent: true, OpenedAt: rec.OpenedAt, ResolvedAt: rec.ResolvedAt}
+	day := *rec
+	day.OpenedAt, day.ResolvedAt = utc(10, 26, 9, 0), utc(10, 26, 9, 30)
+	for _, c := range []struct{ what, got, want string }{
+		{"gap in the autumn", autumn[0], "syncwatch did not run from 02:30 CEST to 02:30 CET."},
+		{"gap in the spring", springLines[0], "syncwatch did not run from 01:30 CET to 03:30 CEST."},
+		{"resolved line", resolvedLines(cfg, []*store.Record{rec}, nil)[0], "✅ **H1** Server SOL is reachable again (the fault lasted 60 minutes, 02:15 CEST–02:15 CET)"},
+		{"blip line", blipLines(cfg, []store.HistoryEntry{h})[0], "✅ **H1** Server SOL is unreachable: connection refused (02:15 CEST–02:15 CET)"},
+		{"catch-up section", MissedMessage(cfg, nil, []store.HistoryEntry{h}, rec.OpenedAt, rec.ResolvedAt).Sections[0].Title,
+			"Opened and resolved while the notifications failed (02:15 CEST–02:15 CET)"},
+		{"resolved line on another day", resolvedLines(cfg, []*store.Record{&day}, nil)[0], "✅ **H1** Server SOL is reachable again (the fault lasted 30 minutes, 10:00–10:30)"},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.what, c.got, c.want)
+		}
+	}
+}

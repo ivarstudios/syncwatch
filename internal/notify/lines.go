@@ -174,7 +174,8 @@ func blipLines(cfg *config.Config, hs []store.HistoryEntry) []string {
 	var out []string
 	for _, g := range mergeLines(cfg, historyItems(hs)) {
 		h := hs[g.first]
-		out = append(out, historyLine(h, true)+g.suffix()+fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(loc).Format("15:04"), h.ResolvedAt.In(loc).Format("15:04")))
+		from, to := zoned(h.OpenedAt.In(loc).Format("15:04"), h.OpenedAt, h.ResolvedAt.In(loc).Format("15:04"), h.ResolvedAt, loc)
+		out = append(out, historyLine(h, true)+g.suffix()+" ("+from+"–"+to+")")
 	}
 	return out
 }
@@ -224,9 +225,11 @@ func lasted(cfg *config.Config, r *store.Record, gaps []store.Gap) string {
 }
 
 // span writes a time range in loc: "21:10–21:17", or with the date of the
-// start when it is on another day: "2026-10-06 21:10–08:17".
+// start when it is on another day: "2026-10-06 21:10–08:17", and with the
+// zones in the night of a clock change: "02:15 CEST–02:15 CET".
 func span(from, to time.Time, loc *time.Location) string {
-	return clockOn(from, to, loc) + "–" + to.In(loc).Format("15:04")
+	a, b := zoned(clockOn(from, to, loc), from, to.In(loc).Format("15:04"), to, loc)
+	return a + "–" + b
 }
 
 // adviceKeys are the detail keys of advice (the rules put advice only

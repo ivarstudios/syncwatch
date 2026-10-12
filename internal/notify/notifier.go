@@ -1088,7 +1088,8 @@ func (n *Notifier) gapLines(now time.Time) ([]string, time.Time) {
 		if g.Reported {
 			continue
 		}
-		lines = append(lines, "syncwatch did not run from "+clockOn(g.From, now, loc)+" to "+clockOn(g.To, now, loc)+".")
+		from, to := zoned(clockOn(g.From, now, loc), g.From, clockOn(g.To, now, loc), g.To, loc)
+		lines = append(lines, "syncwatch did not run from "+from+" to "+to+".")
 		if g.To.After(upTo) {
 			upTo = g.To
 		}
@@ -1117,6 +1118,19 @@ func clockOn(t, ref time.Time, loc *time.Location) string {
 		return t.Format("2006-01-02 15:04")
 	}
 	return t.Format("15:04")
+}
+
+// zoned adds the zone to the clock texts a (of t1) and b (of t2) when their
+// UTC offsets in loc differ. In the night of a clock change, 1 hour can
+// start and end at the same clock time: "02:30 CEST" and "02:30 CET", not
+// "02:30" and "02:30".
+func zoned(a string, t1 time.Time, b string, t2 time.Time, loc *time.Location) (string, string) {
+	z1, off1 := t1.In(loc).Zone()
+	z2, off2 := t2.In(loc).Zone()
+	if off1 == off2 {
+		return a, b
+	}
+	return a + " " + z1, b + " " + z2
 }
 
 // sendTo delivers to the given channels. record says whether they are the
@@ -1416,12 +1430,7 @@ func MissedMessage(cfg *config.Config, rs []*store.Record, missed []store.Histor
 	if len(missed) == 0 {
 		return m
 	}
-	from, to := since.In(cfg.Location()), now.In(cfg.Location())
-	span := from.Format("15:04") + "–" + to.Format("15:04")
-	if from.Format("2006-01-02") != to.Format("2006-01-02") {
-		span = from.Format("2006-01-02 15:04") + "–" + to.Format("15:04")
-	}
-	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span + ")", Lines: limitLines(blipLines(cfg, missed), 20)})
+	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span(since, now, cfg.Location()) + ")", Lines: limitLines(blipLines(cfg, missed), 20)})
 	return m
 }
 
