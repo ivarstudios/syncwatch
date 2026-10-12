@@ -1,6 +1,6 @@
 // syncwatch: keeps fold-outs open across live updates, filters the grid and
-// the sites, and asks for confirmation on destructive forms. No inline
-// scripts (CSP).
+// the sites, asks for confirmation on destructive forms, and counts on the
+// age of the last structure scan. No inline scripts (CSP).
 (function () {
   "use strict";
   var openKeys = {};
@@ -166,7 +166,41 @@
     restoreOpen(document);
     applyGridFilter();
     applySiteFilter();
+    stampAgo(document);
   });
+
+  // "last scan 21:52 (3 minutes ago)" (W-056): data-ago is the age in
+  // seconds when syncwatch wrote the element. The age counts on while the
+  // page is open, in the words of agoWords in scan.go: a live update comes
+  // only when something changes.
+  function plural(n, one, many) {
+    return n === 1 ? "1 " + one : n + " " + many;
+  }
+
+  function agoWords(s) {
+    var m = Math.floor(Math.max(s, 0) / 60);
+    if (m < 1) return "less than 1 minute ago";
+    if (m < 60) return plural(m, "minute", "minutes") + " ago";
+    if (m < 24 * 60) return plural(Math.floor(m / 60), "hour", "hours") + " ago";
+    return plural(Math.floor(m / (24 * 60)), "day", "days") + " ago";
+  }
+
+  // stampAgo notes when each new data-ago element arrived on the page.
+  function stampAgo(root) {
+    var now = Date.now();
+    root.querySelectorAll("[data-ago]").forEach(function (el) {
+      if (!el.swAgoFrom) el.swAgoFrom = now;
+    });
+  }
+
+  setInterval(function () {
+    stampAgo(document);
+    var now = Date.now();
+    document.querySelectorAll("[data-ago]").forEach(function (el) {
+      var s = (parseInt(el.getAttribute("data-ago"), 10) || 0) + (now - el.swAgoFrom) / 1000;
+      el.textContent = agoWords(s);
+    });
+  }, 30000);
 
   // Focus moves before focusout settles, so look again a moment later.
   document.addEventListener("focusout", function () { setTimeout(catchUp, 0); });
@@ -311,6 +345,7 @@
     }
     initSiteFilter();
     applySiteFilter();
+    stampAgo(document);
     rememberOpen(document);
     openFromHash();
     window.addEventListener("hashchange", openFromHash);

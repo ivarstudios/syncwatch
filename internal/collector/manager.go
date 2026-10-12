@@ -216,6 +216,19 @@ func (m *Manager) ResetPin(serverID string) error {
 	return nil
 }
 
+// ScanNow starts a structure scan of one server for an administrator (see
+// Collector.ScanNow). A server without a running collector (disabled, no
+// API key, a key for another URL) is not up.
+func (m *Manager) ScanNow(serverID string) ScanStart {
+	m.mu.Lock()
+	r := m.running[serverID]
+	m.mu.Unlock()
+	if r == nil {
+		return ScanStart{State: ScanNotUp}
+	}
+	return r.c.ScanNow()
+}
+
 // RescanNow asks every collector for a full re-check (used after settings changes).
 func (m *Manager) RescanNow() {
 	m.mu.Lock()

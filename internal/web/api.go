@@ -40,8 +40,12 @@ type apiServer struct {
 	UptimeS     *int64   `json:"uptime_s"` // null while the server is not up
 	LastContact *apiTime `json:"last_contact"`
 	CertExpires *apiTime `json:"cert_expires"`
-	Error       string   `json:"error,omitempty"`
-	Folders     struct {
+	// The end of the last structure scan that listed a share of the server,
+	// or that found no share (W-056); null before the first such scan after
+	// the start of syncwatch, and for a disabled server.
+	LastStructureScan *apiTime `json:"last_structure_scan"`
+	Error             string   `json:"error,omitempty"`
+	Folders           struct {
 		Total      int  `json:"total"`
 		Idle       int  `json:"idle"`
 		Syncing    int  `json:"syncing"`
@@ -243,7 +247,7 @@ func (s *Server) apiStatusOf(v *engine.View, admin bool) apiStatus {
 	}
 	for _, sv := range v.Snapshot.Servers {
 		a := apiServer{ID: sv.ID, Name: sv.Name, Site: cfg.SiteOf(sv.ID), Status: string(sv.Status), Version: sv.Version,
-			LastContact: atime(sv.LastContact), CertExpires: atime(sv.Cert.NotAfter), Error: sv.LastError}
+			LastContact: atime(sv.LastContact), CertExpires: atime(sv.Cert.NotAfter), LastStructureScan: atime(sv.LastStructureScan), Error: sv.LastError}
 		if sv.Status == model.StatusUp {
 			out.HealthCounts.ServersUp++
 			if !sv.StartTime.IsZero() {

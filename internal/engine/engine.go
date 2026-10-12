@@ -39,6 +39,8 @@ type Engine struct {
 	snap        *model.Snapshot
 	version     uint64
 	evaluated   time.Time
+	evalStarted uint64 // the number of evaluations that started; see Settle
+	evalDone    uint64 // the number of the last complete evaluation
 	fingerprint uint64
 	changedAt   time.Time
 
@@ -91,6 +93,41 @@ func (e *Engine) Trigger() {
 	}
 }
 
+// settleEvery is how often Settle looks for the evaluation it waits for.
+const settleEvery = 10 * time.Millisecond
+
+// Settle asks for an evaluation and waits until an evaluation that started
+// after the call is complete, at most for d or until ctx ends. It reports
+// whether one completed. Such an evaluation has the state of the hub at the
+// call: the answer to "Scan now" (W-056) waits with it, thus the page after
+// the answer shows the findings of the scan. Only Run evaluates, one
+// evaluation at a time.
+func (e *Engine) Settle(ctx context.Context, d time.Duration) bool {
+	e.mu.Lock()
+	want := e.evalStarted + 1
+	e.mu.Unlock()
+	e.Trigger()
+	limit := time.NewTimer(d)
+	defer limit.Stop()
+	tick := time.NewTicker(settleEvery)
+	defer tick.Stop()
+	for {
+		e.mu.Lock()
+		done := e.evalDone >= want
+		e.mu.Unlock()
+		if done {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-limit.C:
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
 // Run evaluates on every hub change (coalesced), on Trigger, and every 30 s
 // so time-based thresholds fire without new data.
 func (e *Engine) Run(ctx context.Context) {
@@ -105,11 +142,13 @@ func (e *Engine) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-e.hub.Changed():
-			// Coalesce bursts of events into one evaluation.
+			// Coalesce bursts of events into one evaluation. A Trigger
+			// (Settle, a configuration change) ends the wait.
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(time.Second):
+			case <-e.trigger:
 			}
 		case <-e.trigger:
 		case <-tick.C:
@@ -385,6 +424,11 @@ func (e *Engine) Evaluate() {
 		// empty snapshot would resolve every open finding.
 		return
 	}
+	// The number of this evaluation, before the snapshot: see Settle.
+	e.mu.Lock()
+	e.evalStarted++
+	run := e.evalStarted
+	e.mu.Unlock()
 	cfg := e.cfg.Get()
 	snap := e.hub.Snapshot()
 	now := e.now()
@@ -563,6 +607,7 @@ func (e *Engine) Evaluate() {
 	}
 	e.snap = snap
 	e.evaluated = now
+	e.evalDone = max(e.evalDone, run)
 	// Only tell dashboards to refresh when something they show changed.
 	fp := visibleFingerprint(snap)
 	publish := changed || fp != e.fingerprint

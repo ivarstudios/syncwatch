@@ -627,6 +627,7 @@ func Run(ctx context.Context, o Options) error {
 		NoticeLater:     ntf.NoticeLater,
 		ChannelsChanged: channelsChanged,
 		Delivery:        ntf.Delivery,
+		ScanNow:         mgr.ScanNow,
 	}, o.Version, log)
 	if err != nil {
 		return err

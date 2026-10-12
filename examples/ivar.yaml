@@ -56,7 +56,12 @@ structure:
       share_must_have: { me: true }       # me must be a named group of share_type_from_path
     - when_name_matches: '^LIVE-'
       share_must_have: { me: false }
-  ignore_dirs: ['@Recycle', '@Recently-Snapshot', '.streams', '.@__thumb', '@eaDir', '.stversions', '.stfolder', '.*', '#recycle']
+  # The pattern '_*' is for the helper folders next to the project folders,
+  # for example _archive, _templates and _libraries. syncwatch skips each
+  # directory whose name starts with "_". Such a directory gets no structure
+  # finding (S4 to S7). syncwatch does not search it for nested project
+  # folders (S3), also inside a project folder.
+  ignore_dirs: ['@Recycle', '@Recently-Snapshot', '.streams', '.@__thumb', '@eaDir', '.stversions', '.stfolder', '.*', '#recycle', '_*']
   # syncwatch looks 6 folder levels down into each project folder. This
   # includes 413 of the 417 folders of a real project of the studio.
   nested_scan_depth: 6
