@@ -105,7 +105,7 @@ func siteOK(s string) bool {
 // CleanSite returns a site name with each run of white space as one space
 // and without white space at the ends. A no-break space or a line separator
 // from a paste looks the same as a space: the site then has the spelling of
-// the site typed with the space bar (import-4).
+// the site typed with the space bar.
 func CleanSite(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // SpellSite gives the spelling site to each site that is the same without
@@ -243,7 +243,7 @@ type API struct {
 
 // MinTokenLength is the shortest API token of a file (api.token), in
 // characters: the minimum of the passwords. The imported API token can have
-// the scope full, and the API has no rate limit for API tokens (import-3).
+// the scope full, and the API has no rate limit for API tokens.
 const MinTokenLength = 10
 
 // tokenOK reports whether an API token of a file has at least MinTokenLength
@@ -364,7 +364,7 @@ func (c *Config) ApplyDefaults() {
 	}
 	c.API.Token = strings.TrimSpace(c.API.Token) // a paste can bring a line break
 	// notifications.repeat_urgent has no default: 0 is off.
-	// One site has one spelling (import-4): the rules and the dashboard
+	// One site has one spelling: the rules and the dashboard
 	// compare the sites as they are. A site that is the same as an earlier
 	// one without regard to case gets the spelling of the earlier one: the
 	// site of syncwatch first, then the sites of the servers in order.

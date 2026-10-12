@@ -9,9 +9,10 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
-// Tests of the pre-publication review (pp-rules).
+// Tests of hidden characters in file names, the polled peer view, paused
+// relay devices and S1 inside a share root.
 
-// text-4: a file name with white space at the start or the end, or with a
+// A file name with white space at the start or the end, or with a
 // control character, shows as a quoted Go string in the H5 row "Needed
 // files" and in the H4 lines of the failed items. HTML does not show these
 // characters: "brief " showed as "brief", and "a\r\nb" as "a b", the same
@@ -50,7 +51,7 @@ func TestFileNamesShowHiddenCharacters(t *testing.T) {
 	}
 }
 
-// text-4: which names quoteName quotes. Names that the dashboard shows
+// Which names quoteName quotes. Names that the dashboard shows
 // correctly stay as they are; it marks the direction characters itself.
 func TestQuoteName(t *testing.T) {
 	for _, tc := range []struct{ name, want string }{
@@ -76,7 +77,7 @@ func TestQuoteName(t *testing.T) {
 	}
 }
 
-// data-4: in polled mode, the connections of AKKA are from its last full
+// In polled mode, the connections of AKKA are from its last full
 // check. They show that Syncthing on SOL runs only when that check came 10
 // minutes (deadLinkTime) or more after the first failed request to SOL:
 // syncwatch sends no request between 2 full checks, thus SOL can be off
@@ -139,7 +140,7 @@ func TestPolledPeerViewNeedsNewerData(t *testing.T) {
 	}
 }
 
-// data-5 (a): a device that always uses a relay, and that an administrator
+// A device that always uses a relay, and that an administrator
 // paused on every server that has it configured, has no connection because
 // of the pause: no H12 (H6 reports the pause after thresholds.paused). A
 // server that does not pause the device can have it connected: H12 as

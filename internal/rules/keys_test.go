@@ -105,7 +105,7 @@ func TestDetailKeysKeepTheirNames(t *testing.T) {
 	}
 }
 
-// The detail keys of wave 3 (r2): the new checks H12 and H13, the H4 of a
+// The detail keys of version 0.9: the new checks H12 and H13, the H4 of a
 // full database disk and the rows of S2 are new; H1 and H5 get rows after
 // their keys of 78ef2d8. Advice is only under "Possible causes", "What to
 // check" and "What to do"; device IDs only under "Device ID" and "Offered by".

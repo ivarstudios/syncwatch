@@ -1,7 +1,7 @@
 // Command fakediscord is a stand-in Discord webhook for the Compose tests.
 // It accepts POST /api/webhooks/{id}/{token}, answers a GET of the same URL
 // with the webhook object, and lists what it received at GET /messages. POST /mode {"mode": "fail404:3"} (or MODE at the start)
-// selects an error answer, with the mode names of the kit's fake Discord:
+// selects an error answer, with the mode names of the fake Discord of the test kit:
 // ok (the default), fail500[:N], fail400[:N], fail404[:N] and
 // ratelimit[:RETRY_AFTER[:N]]. GET /mode shows the current mode.
 package main

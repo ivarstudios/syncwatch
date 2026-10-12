@@ -44,7 +44,7 @@ func wantPin(t *testing.T, ch chan string, want string) {
 	}
 }
 
-// W-035: the manager's OnPin hears of each certificate that the collector
+// The manager's OnPin hears of each certificate that the collector
 // pins without an administrator: at the first contact (renewal false) and
 // for a CA-signed certificate that replaces the pinned one (renewal true).
 // A pinned certificate that does not change gives no call.

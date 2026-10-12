@@ -372,7 +372,7 @@ func TestGateQueryAllowlist(t *testing.T) {
 	}
 }
 
-// The names of the files that a device still needs (W-058) pass the gate
+// The names of the files that a device still needs pass the gate
 // with the query of syncwatch's client, unchanged, for a device that shares
 // the folder; the gate says what it refuses.
 func TestGateRemoteNeed(t *testing.T) {
@@ -932,8 +932,8 @@ func TestClientThroughGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	// The gate wants its token on /rest/noauth/health too (fixer b); the
-	// client sends the key there like everywhere else (fixer a).
+	// The gate wants its token on /rest/noauth/health too; the client sends
+	// the key there like everywhere else.
 	if err := cl.Health(ctx); err != nil {
 		t.Fatalf("health through the gate: %v", err)
 	}

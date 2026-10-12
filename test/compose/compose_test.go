@@ -199,7 +199,7 @@ func TestCompose(t *testing.T) {
 		if err := insts["e2e-sol"].AddFolder(ctx, "root", "SOL source share", share("SOL-LIVE-1SOURCE"), nil); err != nil {
 			t.Fatal(err)
 		}
-		// r2 (W-046): the folders inside the share root are rows of S2, not
+		// r2: the folders inside the share root are rows of S2, not
 		// S1 findings.
 		if _, err := sw.WaitStatus(ctx, 2*time.Minute, func(st *harness.Status) bool {
 			return st.Find("S2", "SOL-LIVE-1SOURCE") != nil && st.Find("S2", "other Syncthing folder") != nil &&

@@ -9,7 +9,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/web"
 )
 
-// sessions-1: reset-admin-password refuses the viewer password. The login
+// The command reset-admin-password refuses the viewer password. The login
 // checks the administrator password first: with one password for both, each
 // login with the viewer password is an administrator session.
 func TestResetPasswordRefusesTheViewerPassword(t *testing.T) {

@@ -130,7 +130,7 @@ func (e *evaluator) serverReachability(sv *model.Server) {
 
 // deadLinkTime is how long Syncthing can keep a connection whose network
 // path is down: it closes a connection that receives nothing after
-// approximately 5 minutes (the kit measured 300 to 452 seconds after a
+// approximately 5 minutes (a test measured 300 to 452 seconds after a
 // silent cut of the VPN).
 const deadLinkTime = 10 * time.Minute
 

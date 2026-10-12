@@ -1,9 +1,8 @@
 package web
 
-// Tests of the pre-release review (stage pp, area auth): the last use of an
-// API token during a replace (tokens-2), the login limit for many addresses
-// (sessions-2), the length of an administrator session (sessions-3) and the
-// login of an administrator in a browser with a viewer session (sessions-4).
+// Tests of the last use of an API token during a replace, the login limit
+// for many addresses, the length of an administrator session and the login
+// of an administrator in a browser with a viewer session.
 
 import (
 	"fmt"
@@ -21,7 +20,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// tokens-2: a request reads the API token with the old value. Then the
+// A request reads the API token with the old value. Then the
 // administrator selects Replace, and then the request records its use. The
 // use must not go to the new value: no program sent it, and the card is
 // what the administrator reads to see if Home Assistant has the new value.
@@ -64,7 +63,7 @@ func TestAPITokenUseDuringReplace(t *testing.T) {
 	}
 }
 
-// sessions-2: guesses from many addresses at the same moment. Each attempt
+// Guesses from many addresses at the same moment. Each attempt
 // waits its delay, but the attempts wait at the same time: the delay alone
 // does not slow them down. While the slow-down is active, each address gets
 // 1 attempt in the window. A burst after a quiet window has no failures yet:
@@ -136,7 +135,7 @@ func TestLimiterSlowsDownGuessesFromManyAddresses(t *testing.T) {
 	}
 }
 
-// sessions-2 through the login form: 40 addresses send 3 wrong passwords
+// The same through the login form: 40 addresses send 3 wrong passwords
 // each at the same moment while the slow-down is active. syncwatch checks 1
 // password for each address and refuses the others (429). The administrator
 // at another address logs in.
@@ -155,11 +154,11 @@ func TestLoginSlowDownWithParallelGuessesFromManyAddresses(t *testing.T) {
 	// Each request has its own client address: a device on the LAN with
 	// many IPv4 addresses.
 	login := func(ip, password string) int {
-		form := url.Values{"csrf": {"pp-csrf-token"}, "password": {password}}
+		form := url.Values{"csrf": {"login-test-csrf-token"}, "password": {password}}
 		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 		req.Host, req.RemoteAddr = "127.0.0.1", ip+":40000"
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(&http.Cookie{Name: csrfCookie, Value: "pp-csrf-token"})
+		req.AddCookie(&http.Cookie{Name: csrfCookie, Value: "login-test-csrf-token"})
 		rec := httptest.NewRecorder()
 		e.web.ServeHTTP(rec, req)
 		return rec.Code
@@ -191,7 +190,7 @@ func TestLoginSlowDownWithParallelGuessesFromManyAddresses(t *testing.T) {
 	}
 }
 
-// sessions-3: access.session_ttl 365d for a lobby screen (README) gives the
+// access.session_ttl 365d for a lobby screen (README) gives the
 // viewer session 365 days. An administrator session ends after 30 days at
 // most: a browser on a shared PC that an administrator did not log out is
 // not an administrator for a year. A session of an older version with a
@@ -285,7 +284,7 @@ func pageOf(t *testing.T, c *http.Client, u string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-// sessions-4: a browser with a viewer session (the lobby screen, the PC of
+// A browser with a viewer session (the lobby screen, the PC of
 // a colleague) opens an administrator page. syncwatch sends it to the login
 // form with the reason, and the administrator logs in there: then the
 // browser gets the page that it asked for. The viewer password on that form

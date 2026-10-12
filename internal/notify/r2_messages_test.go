@@ -24,7 +24,7 @@ func twoNAS() *config.Config {
 // and how long the fault lasted from its start to the resolution, with the
 // clock times. A finding of an older version without the resolved form says
 // "Resolved:" and its message. A finding that resolved while syncwatch did
-// not run gets that time instead of an end (W-038, admin-anna AA-10, AA-25).
+// not run gets that time instead of an end.
 func TestResolvedMessageSaysWhatIsFixed(t *testing.T) {
 	cfg := twoNAS()
 	h1 := func() *store.Record {
@@ -99,7 +99,7 @@ func h5(id, server, name, pct string) *store.Record {
 // The views of one PC from AKKA and SOL are one line in every message, also
 // with different percentages: "… _(also seen from SOL)_". The findings stay
 // separate (dashboard, API). Two servers that are down stay 2 lines, and a
-// section title counts the lines (W-046b, editor-shared-pc ESP-13).
+// section title counts the lines.
 func TestViewsOfOnePCShareOneLine(t *testing.T) {
 	cfg := twoNAS()
 	now := local(2026, 10, 6, 12, 0)
@@ -163,7 +163,7 @@ func TestViewsOfOnePCShareOneLine(t *testing.T) {
 
 // Urgent, repeat and reminder lines have the first advice row of the finding
 // (Possible causes, What to check, What to do) as a second line: people at
-// the other site read the cause without the dashboard (W-057c). The other
+// the other site read the cause without the dashboard. The other
 // messages do not, and the advice is cut to 200 characters.
 func TestAdviceRowUnderTheFindingLine(t *testing.T) {
 	cfg := twoNAS()
@@ -236,7 +236,7 @@ func TestAdviceRowsStayWithinDiscordLimits(t *testing.T) {
 	}
 }
 
-// W-038 (live re-test of wave 3, P1): a finding that an evaluation after
+// A finding that an evaluation after
 // the end of a time when syncwatch did not run saw open did not resolve in
 // that time. Its resolved line gives the duration of the fault.
 func TestResolvedLineOfAFaultSeenAfterTheGap(t *testing.T) {

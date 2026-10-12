@@ -49,7 +49,7 @@ func (e *evaluator) shareRootFolders(sv *model.Server) map[string]ShareRef {
 // s2Covers reports whether the S2 finding of a share-root folder reports
 // the Syncthing folders inside it in place of their S1 findings (one
 // finding for one cause): while S2 is not snoozed or ignored, and is urgent
-// when S1 is urgent. Else each folder inside gets its S1, as before W-046:
+// when S1 is urgent. Else each folder inside gets its S1, as in older versions:
 // a folder that Syncthing syncs 2 times always has a finding that a person
 // sees, with the urgency of S1.
 func (e *evaluator) s2Covers(sv *model.Server, root *model.Folder) bool {

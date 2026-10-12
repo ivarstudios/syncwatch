@@ -75,8 +75,8 @@ func lobbyHub(e *env) {
 }
 
 // lobbyView returns a copy of the engine's view with hand-made links and,
-// when open is not nil, hand-made findings. The engine of this branch sets
-// no links (the rules assignment fills them).
+// when open is not nil, hand-made findings. The engine of these tests sets
+// no links (the rules fill them).
 func lobbyView(e *env, links []model.ServerLink, siteLinks []model.SiteLink, open []*store.Record) *engine.View {
 	v := *e.eng.View()
 	v.Snapshot = v.Snapshot.Clone()
@@ -374,7 +374,7 @@ timezone: Europe/Stockholm
 	}
 }
 
-// The link rows follow C11: between the sites with 2 or more sites, else
+// The link rows: between the sites with 2 or more sites, else
 // between the servers; "from" with the clock time today, with the date on
 // another day; the reason when the state is not known.
 func TestLobbyLinkRows(t *testing.T) {

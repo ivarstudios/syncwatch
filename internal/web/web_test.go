@@ -95,7 +95,7 @@ func TestViewerModes(t *testing.T) {
 }
 
 // While notifications fail, every page says so, with the time of the next
-// try when the notifier knows it (W-040); viewers don't see the error text.
+// try when the notifier knows it; viewers don't see the error text.
 func TestNotificationFailureBanner(t *testing.T) {
 	e := adminEnv(t, twoServers+"access: {viewer: open}\ntimezone: Europe/Stockholm\n")
 	now := time.Date(2026, 10, 11, 19, 44, 0, 0, time.UTC) // 21:44 in Stockholm
@@ -306,7 +306,7 @@ func TestLoginPageWithStaleViewerSession(t *testing.T) {
 	if r, body := e.get("/login?next=/"); r.StatusCode != http.StatusOK || !strings.Contains(body, `name="password"`) {
 		t.Fatalf("/login with a stale viewer session: %d, want the login form", r.StatusCode)
 	}
-	csrf = e.csrf("/login?next=/") // the viewer login made a new CSRF token (W-027)
+	csrf = e.csrf("/login?next=/") // the viewer login made a new CSRF token
 	// The admin password still gets in.
 	if r := e.post("/login", url.Values{"csrf": {csrf}, "password": {"correct horse battery"}, "next": {"/"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/" {
 		t.Fatalf("admin login: %d %q", r.StatusCode, r.Header.Get("Location"))
@@ -441,7 +441,7 @@ func TestSnoozedAndIgnoredStayVisible(t *testing.T) {
 // A live update must not wipe an ignore reason or snooze date someone is
 // typing: the shipped script cancels the swap while a form inside the
 // updated section is in use. The behaviour itself was checked in a headless
-// browser (see docs/changes/r0-k.md); this pins the asset.
+// browser; this pins the asset.
 func TestLiveUpdateGuardShipped(t *testing.T) {
 	e := newEnv(t, twoServers)
 	_, js := e.get("/assets/app.js")

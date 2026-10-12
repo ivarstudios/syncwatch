@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// The answer of /rest/db/remoteneed of Syncthing 2.1.5 and 2.1.6 (kit slot
-// s23, docs/changes/r2-3.md), shortened to 1 directory and 1 file.
+// The answer of /rest/db/remoteneed of Syncthing 2.1.5 and 2.1.6 (the test
+// kit), shortened to 1 directory and 1 file.
 const remoteNeedAnswer = `{
  "files": [
   {"blocksHash": null, "deleted": false, "ignored": false, "invalid": false, "localFlags": 0,
@@ -86,8 +86,8 @@ func TestGateRefusedEndpoint(t *testing.T) {
 	}
 }
 
-// /rest/system/status of Syncthing 2.1.6 on AKKA in kit slot s23 with its
-// relay up (docs/changes/r2-3.md): a relay listener and a TCP listener.
+// /rest/system/status of Syncthing 2.1.6 on AKKA in the test kit with its
+// relay up: a relay listener and a TCP listener.
 const systemStatusAnswer = `{
  "alloc": 6597904,
  "connectionServiceStatus": {

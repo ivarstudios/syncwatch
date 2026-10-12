@@ -123,7 +123,7 @@ var csrfField = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
 // corrects the mistake of an S4, and an administrator selects Scan now: the
 // S4 resolves at once, and the INFO log line names the login, password or
 // proxy. Without the hook, each press answers "syncwatch is not connected
-// to server AKKA now" (review of W-056, finding 5).
+// to server AKKA now".
 func TestScanNowReachesTheCollector(t *testing.T) {
 	for _, login := range []string{"password", "proxy"} {
 		t.Run(login, func(t *testing.T) {

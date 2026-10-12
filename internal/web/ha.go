@@ -54,14 +54,14 @@ type haStatus struct {
 	Servers                   map[string]haServer `json:"servers"`
 }
 
-// The status values of /api/v1/ha (W-049): machine values without spaces. A
+// The status values of /api/v1/ha: machine values without spaces. A
 // new text on the dashboard does not change them.
 const (
 	haUpToDate           = "up_to_date"
 	haSyncing            = "syncing"
 	haScanning           = "scanning"
 	haWatchError         = "watch_error"
-	haError              = "error" // only while an H4 finding with severity ERROR is open (W-054)
+	haError              = "error" // only while an H4 finding with severity ERROR is open
 	haPaused             = "paused"
 	haUnreachable        = "unreachable"         // status down
 	haCertificateChanged = "certificate_changed" // status cert-changed
@@ -185,8 +185,8 @@ func haFindings(v *engine.View, now time.Time) (open, urgent map[string]int, h4 
 // haServerStatus is the status value of a polled server. A server that is
 // up and checked has the worst state of its folders (error, watch_error,
 // syncing, scanning, up_to_date), or paused when every folder is paused.
-// h4 tells whether an H4 finding with severity ERROR is open for the server
-// (W-054): only then a folder in error makes the status error. Syncthing
+// h4 tells whether an H4 finding with severity ERROR is open for the server:
+// only then a folder in error makes the status error. Syncthing
 // repairs many failed items itself, and H4 waits for that before it opens.
 // Without H4, such a folder counts as syncing (watch_error when its file
 // watcher also failed); folders_error keeps the count of folders in error.

@@ -8,7 +8,7 @@ import (
 )
 
 // The store keeps, for each folder of a server, when syncwatch saw it
-// first and its newest local change (W-021): C1 needs both, also after a
+// first and its newest local change: C1 needs both, also after a
 // restart of syncwatch.
 
 // folderActivity records the folders of a full check in the store and

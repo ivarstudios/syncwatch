@@ -10,7 +10,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/web"
 )
 
-// sessions-1: SYNCWATCH_ADMIN_PASSWORD is not used when it is the viewer
+// SYNCWATCH_ADMIN_PASSWORD is not used when it is the viewer
 // password (a viewer password without an administrator password exists when
 // it was set in proxy mode). The login checks the administrator password
 // first: with one password for both, each login with the viewer password is

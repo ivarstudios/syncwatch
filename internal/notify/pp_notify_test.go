@@ -19,7 +19,9 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// The tests of the pre-release review (prepub) of the notifier.
+// Tests of the notifier: escaped names, a line for each PC, the check of a
+// failing webhook, the failure over a restart, the security notices, the
+// repeat of urgent messages and the night of a clock change.
 
 // Device IDs of 2 PCs with the same name, EDIT-01: one at the office, one at
 // site B. Syncthing does not make device names unique.
@@ -29,7 +31,7 @@ const (
 )
 
 // Two PCs with the same name are 2 devices: their findings have a line each
-// in every message. The views of 1 PC from both servers stay 1 line (text-3).
+// in every message. The views of 1 PC from both servers stay 1 line.
 func TestTwoPCsWithTheSameNameHaveTwoLines(t *testing.T) {
 	cfg := twoNAS()
 	now := local(2026, 10, 6, 12, 0)
@@ -83,7 +85,7 @@ func TestTwoPCsWithTheSameNameHaveTwoLines(t *testing.T) {
 
 // Through the rules and the engine: 2 unknown devices with the same name
 // request a connection, one to AKKA and one to SOL (H9 urgent). The urgent
-// message has 2 lines (text-3).
+// message has 2 lines.
 func TestTwoUnknownDevicesWithTheSameNameInTheUrgentMessage(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA", "SOL")
@@ -130,7 +132,7 @@ func unhealthyFrom(d Delivery, now time.Time) bool {
 
 // A test message fails during a short Discord outage, and no message is due
 // after it. syncwatch checks the webhook without a message and ends the
-// failure: /healthz does not answer 503 for days (notify-2, exposure-3).
+// failure: /healthz does not answer 503 for days.
 func TestFailedTestMessageEndsWhenDiscordWorksAgain(t *testing.T) {
 	start := local(2026, 10, 12, 9, 59) // a Monday, nothing is due
 	r := newRig(t, start, "AKKA")
@@ -175,7 +177,7 @@ func TestFailedTestMessageEndsWhenDiscordWorksAgain(t *testing.T) {
 // An urgent message fails just before the quiet hours, and Discord works
 // again in them. Nothing is sent in the quiet hours, but the check ends the
 // failure: no 503 for the night. The overnight summary still announces the
-// finding (exposure-3).
+// finding.
 func TestFailureBeforeQuietHoursEndsInThem(t *testing.T) {
 	start := local(2026, 10, 6, 21, 50)
 	r := newRig(t, start, "AKKA", "SOL")
@@ -218,7 +220,7 @@ func TestFailureBeforeQuietHoursEndsInThem(t *testing.T) {
 }
 
 // The urgent message fails and the administrator snoozes the finding before
-// the next try: nothing is due, but the check ends the failure (notify-2).
+// the next try: nothing is due, but the check ends the failure.
 func TestFailureEndsAfterTheFindingIsSnoozed(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA")
@@ -320,7 +322,7 @@ func TestDiscordProbe(t *testing.T) {
 
 // syncwatch restarts while Discord refuses every message. The new process
 // continues the failure from its start, thus /healthz answers 503 at once
-// and the dead-man URL is not called (exposure-1). A send that works and a
+// and the dead-man URL is not called. A send that works and a
 // new webhook end the failure, also for the next start.
 func TestRestartKeepsTheFailure(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
@@ -370,7 +372,7 @@ func TestRestartKeepsTheFailure(t *testing.T) {
 // The webhook for settings notices fails with an error that keeps a notice
 // that is not about security for a day (HTTP 503, a redirect). A security
 // notice behind such an older notice still goes to the channel of the
-// findings after 1 hour, not after the day of the older notice (notify-3).
+// findings after 1 hour, not after the day of the older notice.
 func TestFallbackIsNotBlockedByAnOlderNotice(t *testing.T) {
 	for _, ownErr := range []error{&httpError{code: 503}, &httpError{code: 301, text: "redirect"}, errNoticesUndecryptable} {
 		start := local(2026, 10, 6, 10, 0)
@@ -406,7 +408,7 @@ func TestFallbackIsNotBlockedByAnOlderNotice(t *testing.T) {
 
 // Repeat every hour. SOL stops at 09:00 and SIRIUS at 09:21: the role gets
 // the repeat once in each hour, for both findings, not one repeat for each
-// finding (notify-5). The first urgent message of each finding stays its
+// finding. The first urgent message of each finding stays its
 // own.
 func TestRepeatMentionsTheRoleOnceEachInterval(t *testing.T) {
 	start := local(2026, 10, 6, 9, 0)
@@ -486,7 +488,7 @@ func (s *stuckSender) count() int {
 
 // syncwatch stops while the first send of a security notice waits for
 // Discord. The notice is in the stored list before the send, thus the next
-// start sends it (notify-6). A notice of the command line is stored when
+// start sends it. A notice of the command line is stored when
 // the call returns, before the caller deletes its own copy. The retries
 // skip a notice while its first send runs: no second copy.
 func TestSecurityNoticeSurvivesAStopDuringItsFirstSend(t *testing.T) {
@@ -544,7 +546,7 @@ func TestSecurityNoticeSentAtOnceIsNotKept(t *testing.T) {
 // In the night of the clock change (Europe/Stockholm, 2026-10-25, 03:00
 // CEST is 02:00 CET), a time of 1 hour can start and end at the same clock
 // time. The messages then add the zone to each clock time, else a gap reads
-// "from 02:30 to 02:30" (notify-7). On other days nothing changes.
+// "from 02:30 to 02:30". On other days nothing changes.
 func TestTimesInTheNightOfTheClockChange(t *testing.T) {
 	utc := func(mo time.Month, d, h, m int) time.Time { return time.Date(2026, mo, d, h, m, 0, 0, time.UTC) }
 	r := newRig(t, utc(10, 25, 6, 0), "AKKA", "SOL")

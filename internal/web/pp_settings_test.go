@@ -1,6 +1,8 @@
 package web
 
-// Tests of the pre-publication fixes of the Settings area (pp-settings).
+// Tests of the Settings area: the viewer and administrator passwords, the
+// API token of an imported file, the spelling of the sites and the
+// direction controls in the import preview and the notification log.
 
 import (
 	"fmt"
@@ -54,7 +56,7 @@ func ppLogin(t *testing.T, e *env, pw string) string {
 	return ""
 }
 
-// sessions-1: the viewer password and the administrator password are
+// The viewer password and the administrator password are
 // different. The login checks the administrator password first: with one
 // password for both, each login with the viewer password (the staff, the
 // lobby screen) was an administrator session.
@@ -104,7 +106,7 @@ func TestViewerAndAdministratorPasswordsDiffer(t *testing.T) {
 	}
 }
 
-// sessions-1: the check of a new viewer password must not tell a session
+// The check of a new viewer password must not tell a session
 // that does not know the administrator password (an unlocked browser, a
 // copied cookie) whether a guess is the administrator password. Thus a new
 // viewer password needs the administrator password first, also when it has
@@ -134,7 +136,7 @@ func TestViewerPasswordIsNoAdministratorPasswordOracle(t *testing.T) {
 	}
 }
 
-// sessions-1: the first start (/setup) refuses an administrator password
+// The first start (/setup) refuses an administrator password
 // that is the viewer password. A viewer password without an administrator
 // password exists when it was set in proxy mode; syncwatch import-config
 // can then set built-in login to on.
@@ -158,7 +160,7 @@ func TestSetupRefusesTheViewerPassword(t *testing.T) {
 	}
 }
 
-// import-3: syncwatch makes the API token of an imported file (api.token)
+// syncwatch makes the API token of an imported file (api.token)
 // the API token "API token", with the scope full when it adds it. A weak
 // value is refused at the preview, before syncwatch stores anything. The
 // preview and the settings notice name the scope.
@@ -214,7 +216,7 @@ func TestImportedAPITokenIsCheckedAndShowsItsScope(t *testing.T) {
 	}
 }
 
-// import-4: one site typed in two spellings is one site. The Servers and
+// One site typed in two spellings is one site. The Servers and
 // Notifications forms make each white space a space (a no-break space from
 // Option-Space or a paste looks the same as a space). The spelling that the
 // administrator types is the spelling of the site everywhere: a site is the
@@ -279,7 +281,7 @@ func TestOneSiteTypedInTwoSpellings(t *testing.T) {
 	// A new server at the site of SOL, typed in capitals: one site, and the
 	// notice of the new server names the change of SOL.
 	n = len(e.noticeList())
-	save("/settings/servers", url.Values{"name": {"SIRIUS"}, "url": {"https://c:1"}, "api_key": {"key-sirius"}, "site": {"MARTIN\u00a0OFFICE"}})
+	save("/settings/servers", url.Values{"name": {"SIRIUS"}, "url": {"https://c:1"}, "api_key": {"key-sirius"}, "site": {"BRANCH\u00a0OFFICE"}})
 	if cfg := e.cfg.Get(); cfg.SiteOf("sol") != "BRANCH OFFICE" || cfg.SiteOf("sirius") != "BRANCH OFFICE" || cfg.Site != "IVAR office" {
 		t.Fatalf("new server: SOL %+q, SIRIUS %+q, syncwatch %+q", cfg.SiteOf("sol"), cfg.SiteOf("sirius"), cfg.Site)
 	}
@@ -288,7 +290,7 @@ func TestOneSiteTypedInTwoSpellings(t *testing.T) {
 	}
 }
 
-// text-5: the import preview shows the names of devices and servers as the
+// The import preview shows the names of devices and servers as the
 // other pages do: a character that changes the direction of text shows as
 // ‹U+202E›. Raw, it showed the rest of a line in reverse ("gnp.exe" as
 // "exe.png"). The names come from Syncthing (devices) and from the file
@@ -332,7 +334,7 @@ devices: [{id: ` + relayPC + `, relay: true}]
 	check("refused import", section(t, page, "import"), "Not imported. Select the checkbox to remove the server ‹U+202E›LOS.")
 }
 
-// text-5: the table "Recent notifications" shows the titles as the other
+// The table "Recent notifications" shows the titles as the other
 // pages do. The title of an urgent message has the folder label or the
 // device name from Syncthing; the error can have the answer of Discord.
 func TestNotificationLogShowsDirectionControls(t *testing.T) {

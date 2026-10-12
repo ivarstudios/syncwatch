@@ -152,8 +152,7 @@ func TestHostileNamesAreNeutralised(t *testing.T) {
 			"missed":    MissedMessage(cfg, nil, []store.HistoryEntry{h, h}, now.Add(-time.Hour), now),
 			"missed1":   MissedMessage(cfg, nil, []store.HistoryEntry{h}, now.Add(-time.Hour), now),
 			// Settings notices with a name, as the dashboard words them: the
-			// name on one line (OneLine) in syncwatch's own lines (import-1,
-			// text-1, notify-1).
+			// name on one line (OneLine) in syncwatch's own lines.
 			"devices notice": {Kind: KindNotice, Title: noticeIcon + "Devices changed",
 				Summary: "The device " + OneLine(name) + " (ANNAPCX) always connects through a relay. H11 is off for it.\nChanged from 127.0.0.1."},
 			"hidden notice": {Kind: KindNotice, Title: noticeIcon + "Urgent finding ignored",

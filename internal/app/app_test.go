@@ -509,9 +509,9 @@ func TestCLINoticesAreSecurityNotices(t *testing.T) {
 		!strings.Contains(n.Summary, "The Discord webhook for settings notices is added.") {
 		t.Fatalf("first import: %+v", n)
 	}
-	// The first import made the API token "API token" (fixer 5's
-	// ImportSecrets: an imported api.token is the value of that API token,
-	// scope full). The next import replaces its value.
+	// The first import made the API token "API token" (ImportSecrets: an
+	// imported api.token is the value of that API token, scope full). The
+	// next import replaces its value.
 	if tok, err := st.APITokenByName(store.LegacyTokenName); err != nil || tok == nil || tok.Scope != store.ScopeFull {
 		t.Fatalf("the API token \"API token\" after the first import: %+v %v", tok, err)
 	}

@@ -14,10 +14,10 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// Integration of r1-3 (C4: a disabled server's device is a server), r1-4
-// (the health line, C3) and r1-6 (health_counts and the PCs tile, C3): the
-// three count the same PCs. SIRIUS is disabled; its stored device ID is
-// configured on AKKA, so before C4 it counted as a fifth, offline PC.
+// A disabled server's device is a server, and the health line, health_counts
+// and the PCs tile count the same PCs. SIRIUS is disabled; its stored device
+// ID is configured on AKKA, so in older versions it counted as a fifth,
+// offline PC.
 func TestHealthLineAndCountsAgree(t *testing.T) {
 	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1"}, {name: SOL, url: "https://b:1"}, {name: SIRIUS, url: "https://c:1", disabled: true}]
 api: {token: swt_test_token}
@@ -83,8 +83,8 @@ thresholds: {pc_offline: 1h}
 	}
 }
 
-// W-030 for server API keys (r1-5 request 2, integrator follow-up in the
-// plan): a stored API key that the secret key cannot decrypt is not shown as
+// Server API keys after a change of the secret key: a stored API key that the
+// secret key cannot decrypt is not shown as
 // "for a different URL"; a key entered for another URL still is.
 func TestServerKeyThatCannotBeDecrypted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syncwatch.db")
@@ -121,9 +121,9 @@ func TestServerKeyThatCannotBeDecrypted(t *testing.T) {
 	}
 }
 
-// r1-5 request 5: a session over the confirmation limit logs "password
-// check rate limit reached" once a minute with a count (fixer 6's log
-// limiter, W-025), not once for each refused confirmation.
+// A session over the confirmation limit logs "password
+// check rate limit reached" once a minute with a count (the log limiter),
+// not once for each refused confirmation.
 func TestConfirmationLimitLogsOnceAMinute(t *testing.T) {
 	e := adminEnv(t, twoServers)
 	var logs syncBuffer

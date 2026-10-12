@@ -11,7 +11,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
-// W-056: "Scan now" starts a structure scan of a server for an
+// "Scan now" starts a structure scan of a server for an
 // administrator, through the path of the timed scan. One scan of a server
 // runs at a time, an administrator starts at most 1 scan of a server in
 // manualEvery, and the end of the scan is the time of the last scan.
@@ -190,7 +190,7 @@ func TestScanNowNotUp(t *testing.T) {
 // (TestScanKeepsDirsWhenListingFails), and also its time: ListedAt stays the
 // end of the last scan that listed the share. The last scan of the server
 // moves only for a scan that listed at least 1 share, or for a server
-// without shares (review of W-056, finding 1).
+// without shares.
 func TestScanThatCannotListAShareKeepsItsTime(t *testing.T) {
 	fake := newFakeST(t)
 	bl := &browseLog{fail: map[string]bool{}}
@@ -271,8 +271,7 @@ func TestScanThatCannotListAShareKeepsItsTime(t *testing.T) {
 // End tells why it stopped, the timed scans count from the scan before it,
 // and an administrator can start the next scan at once. Before, the next
 // press got "too soon" for 30 seconds with a scan without a result, and the
-// next timed scan came 1 interval after the stopped one (review of W-056,
-// finding 3).
+// next timed scan came 1 interval after the stopped one.
 func TestScanNowStoppedScanDoesNotCount(t *testing.T) {
 	fake := newFakeST(t)
 	var hold atomic.Bool

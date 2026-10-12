@@ -12,8 +12,8 @@ import (
 )
 
 // What H5 shows of a sync that does not finish: the files that a device
-// still needs (W-058), and the progress of a sync that continues: the bytes
-// received, the speed and the time left (W-059). The time rule of H5
+// still needs, and the progress of a sync that continues: the bytes
+// received, the speed and the time left. The time rule of H5
 // (stuck_sync) does not change. Sizes have 2 significant digits and the
 // time left whole minutes, hours or days, so that the message and the rows
 // do not change at each evaluation.
@@ -70,8 +70,8 @@ func (e *evaluator) progressOf(samples []model.ProgressSample, need, global int6
 	default:
 		p.speed = rate(bps)
 		// A time left only for a sync that moves: when the need did not go
-		// down for longer than the time left, the estimate is wrong (W-059:
-		// files that a Windows PC cannot store, after the other files
+		// down for longer than the time left, the estimate is wrong (for
+		// example files that a Windows PC cannot store, after the other files
 		// arrived).
 		if left := float64(need) / bps; need > 0 && still.Seconds() <= left {
 			p.left = timeLeft(left)
@@ -85,7 +85,7 @@ func (e *evaluator) progressOf(samples []model.ProgressSample, need, global int6
 // (until now). The newest point is the newest sample, or the need now when
 // no sample came in the last minute (while a sync waits, Syncthing sends no
 // progress). The bytes that arrived are the decreases of the need in the
-// 10 minutes: a need that rises (new files) does not hide them (W-059).
+// 10 minutes: a need that rises (new files) does not hide them.
 // Between 2 points the need is a straight line, thus of the 2 points around
 // the start of the 10 minutes only the part after the start counts. Then a
 // steady sync gives the same speed at each evaluation, also with samples

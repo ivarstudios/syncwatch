@@ -53,7 +53,7 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 	log, _ := s.st.Notifications(20)
 	for i := range log {
 		log[i].Channel = channelLabel(log[i].Channel)
-		// A title has folder labels and device names from Syncthing (text-5).
+		// A title has folder labels and device names from Syncthing.
 		log[i].Summary, log[i].Error = showControls(log[i].Summary), showControls(log[i].Error)
 	}
 	_, hasViewer := s.setting(KeyViewerHash)
@@ -193,7 +193,7 @@ var formInputs = map[string][]string{
 	"collector":     {"mode", "event_timeout", "full_check_interval", "poll_interval", "structure_interval", "baseline_interval", "concurrency", "request_timeout", "down_after_failures"},
 }
 
-// keepWhenMissing are the inputs of wave 3 (r2). A form that does not send
+// keepWhenMissing are the inputs of version 0.9. A form that does not send
 // one of them (a script written for an older version) keeps the stored
 // value, as for an empty webhook input. A browser always sends them.
 var keepWhenMissing = map[string]bool{"site": true, "repeat_urgent": true, "relay_lost": true}
@@ -315,7 +315,7 @@ const staleText = "Not saved. The settings changed after you opened this page. R
 // back to a settings section. When the change is refused, it writes no
 // answer and returns the error. The sections that save is for (checks,
 // structure rules, collector, devices) change no secret, pinned certificate
-// or access: their settings notices are not security notices (C5).
+// or access: their settings notices are not security notices.
 func (s *Server) save(w http.ResponseWriter, r *http.Request, old, c *config.Config, section, title, okMsg string) error {
 	if err := s.hooks.SaveConfig(c); err != nil {
 		return err
@@ -397,7 +397,7 @@ func (s *Server) limitedCheck(r *http.Request, info requestInfo, check func() bo
 	allowed, delay := s.limiter.check(key, now)
 	if !allowed {
 		// One line per session (or proxy address) and minute, with the
-		// number of refused checks, as for logins (W-025).
+		// number of refused checks, as for logins.
 		if n := s.logs.count("confirm "+key, now); n > 0 {
 			s.log.Warn("password check rate limit reached", "ip", clientIP(r), "path", r.URL.Path, "count", n)
 		}
@@ -480,7 +480,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		sv.ID = id
 		c.Servers = append(c.Servers, sv)
 	}
-	c.SpellSite(sv.Site) // the typed spelling of a site is its spelling everywhere (import-4)
+	c.SpellSite(sv.Site) // the typed spelling of a site is its spelling everywhere
 	if err := c.Validate(); err != nil {
 		s.redirect(w, r, "/settings#servers", "Not saved. "+sentence(err.Error()), true)
 		return
@@ -545,7 +545,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		if len(changes) > 0 {
 			// A new API key, a URL that needs the API key again or a removed
 			// pinned certificate is a security change. The name, the GUI URL,
-			// the site, allow_http and disabled alone are not (C5).
+			// the site, allow_http and disabled alone are not.
 			security := key != "" || moved || resetPin
 			s.announce(r, notify.Notice{Title: "Server " + name + " changed", Summary: strings.Join(changes, "\n"), Security: security})
 		}
@@ -628,7 +628,7 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	c.PublicURL = strings.TrimRight(strings.TrimSpace(r.FormValue("public_url")), "/")
 	if formHas(r, "site") {
 		c.Site = config.CleanSite(r.FormValue("site"))
-		c.SpellSite(c.Site) // the typed spelling of a site is its spelling everywhere (import-4)
+		c.SpellSite(c.Site) // the typed spelling of a site is its spelling everywhere
 	}
 	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	clearNotices, noticesHook := r.FormValue("discord_notices_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_notices_webhook"))
@@ -707,7 +707,7 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	}
 	if len(changes) > 0 {
 		// A webhook change is a security change; the other notification
-		// settings are not (C5).
+		// settings are not.
 		announce(notify.Notice{Title: "Notification settings changed", Summary: strings.Join(changes, "\n"), Security: channels})
 	}
 	s.redirect(w, r, "/settings#notifications", "The notification settings are saved.", false)
@@ -832,7 +832,7 @@ func changeLines(old, c *config.Config, deviceName func(id string) string) []str
 			}
 		}
 		if was, now := old.Debounce(ci.ID), c.Debounce(ci.ID); was != now {
-			// RT-1: the debounce of a check that sends no urgent message
+			// The debounce of a check that sends no urgent message
 			// delays nothing; the line says so.
 			if old.Urgent(ci.ID) || c.Urgent(ci.ID) {
 				out = append(out, fmt.Sprintf("The check %s waits %s instead of %s before an urgent message.", name, rules.Ago(now), rules.Ago(was)))
@@ -914,7 +914,7 @@ var keyLabels = map[string]string{
 // changeLabel names a setting in a notice line: the label of the Settings
 // page (config.FieldLabel without the key, or keyLabels). A setting that only
 // the YAML has (structure rules, shares, access.session_ttl) is named by its
-// part of the Settings page and its key (W-039).
+// part of the Settings page and its key.
 func changeLabel(key string) string {
 	if l := config.FieldLabel(key); l != key {
 		return strings.TrimSuffix(l, " ("+key+")")
@@ -947,7 +947,7 @@ func repeatWords(v string) string {
 	return v
 }
 
-// deviceChanges words the changes of devices[].relay (W-047): syncwatch
+// deviceChanges words the changes of devices[].relay: syncwatch
 // reports no H11 for a device that always connects through a relay.
 func deviceChanges(old, c *config.Config, deviceName func(id string) string) []string {
 	device := func(id string) string {
@@ -1147,7 +1147,7 @@ func (s *Server) handleChecksSave(w http.ResponseWriter, r *http.Request, info r
 }
 
 // formDuration reads the duration input name of the Checks or the Collector
-// form. It returns the message for a value that is not a duration (RT-2: the
+// form. It returns the message for a value that is not a duration (the
 // message of config.ParseDuration names the format) or that is not more than
 // 0, with the label of the input.
 func formDuration(r *http.Request, name string) (config.Duration, string) {
@@ -1269,7 +1269,7 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 		}
 	}
 	// The login checks the administrator password first: with the same
-	// password, each viewer is an administrator (sessions-1). After the
+	// password, each viewer is an administrator. After the
 	// confirmation, "confirm" is the administrator password.
 	if viewerPW != "" && s.adminConfigured() && viewerPW == r.FormValue("confirm") {
 		s.redirect(w, r, "/settings#access", "The viewer password must be different from the administrator password.", true)
@@ -1390,14 +1390,14 @@ const errSameAsViewer = "The administrator password must be different from the v
 // sameAsViewer reports whether pw is the viewer password. The login checks
 // the administrator password first: an administrator password that is also
 // the viewer password makes each login with the viewer password an
-// administrator session (sessions-1).
+// administrator session.
 func (s *Server) sameAsViewer(pw string) bool {
 	h, ok := s.setting(KeyViewerHash)
 	return ok && CheckPassword(pw, h)
 }
 
-// handleDevicesSave saves the devices that always connect through a relay
-// (W-047): devices[] is the list of the selected device IDs, each with relay
+// handleDevicesSave saves the devices that always connect through a relay:
+// devices[] is the list of the selected device IDs, each with relay
 // true. A device that is not selected leaves the list.
 func (s *Server) handleDevicesSave(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	old := s.cfg.Get()
@@ -1422,8 +1422,7 @@ func (s *Server) handleDevicesSave(w http.ResponseWriter, r *http.Request, info 
 	}
 }
 
-// handleNoticesTest sends a test notice to the webhook for settings notices
-// (W-051).
+// handleNoticesTest sends a test notice to the webhook for settings notices.
 func (s *Server) handleNoticesTest(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	if s.hooks.SendNoticesTest == nil {
 		s.redirect(w, r, "/settings#notifications", "The test settings notice failed. syncwatch cannot send settings notices.", true)
@@ -1447,7 +1446,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request, info reque
 	_, _ = w.Write(b)
 }
 
-// handleImport imports a YAML file in 2 steps (W-055). Step 1 (no import_id)
+// handleImport imports a YAML file in 2 steps. Step 1 (no import_id)
 // reads and checks the file, keeps it as a pending import and shows the
 // preview in the card "Export and import". It changes nothing. Step 2 (the
 // form of the preview, with import_id) applies the file of the same session.
@@ -1568,7 +1567,7 @@ func (s *Server) confirmImport(w http.ResponseWriter, r *http.Request, info requ
 }
 
 // legacyTokenName names the API token that an imported api.token sets: the
-// API token "API token" (contract with fixer 5).
+// API token "API token".
 const legacyTokenName = `API token "` + store.LegacyTokenName + `"`
 
 // hasLegacyToken reports whether the API token "API token" exists: the API

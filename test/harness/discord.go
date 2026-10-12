@@ -58,8 +58,8 @@ type FakeDiscord struct {
 	refused int      // posts answered with an error
 }
 
-// fakeMode is an error answer that replaces the 204, as in the kit's fake
-// Discord: HTTP 500, 400 (a field error), 404 (Unknown Webhook) or 429
+// fakeMode is an error answer that replaces the 204, as in the fake
+// Discord of the test kit: HTTP 500, 400 (a field error), 404 (Unknown Webhook) or 429
 // (rate limited, with retry_after). left is the number of posts it still
 // applies to; 0 means every post.
 type fakeMode struct {
@@ -100,8 +100,8 @@ func (f *FakeDiscord) URL() string {
 // Close stops the server.
 func (f *FakeDiscord) Close() { _ = f.srv.Close() }
 
-// SetMode selects the answer to the next posts, with the names of the kit's
-// fake Discord: "ok" (the default: 204), "fail500[:N]", "fail400[:N]" (a
+// SetMode selects the answer to the next posts, with the names of the
+// fake Discord of the test kit: "ok" (the default: 204), "fail500[:N]", "fail400[:N]" (a
 // field error), "fail404[:N]" (Unknown Webhook) or
 // "ratelimit[:RETRY_AFTER[:N]]" (429, retry_after in seconds, default 2).
 // With N, the mode applies to the next N posts, then the fake answers 204

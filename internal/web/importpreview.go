@@ -13,7 +13,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/settings"
 )
 
-// An import replaces the complete configuration (W-055). Before it does,
+// An import replaces the complete configuration. Before it does,
 // the card "Export and import" shows a preview: the sections that the file
 // changes, the sections that go back to their default values, the servers
 // that the import removes with their API keys, the servers that need the
@@ -265,7 +265,7 @@ func (s *Server) buildImportPreview(data []byte, old, c *config.Config) *importP
 	}
 	p.NeedPassword = (len(removed) > 0 || len(p.Weakens) > 0) && s.adminConfigured()
 	// The lines have names of devices (from Syncthing) and servers: show
-	// their direction controls as the other pages do (text-5).
+	// their direction controls as the other pages do.
 	p.Changes, p.Removed, p.KeyAgain, p.Secrets = showAll(p.Changes), showAll(p.Removed), showAll(p.KeyAgain), showAll(p.Secrets)
 	p.DeleteLabel = showControls(p.DeleteLabel)
 	return p

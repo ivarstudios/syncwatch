@@ -1,10 +1,10 @@
 package config
 
-// Tests of the pre-publication fixes of the Settings area (pp-settings).
+// Tests of the API token of a file and of the spelling of the sites.
 
 import "testing"
 
-// import-3: syncwatch makes the API token of a file (api.token) an API token
+// syncwatch makes the API token of a file (api.token) an API token
 // with the scope full. A placeholder, a cut paste or an example value is
 // refused: the value has at least 10 characters and no white space, control
 // or format characters. White space at the ends (a paste) goes.
@@ -33,7 +33,7 @@ func TestImportedAPITokenIsChecked(t *testing.T) {
 	}
 }
 
-// import-4: one site has one spelling. Each run of white space is one space
+// One site has one spelling. Each run of white space is one space
 // (a no-break space from a paste looks the same as a space), and a site
 // that is the same as an earlier one without regard to case gets the
 // spelling of the earlier one: the site of syncwatch first, then the sites
@@ -43,8 +43,8 @@ func TestOneSiteHasOneSpelling(t *testing.T) {
 	c, err := ParseYAML([]byte(`site: "IVAR\u00a0Office"
 servers:
   - {name: AKKA, url: 'https://10.0.0.1:8384', site: "IVAR  office"}
-  - {name: SOL, url: 'https://10.0.0.2:8384', site: "Martin\u2028office"}
-  - {name: SIRIUS, url: 'https://10.0.0.3:8384', site: "MARTIN\u3000OFFICE "}
+  - {name: SOL, url: 'https://10.0.0.2:8384', site: "Branch\u2028office"}
+  - {name: SIRIUS, url: 'https://10.0.0.3:8384', site: "BRANCH\u3000OFFICE "}
   - {name: VEGA, url: 'https://10.0.0.4:8384', site: "\u00a0"}
 `))
 	if err != nil {

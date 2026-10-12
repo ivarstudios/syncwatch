@@ -53,7 +53,7 @@
     } catch (e) { /* storage may be unavailable */ }
   }
 
-  // The site filter (W-057): the select "Site" of the Overview and the
+  // The site filter: the select "Site" of the Overview and the
   // Folders page, when 2 or more sites are set. It hides the elements of
   // other sites: data-site is the site of a tile, a grid column, a device
   // list or a finding row of one site; data-sites has the sites (1 on each
@@ -169,7 +169,7 @@
     stampAgo(document);
   });
 
-  // "last scan 21:52 (3 minutes ago)" (W-056): data-ago is the age in
+  // "last scan 21:52 (3 minutes ago)": data-ago is the age in
   // seconds when syncwatch wrote the element. The age counts on while the
   // page is open, in the words of agoWords in scan.go: a live update comes
   // only when something changes.

@@ -50,7 +50,7 @@ func storedNotices(t *testing.T, st *store.Store) []pendingNotice {
 // A security notice that Discord refuses (a deleted webhook: HTTP 404) is
 // kept until a channel accepts it: through 2 days and a restart. It has one
 // line in the notification log for the failure, not one for each retry, and
-// one when it is sent (W-051, ops-chaos OC-03). A notice that is not about
+// one when it is sent. A notice that is not about
 // security keeps the rule of r1: dropped when the webhook refuses it.
 func TestSecurityNoticeKeptUntilAChannelAcceptsIt(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
@@ -318,7 +318,7 @@ func (f *fakeSender) sent() int {
 // notice is kept, and the log has the error once, not at each tick. The
 // result does not depend on the day: the test runs at fixed times of the
 // week, also on a Monday morning, when the default schedule sends the weekly
-// report (pre-release review notify-4).
+// report.
 func TestUndecryptableNoticesWebhook(t *testing.T) {
 	for _, start := range []time.Time{
 		time.Date(2026, 10, 12, 9, 30, 0, 0, time.Local), // Monday, after the weekly report time

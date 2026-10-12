@@ -99,7 +99,7 @@ const settleEvery = 10 * time.Millisecond
 // Settle asks for an evaluation and waits until an evaluation that started
 // after the call is complete, at most for d or until ctx ends. It reports
 // whether one completed. Such an evaluation has the state of the hub at the
-// call: the answer to "Scan now" (W-056) waits with it, thus the page after
+// call: the answer to "Scan now" waits with it, thus the page after
 // the answer shows the findings of the scan. Only Run evaluates, one
 // evaluation at a time.
 func (e *Engine) Settle(ctx context.Context, d time.Duration) bool {
@@ -516,7 +516,7 @@ func (e *Engine) Evaluate() {
 				// It flapped back before its "resolved" message went out:
 				// carry on as the same, already-announced problem. The time
 				// of the last repeat goes with it, or the notifier repeats
-				// the urgent message again at once (W-050).
+				// the urgent message again at once.
 				rec.PingedAt = old.PingedAt
 				rec.RepeatedAt = old.RepeatedAt
 			}
@@ -594,7 +594,7 @@ func (e *Engine) Evaluate() {
 		}
 		// LastSeen stays the time of the last evaluation that saw the
 		// finding open: the resolved message tells from it whether the
-		// fault ended while syncwatch did not run (W-038).
+		// fault ended while syncwatch did not run.
 		rec.ResolvedAt = now
 		e.save(rec)
 		if err := e.st.HistoryResolve(id, now); err != nil {

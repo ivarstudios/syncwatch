@@ -104,8 +104,8 @@ func TestFakeDiscordModes(t *testing.T) {
 	}
 }
 
-// TestFakeDiscordModeEndpoint sets the mode through POST /mode, as the kit's
-// envctl discord-mode does, and refuses unknown modes.
+// TestFakeDiscordModeEndpoint sets the mode through POST /mode, as a script
+// does, and refuses unknown modes.
 func TestFakeDiscordModeEndpoint(t *testing.T) {
 	f, err := StartFakeDiscord("127.0.0.1:0")
 	if err != nil {

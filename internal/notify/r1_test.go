@@ -42,7 +42,7 @@ func (r *rig) restart() {
 
 // An occurrence that got its urgent and its resolved message is not listed
 // again in the overnight summary when the same finding opens again later
-// and the new occurrence resets the record (ops-chaos OC-10: quiet hours
+// and the new occurrence resets the record (quiet hours
 // set while the first occurrence was inside the window). A restart between
 // the two does not change this.
 func TestOvernightSkipsEarlierAnnouncedOccurrence(t *testing.T) {
@@ -135,7 +135,7 @@ func TestTestMessageMentionsTheRole(t *testing.T) {
 
 // Urgent findings that became due and resolved while the notifications failed
 // are reported once the channel works again, in one message without a
-// mention; a finding shorter than its debounce is not (ops-chaos OC-03).
+// mention; a finding shorter than its debounce is not.
 func TestCatchUpAfterFailure(t *testing.T) {
 	r := newRig(t, local(2026, 10, 6, 10, 0), "AKKA", "SOL")
 	r.sender.fail(&httpError{code: 502})
@@ -269,7 +269,7 @@ func TestTransientFailures(t *testing.T) {
 
 // The weekly report counts what it lists: ERROR and WARNING occurrences of
 // findings that are not snoozed or ignored (INFO findings stay on the
-// dashboard), and a cut list ends with "…and N more" (admin-anna AA-17).
+// dashboard), and a cut list ends with "…and N more".
 func TestWeeklyCountsWhatItLists(t *testing.T) {
 	now := local(2026, 10, 5, 8, 0)
 	cfg := &config.Config{PublicURL: "http://sw.local:8080"}
@@ -310,7 +310,7 @@ func TestWeeklyCountsWhatItLists(t *testing.T) {
 
 // The S3 findings of one nested directory on AKKA and SOL share one line,
 // and a grouped title names the servers and the checks, which is all a
-// phone shows (editor-shared-pc ESP-06, admin-anna AA-29).
+// phone shows.
 func TestUrgentMessageNamesServersAndMergesLines(t *testing.T) {
 	cfg := &config.Config{PublicURL: "http://sw.local:8080", Servers: []config.Server{{ID: "akka", Name: "AKKA"}, {ID: "sol", Name: "SOL"}}}
 	cfg.ApplyDefaults()
@@ -359,7 +359,7 @@ func TestUrgentMessageKeepsServerFindingsApart(t *testing.T) {
 	}
 }
 
-// The health line names each state for what it is (W-036, W-003, W-005):
+// The health line names each state for what it is:
 // ignored findings are not "snoozed", a changed certificate is not "down",
 // a disabled server is listed, the PCs are unknown until a server answered
 // a full check, and a PC counts as offline only when every server that has
@@ -411,11 +411,11 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 }
 
-// A settings notice gets one log line for each decision (admin-anna AA-36):
+// A settings notice gets one log line for each decision:
 // when the channels it went to are still the configured ones and Discord
 // refuses it, it is discarded at once, not "retried" and discarded 45 ms
 // later. When the webhook was replaced, it is kept for the new one.
-// Notices are grey, not in the WARNING colour (W-039).
+// Notices are grey, not in the WARNING colour.
 func TestNoticeLogsOneDecision(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA")

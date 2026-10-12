@@ -14,7 +14,7 @@ import (
 )
 
 // apiTime is a time in /api/v1: UTC with whole seconds, for example
-// "2026-10-11T15:29:17Z" (W-049). A *apiTime is null when the time is not
+// "2026-10-11T15:29:17Z". A *apiTime is null when the time is not
 // known.
 type apiTime time.Time
 
@@ -41,7 +41,7 @@ type apiServer struct {
 	LastContact *apiTime `json:"last_contact"`
 	CertExpires *apiTime `json:"cert_expires"`
 	// The end of the last structure scan that listed a share of the server,
-	// or that found no share (W-056); null before the first such scan after
+	// or that found no share; null before the first such scan after
 	// the start of syncwatch, and for a disabled server.
 	LastStructureScan *apiTime `json:"last_structure_scan"`
 	Error             string   `json:"error,omitempty"`
@@ -174,7 +174,7 @@ func scopeCovers(have, need string) bool {
 // /api/v1/status, store.ScopeHA for /api/v1/ha. A request with an API token
 // passes when the scope of the API token covers need. A request without one
 // passes only with a logged-in session (administrator or viewer) or in proxy
-// mode: open access shows the dashboard pages, not the API (W-048). The
+// mode: open access shows the dashboard pages, not the API. The
 // scheme name is not case sensitive (RFC 7235): "bearer" is the same as
 // "Bearer".
 func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request, need string) (apiCaller, bool) {

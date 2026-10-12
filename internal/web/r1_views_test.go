@@ -218,7 +218,7 @@ func TestConnectionLossShipped(t *testing.T) {
 }
 
 // The notification banner is true when Discord itself fails: syncwatch tries
-// again (at the time of the next try, W-040), and only a refused webhook
+// again (at the time of the next try), and only a refused webhook
 // needs a new URL.
 func TestNotificationBannerText(t *testing.T) {
 	e := adminEnv(t, twoServers+"access: {viewer: open}\ntimezone: Europe/Stockholm\n")

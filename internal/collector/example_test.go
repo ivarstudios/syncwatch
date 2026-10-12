@@ -13,7 +13,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/pathx"
 )
 
-// W-056 (b): with the example settings of the studio (examples/ivar.yaml),
+// With the example settings of the studio (examples/ivar.yaml),
 // the scans do not search a helper folder (a name that starts with "_") for
 // nested project folders, also inside a project folder. A different
 // subdirectory still counts.

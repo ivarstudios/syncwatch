@@ -9,7 +9,7 @@ import (
 )
 
 // needPerPage is how many names of the files that a device still needs the
-// full check keeps for each folder and device (H5, W-058). needPage is how
+// full check keeps for each folder and device (H5). needPage is how
 // many entries it reads for them: Syncthing's list also has the deletions
 // that the device did not do yet, which are not names that it needs (see
 // needList). The gate permits at most this page (internal/gate).

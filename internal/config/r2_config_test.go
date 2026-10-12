@@ -24,7 +24,7 @@ func deviceID(n int) string {
 
 const r2Servers = "servers: [{name: AKKA, url: 'https://10.0.0.1:8384'}, {name: SOL, url: 'https://10.0.0.2:8384'}]\n"
 
-// The keys of wave 3 go through an import and an export of the YAML file and
+// The keys of version 0.9 go through an import and an export of the YAML file and
 // through the stored JSON form. repeat_urgent 0 (off), an empty site and an
 // empty device list are not written. The webhook for settings notices is a
 // secret: the export never has it.

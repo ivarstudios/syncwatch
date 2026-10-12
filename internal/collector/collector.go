@@ -496,7 +496,7 @@ func (c *Collector) pollLoop(ctx context.Context) error {
 // scan that is still running when the next one is due doesn't count,
 // because maybeScan does nothing while one runs: the loop waits for the
 // next poll instead of spinning until the scan ends. lastScan is read under
-// scanMu: ScanNow sets it from a request of the dashboard (W-056).
+// scanMu: ScanNow sets it from a request of the dashboard.
 func (c *Collector) pollWait(cfg config.Collector) time.Duration {
 	wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
 	c.scanMu.Lock()
@@ -740,7 +740,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		}
 	}
 	now := time.Now()
-	// What the store keeps across restarts (W-021): the local changes that
+	// What the store keeps across restarts: the local changes that
 	// wait for the store go there first, so that it has the newest ones.
 	c.flushLocalChanges(true)
 	ids := make([]string, 0, len(newFolders))
@@ -765,7 +765,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 					f.LastLocalChange = old.LastLocalChange
 				}
 			}
-			// Progress samples for H5 (W-059): the server's own copy and
+			// Progress samples for H5: the server's own copy and
 			// each device.
 			if statusRead[id] {
 				s.AddProgress(id, "", model.ProgressSample{At: now, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})

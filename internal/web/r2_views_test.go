@@ -39,7 +39,7 @@ func (e *env) r2vViewerGet(path string) string {
 	return string(b)
 }
 
-// W-048 (c), C12: viewers (also with open access) see device IDs only in
+// Viewers (also with open access) see device IDs only in
 // their short form, and no "Open in Syncthing" links. Administrators see
 // everything as before.
 func TestViewersSeeShortDeviceIDs(t *testing.T) {
@@ -155,7 +155,7 @@ func r2vSameRows(t *testing.T, what string, got []linkRow, want []r2vRow) {
 	}
 }
 
-// W-057 (a), C11: the Connections section of the Overview has one row for
+// The Connections section of the Overview has one row for
 // each site link (2 or more sites), else one row for each server link, from
 // the links of the engine (here a hand-made view). A time of today shows
 // without the date. Without links there is no section.
@@ -214,7 +214,7 @@ func TestConnectionRowsFromLinks(t *testing.T) {
 	}
 }
 
-// W-057 (a), C11: with 2 or more sites the Overview and the Folders page have
+// With 2 or more sites the Overview and the Folders page have
 // the site filter, and each element of a server has its site: the tiles (with
 // the site name), the finding rows, the server columns and cells of the grid
 // and the device lists of the narrow view. A finding between servers has the
@@ -287,7 +287,7 @@ func TestSiteFilterMarkup(t *testing.T) {
 	}
 }
 
-// W-057 (a): the Overview list shows 8 findings. With the site filter, each
+// The Overview list shows 8 findings. With the site filter, each
 // site gets its own first 8: the rows past the 8 of all sites are in the
 // page, hidden until the filter selects one of their sites.
 func TestOverviewListForEachSite(t *testing.T) {
@@ -329,7 +329,7 @@ func TestOverviewListForEachSite(t *testing.T) {
 	}
 }
 
-// The site filter runs in the browser (checked live, see docs/changes/r2-6.md);
+// The site filter runs in the browser (checked live);
 // this pins the shipped script and styles: the filter, its key in the browser
 // storage, the list limit, the call at load and after each live update, and
 // the new fetch of sections with times of today after midnight.

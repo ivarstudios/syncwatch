@@ -44,7 +44,7 @@ type Hooks struct {
 	NoticeLater     func() func(notify.Notice)                // capture today's channels, announce to them later
 	ChannelsChanged func()                                    // notification channels were replaced; retry now
 	Delivery        func() notify.Delivery                    // whether notifications reach their channels
-	ScanNow         func(serverID string) collector.ScanStart // start a structure scan of a server for an administrator (W-056)
+	ScanNow         func(serverID string) collector.ScanStart // start a structure scan of a server for an administrator
 }
 
 // Server is the HTTP handler.

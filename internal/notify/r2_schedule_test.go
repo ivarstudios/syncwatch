@@ -17,7 +17,7 @@ import (
 // With notifications.repeat_urgent, the urgent message goes out again with
 // the role mention while an ERROR finding of a server stays open: every
 // interval after the urgent message or the last repeat, one message for all
-// findings that are due (W-050, admin-anna AA-11).
+// findings that are due.
 func TestUrgentMessageIsRepeated(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA", "SOL")
@@ -169,8 +169,8 @@ func TestReminderSkipsARecentRepeat(t *testing.T) {
 
 // Urgent findings that fall due seconds apart share one message: the
 // notifier waits until 10 seconds after the first one fell due, and a timer
-// wakes it then. A finding due later than that gets its own message (RT-3,
-// the AKKA and SOL findings of one directory 2 seconds apart).
+// wakes it then. A finding due later than that gets its own message (the
+// AKKA and SOL findings of one directory 2 seconds apart).
 func TestUrgentFindingsSecondsApartShareOneMessage(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA", "SOL", "SIRIUS")
@@ -211,7 +211,7 @@ func TestUrgentFindingsSecondsApartShareOneMessage(t *testing.T) {
 
 // The next message about findings names the times when syncwatch did not
 // run, once: after a successful send the gaps are reported. A test message
-// and a settings notice do not take them (W-044d, admin-anna AA-24).
+// and a settings notice do not take them.
 func TestNextMessageNamesTheGap(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "AKKA", "SOL")
@@ -276,7 +276,7 @@ func TestNextMessageNamesTheGap(t *testing.T) {
 }
 
 // While notifications fail, Delivery has the time of the next try (the
-// banner shows it); after a success it is zero (W-040).
+// banner shows it); after a success it is zero.
 func TestDeliveryNextTry(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
 	r := newRig(t, start, "SOL")
@@ -314,7 +314,7 @@ func (r *rig) stopAndStart() {
 	r.restart()
 }
 
-// W-038 (live re-test of wave 3, P1): after a stop of syncwatch, a fault
+// After a stop of syncwatch, a fault
 // that resolved before the start has the time when syncwatch did not run
 // in its resolved line. A fault that syncwatch still saw open after the
 // start has its duration, also when it resolved less than 5 minutes after

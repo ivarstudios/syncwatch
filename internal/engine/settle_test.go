@@ -8,7 +8,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
-// W-056: Settle waits for an evaluation that starts after the call. The
+// Settle waits for an evaluation that starts after the call. The
 // view after it has the state of the hub at the call, for example the
 // result of a structure scan that an administrator started.
 func TestSettleWaitsForAnEvaluationAfterTheCall(t *testing.T) {

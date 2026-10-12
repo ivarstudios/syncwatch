@@ -8,12 +8,12 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
-// Tests of the pre-publication review (pp-rules).
+// Tests of S1 inside a share root and of the absence findings at the start.
 
-// data-1 (W-046): S2 lists the Syncthing folders inside a share root in
+// S2 lists the Syncthing folders inside a share root in
 // place of their S1 findings. While S2 is ignored or snoozed, or not urgent
-// while S1 is urgent, each folder inside has its own S1 again (as before
-// W-046): a folder that Syncthing syncs 2 times always has a finding that a
+// while S1 is urgent, each folder inside has its own S1 again (as in older
+// versions): a folder that Syncthing syncs 2 times always has a finding that a
 // person sees, with the urgency of S1. Also a folder that somebody adds
 // later. When S2 reports the folders again, their S1 findings close without
 // a resolved message: the fault continues.
@@ -102,7 +102,7 @@ checks: {S2: {urgent: false}}
 	}
 }
 
-// data-5 (a): LAPTOP-DANI always uses a relay, and an administrator pauses
+// LAPTOP-DANI always uses a relay, and an administrator pauses
 // it on A and B (a holiday). It has no connection because of the pause: no
 // H12 with the causes "The relay is off or unreachable, or the device is
 // off". H6 reports the pause after thresholds.paused (3 days).
@@ -136,7 +136,7 @@ devices: [{id: `+laptopID+`, relay: true}]
 	}
 }
 
-// data-5 (b): after a start of syncwatch, the servers finish their first
+// After a start of syncwatch, the servers finish their first
 // full check one after the other. Until a server finished one, its devices
 // are not known, and it can have a device connected. H7, C2 and H12 of a
 // device wait for each server, as they wait for a server that is down.

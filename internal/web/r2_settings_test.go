@@ -21,7 +21,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// The helpers of the import in 2 steps (W-055).
+// The helpers of the import in 2 steps.
 
 var (
 	impIDRe    = regexp.MustCompile(`name="import_id" value="([^"]+)"`)
@@ -94,7 +94,7 @@ access: {viewer: password}
 thresholds: {paused: 1d}
 `
 
-// W-055: step 1 of an import only shows a preview: what the file changes,
+// Step 1 of an import only shows a preview: what the file changes,
 // the sections that go back to their default values, the servers that it
 // removes with their API keys, the servers that need the API key again and
 // the kinds of secrets in the file. It changes nothing, and the page has no
@@ -200,7 +200,7 @@ func TestImportPreviewChangesNothing(t *testing.T) {
 	}
 }
 
-// W-055 (verification observation 3): an import of servers: [] with a wrong
+// An import of servers: [] with a wrong
 // password removed both servers and their API keys. Now the removal needs
 // the checkbox and the administrator password.
 func TestImportThatRemovesServersNeedsCheckboxAndPassword(t *testing.T) {
@@ -310,7 +310,7 @@ func TestImportPreviewIsBoundToSessionAndTime(t *testing.T) {
 		t.Fatalf("second session: %v", err)
 	}
 	resp.Body.Close()
-	// The login made a new CSRF token for the second session (W-027).
+	// The login made a new CSRF token for the second session.
 	if resp, err = c2.Get(e.srv.URL + "/settings"); err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestImportCardTexts(t *testing.T) {
 }
 
 // An imported api.token replaces the value of the API token "API token" or
-// adds that API token (contract with fixer 5). The line names the API token.
+// adds that API token. The line names the API token.
 func TestImportAPITokenLine(t *testing.T) {
 	for _, tc := range []struct {
 		name, env string
@@ -419,7 +419,7 @@ func TestImportAPITokenLine(t *testing.T) {
 	}
 }
 
-// W-051: the webhook for settings notices has its own input, a checkbox to
+// The webhook for settings notices has its own input, a checkbox to
 // remove it and a button for a test notice. Its changes are security
 // notices.
 func TestNoticesWebhookForm(t *testing.T) {
@@ -523,7 +523,7 @@ func TestNoticesWebhookForm(t *testing.T) {
 	}
 }
 
-// W-030 for the webhook for settings notices: after the secret key changed,
+// The webhook for settings notices after a change of the secret key:
 // the form does not say "Set" for a webhook that syncwatch cannot decrypt.
 func TestUndecryptableNoticesWebhookIsNotShownAsSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syncwatch.db")
@@ -552,7 +552,7 @@ func TestUndecryptableNoticesWebhookIsNotShownAsSet(t *testing.T) {
 	}
 }
 
-// W-051: the Settings page says how many settings notices wait for a
+// The Settings page says how many settings notices wait for a
 // channel, and the notification log names the channel of the settings
 // notices.
 func TestKeptNoticesAndTheirChannel(t *testing.T) {
@@ -577,7 +577,7 @@ func TestKeptNoticesAndTheirChannel(t *testing.T) {
 	}
 }
 
-// C5: every settings notice of the Settings page has the Security flag of
+// Every settings notice of the Settings page has the Security flag of
 // its change.
 func TestSecurityFlagOfEachNotice(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -655,7 +655,7 @@ func TestSecurityFlagOfEachNotice(t *testing.T) {
 	expect("administrator password", true, func() {
 		post("/settings/password", url.Values{"current": {"correct horse battery"}, "password": {"another long password"}, "password2": {"another long password"}})
 	})
-	csrf = e.csrf("/settings") // the new session has a new CSRF token (W-027)
+	csrf = e.csrf("/settings") // the new session has a new CSRF token
 	expect("import", true, func() {
 		if msg, isErr := impFile(e, csrf, "servers: [{name: Akka, id: akka, url: 'https://a2:1'}, {name: SOL, url: 'https://b:1'}]\n", nil); isErr {
 			t.Fatal(msg)
@@ -674,7 +674,7 @@ func merge(a, b url.Values) url.Values {
 	return out
 }
 
-// W-050: the select "Repeat urgent messages" (off, 1, 2 or 4 hours) keeps a
+// The select "Repeat urgent messages" (off, 1, 2 or 4 hours) keeps a
 // value from a YAML file as an extra option.
 func TestRepeatUrgentForm(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -746,7 +746,7 @@ func TestRepeatUrgentForm(t *testing.T) {
 	}
 }
 
-// W-057: the site of each server (Servers form, with the names in use) and
+// The site of each server (Servers form, with the names in use) and
 // the site of syncwatch (Notifications form).
 func TestSiteForms(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -838,7 +838,7 @@ func devicesEnv(t *testing.T, yaml string) *env {
 	return e
 }
 
-// W-047: the card Devices marks the PCs that always connect through a relay
+// The card Devices marks the PCs that always connect through a relay
 // (no H11, H12 after relay_lost); the Checks form has the threshold of H12.
 func TestDevicesForm(t *testing.T) {
 	e := devicesEnv(t, twoServers+"thresholds: {relay_lost: 45m}\ndevices: [{id: "+gonePC+", relay: true}]\n")
@@ -936,7 +936,7 @@ func TestDevicesForm(t *testing.T) {
 	}
 }
 
-// W-039: the settings notices name each setting by its label. The settings
+// The settings notices name each setting by its label. The settings
 // that only the YAML has are named by their part of the Settings page.
 func TestNoticeLinesNameEverySetting(t *testing.T) {
 	parse := func(y string) *config.Config {
@@ -990,7 +990,7 @@ thresholds: {relay_lost: 2h}
 	}
 }
 
-// RT-2: a value that is not a duration gets the message of the parser
+// A value that is not a duration gets the message of the parser
 // (with the format), and 0 gets its own message.
 func TestDurationErrorsNameTheFormat(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -1020,7 +1020,7 @@ func TestDurationErrorsNameTheFormat(t *testing.T) {
 	}
 }
 
-// W-048: the Access card says what open access shows and that the JSON API
+// The Access card says what open access shows and that the JSON API
 // needs an API token or a login.
 func TestAccessCardSaysWhatOpenAccessShows(t *testing.T) {
 	e := adminEnv(t, twoServers)

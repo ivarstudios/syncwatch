@@ -11,7 +11,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/stclient"
 )
 
-// The relay listeners of a server (H12, W-047): a NAS that reaches remote
+// The relay listeners of a server (H12): a NAS that reaches remote
 // devices only through a relay loses them when its relay session stops.
 // Syncthing reports each listener in /rest/system/status, which the
 // collector reads at the start of a session, at each full check and each
@@ -36,7 +36,7 @@ func (c *Collector) setRelayListeners(status stclient.SystemStatus, now time.Tim
 // error between them. While the relay is off or cannot be reached, Syncthing
 // clears the error of the listener for some seconds at each new try to
 // connect (approximately every 70 seconds with Syncthing 2.1.5 and 2.1.6 in
-// the kit); without this rule a sample in that time ended H12 and started
+// a test); without this rule a sample in that time ended H12 and started
 // relay_lost again. The samples of the traffic loop are 1 minute apart.
 const relayConfirm = 50 * time.Second
 

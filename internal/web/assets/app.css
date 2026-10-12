@@ -85,7 +85,7 @@ form.inline { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; m
 .sw-offline .live-on { display: none; } .sw-offline .live-off { display: inline; }
 .sw-offline .health { color: var(--muted); }
 .sw-offline .tiles, .sw-offline .plist, .sw-offline .links, .sw-offline .grid-wide, .sw-offline .grid-narrow, .sw-offline .summary { opacity: .6; }
-/* Sites (W-057): the site of a server tile, the Connections rows, the site filter (app.js). */
+/* Sites: the site of a server tile, the Connections rows, the site filter (app.js). */
 .tile-site { margin: -.35rem 0 .5rem; font-size: .8rem; color: var(--muted); unicode-bidi: isolate; }
 .links { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
 .links li { padding: .35rem .6rem; border-left: 4px solid var(--line); border-radius: 6px; background: var(--bg); overflow-wrap: anywhere; }

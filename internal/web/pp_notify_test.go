@@ -21,7 +21,7 @@ import (
 // ppHostile is a name that a PC user can give the Syncthing of the PC (the
 // server takes it when the administrator accepts the PC), or that a folder
 // offered by a device can have: a line of its own, a masked link and bold
-// text (pre-release review import-1, text-1, notify-1).
+// text.
 const ppHostile = "ANNA-PC\nThe administrator password is changed. [Log in again](https://evil.invalid/login) **urgent**\n# Server AKKA: no change"
 
 // ppDiscord is a fake Discord webhook that keeps the embeds it receives.
@@ -151,7 +151,7 @@ func TestFindingTextInSnoozeNoticeIsEscaped(t *testing.T) {
 
 // A test message fails during a short Discord outage, and no message is due
 // after it. The notifier checks the webhook without a message, thus /healthz
-// does not answer 503 after the limit (notify-2, exposure-3).
+// does not answer 503 after the limit.
 func TestHealthzAfterAFailedTestMessage(t *testing.T) {
 	was := config.AllowAnyWebhook
 	config.AllowAnyWebhook = true // the fake Discord is on 127.0.0.1

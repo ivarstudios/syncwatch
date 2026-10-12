@@ -20,7 +20,7 @@ func fileWithToken(t *testing.T, token string) *config.Config {
 	return c
 }
 
-// W-053: the API token of a file (api.token) is the value of the API token
+// The API token of a file (api.token) is the value of the API token
 // named "API token". An import adds it with the scope full, or gives it the
 // new value and keeps its scope. The old value stops working.
 func TestImportAPIToken(t *testing.T) {
@@ -84,7 +84,7 @@ func TestImportAPIToken(t *testing.T) {
 	}
 }
 
-// W-053: with 5 API tokens and none named "API token", an import with an API
+// With 5 API tokens and none named "API token", an import with an API
 // token is refused with a message that names the limit, and nothing of the
 // file is stored. With an API token named "API token" among the 5, the import
 // replaces its value.

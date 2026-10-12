@@ -47,7 +47,7 @@ func (c *Collector) maybeScan(ctx context.Context) {
 // one is due, else a regular scan. The timed scans (maybeScan) and the scans
 // that an administrator starts (ScanNow) both start here. The caller holds
 // scanMu, and no scan runs. A scan that stops before the end (its session
-// ends) writes no result and does not count (W-056): the next regular scan
+// ends) writes no result and does not count: the next regular scan
 // is due as if it did not start, and manualEvery does not count it. A
 // stopped baseline scan still counts for the next baseline scan: it is long,
 // and sessions that end during it must not start it again and again.
@@ -131,7 +131,7 @@ const (
 )
 
 // ScanNow starts a structure scan of the server at once, for an
-// administrator (W-056). The scan is the same as a timed scan (startScan),
+// administrator. The scan is the same as a timed scan (startScan),
 // thus it only reads. One scan of a server runs at a time, and an
 // administrator can start 1 scan of a server in manualEvery. The timed
 // scans continue from the start of this scan. A scan that stops before the
@@ -157,7 +157,7 @@ func (c *Collector) ScanNow() ScanStart {
 }
 
 // A baseline scan that took less than fastBaseline makes the next one due
-// after at most dailyBaseline (W-045). Only a baseline scan walks the
+// after at most dailyBaseline. Only a baseline scan walks the
 // project folders that Syncthing syncs (in events mode), and on some NAS
 // storage Syncthing's file watcher misses a copied project folder without
 // an error: with a fast baseline scan, syncwatch finds it within a day.
@@ -388,7 +388,7 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	// directory list, marked stale by the error and the old ScannedAt, so
 	// that S4–S7 don't resolve and re-open around every outage or slow listing.
 	// It also keeps the end of its last listing: its findings show that
-	// time as their last scan (W-056).
+	// time as their last scan.
 	var prevShares []*model.Share
 	c.hub.View(c.id, func(s *model.Server) {
 		if s.Structure != nil {
@@ -540,7 +540,7 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 		}
 		s.Structure.Nested = found
 		// The end of the scan: the structure findings show it as the time
-		// of the last scan (W-056). A scan that could list none of the
+		// of the last scan. A scan that could list none of the
 		// shares checked nothing: the time stays that of the last scan that
 		// listed a share (or found no share).
 		if failed == 0 || failed < len(shares) {

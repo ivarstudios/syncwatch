@@ -32,8 +32,8 @@ const (
 
 func errText(s string) *string { return &s }
 
-// W-047: the relay listeners of /rest/system/status. The WAN address of a
-// relay listener stays when its relay stops (Syncthing 2.1.6 in the kit):
+// The relay listeners of /rest/system/status. The WAN address of a
+// relay listener stays when its relay stops (Syncthing 2.1.6 in a test):
 // the error tells it. Since changes only when Connected changes.
 func TestRelayListeners(t *testing.T) {
 	t0 := time.Date(2026, 10, 11, 18, 33, 40, 0, time.UTC)
@@ -97,12 +97,12 @@ func TestRelayListeners(t *testing.T) {
 	}
 }
 
-// While the relay is off, Syncthing (2.1.5 and 2.1.6 in kit slot s20)
+// While the relay is off, Syncthing (2.1.5 and 2.1.6 in the test kit)
 // clears the error of the relay listener for some seconds at each new try to
 // connect, approximately every 70 seconds; the WAN address stays. A sample
 // in that time is no connection: the listener stays not connected from the
 // first failure, thus H12 opens after relay_lost and stays open. The
-// samples below are the 1-minute samples of an outage as the kit gave them.
+// samples below are the 1-minute samples of an outage in the test kit.
 func TestRelayListenerRetryIsNotAConnection(t *testing.T) {
 	t0 := time.Date(2026, 10, 11, 19, 39, 43, 0, time.UTC)
 	refused := stclient.ListenerStatus{Error: errText("dial tcp 10.120.1.60:22067: connect: no route to host"), WANAddresses: []string{kitRelay}}
@@ -194,7 +194,7 @@ func TestRelayListenersSampled(t *testing.T) {
 	}
 }
 
-// W-058: the full check reads the first 20 names of the files that a
+// The full check reads the first 20 names of the files that a
 // connected device still needs, for each folder with need items, through
 // the throttle of the check, and replaces the lists at each full check.
 func TestNeedListsFromFullCheck(t *testing.T) {
@@ -355,7 +355,7 @@ func TestNeedListErrorIsNotAFolderError(t *testing.T) {
 	}
 }
 
-// W-059: the full check and the events record progress samples with the
+// The full check and the events record progress samples with the
 // need and the size of the folder, for each device and for the server's
 // own copy (device ""). An event less than 1 minute after the sample before
 // the newest one replaces the newest sample: the newest sample has the
@@ -417,7 +417,7 @@ func TestPruneProgress(t *testing.T) {
 	}
 }
 
-// W-021: the first-seen time of each folder and its last local change are
+// The first-seen time of each folder and its last local change are
 // in the store: a new collector on the same store (a restart of syncwatch)
 // has the values of before, also when Syncthing has no events of them now.
 func TestFolderActivitySurvivesRestart(t *testing.T) {

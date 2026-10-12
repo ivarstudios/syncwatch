@@ -14,7 +14,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
-// W-056: "Scan now" for the administrator and the time of the last
+// "Scan now" for the administrator and the time of the last
 // structure scan. Hooks.ScanNow is a fake collector here; the scan itself
 // (the path of the timed scan, one scan at a time, the 30 seconds, the end
 // time) is tested in internal/collector (scannow_test.go).
@@ -206,7 +206,7 @@ func TestScanNowOnlyForAdministrators(t *testing.T) {
 	}
 }
 
-// "Scan now" has the rules of the other forms of the administrator (wave 3):
+// "Scan now" has the rules of the other forms of the administrator:
 // the CSRF token of the session, and an Origin of this dashboard.
 func TestScanNowNeedsTheCSRFTokenOfTheSession(t *testing.T) {
 	e := scanEnv(t, "")
@@ -461,7 +461,7 @@ func TestScanNowInSettings(t *testing.T) {
 		t.Fatalf("scans %v, want [akka sol]", calls)
 	}
 	// The Settings page has no findings and no live updates: the answer
-	// names the Findings page (review of W-056, finding 2).
+	// names the Findings page.
 	if ok != "The structure scan of server AKKA started at 09:08:00. The Findings page shows the result after the scan." ||
 		failed != "Server SOL is unreachable: refused. syncwatch can scan it when it is up again." {
 		t.Errorf("answer: %q / %q", ok, failed)
@@ -572,7 +572,7 @@ func TestAppJSCountsTheLastScanOn(t *testing.T) {
 	}
 }
 
-// W-056, W-049: servers[].last_structure_scan of /api/v1/status is the end of
+// servers[].last_structure_scan of /api/v1/status is the end of
 // the last structure scan in UTC with whole seconds, null before the first
 // scan and for a disabled server.
 func TestAPILastStructureScan(t *testing.T) {
@@ -596,7 +596,7 @@ func TestAPILastStructureScan(t *testing.T) {
 // A share that the scan cannot list keeps the last known state: its
 // findings show the end of its last listing, with the error in the details,
 // and the answer to Scan now names the share in red. A scan that listed no
-// share is not complete (review of W-056, finding 1).
+// share is not complete.
 func TestScanNowShareThatCannotBeListed(t *testing.T) {
 	e := scanEnv(t, "")
 	e.web.now = func() time.Time { return today(e, 10, 0, 20) }
@@ -683,8 +683,7 @@ func TestScanNowShareThatCannotBeListed(t *testing.T) {
 // A scan that stops before the end (its session ends, or the first full
 // check of the server is not complete) writes no result. The answer says so
 // in red and promises no result, and it does not wait for an evaluation.
-// The collector does not count the scan: the next press can start a scan
-// (review of W-056, finding 3).
+// The collector does not count the scan: the next press can start a scan.
 func TestScanNowStoppedScan(t *testing.T) {
 	old := scanWait
 	scanWait = 2 * time.Second
@@ -723,8 +722,8 @@ func TestScanNowStoppedScan(t *testing.T) {
 }
 
 // The Overview tile of a server and its structure findings show the same
-// last scan: the end of the scan, with the date only when it is not today
-// (review of W-056, finding 4). A scan that listed no share does not move
+// last scan: the end of the scan, with the date only when it is not today.
+// A scan that listed no share does not move
 // it, and the tile shows no last scan before the first scan ends.
 func TestOverviewShowsTheLastScanOfTheFindings(t *testing.T) {
 	e := scanEnv(t, "")

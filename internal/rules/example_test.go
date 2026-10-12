@@ -26,7 +26,7 @@ func studioExample(t *testing.T) *config.Config {
 	return c
 }
 
-// W-056 (b): with the example settings of the studio, the helper folders
+// With the example settings of the studio, the helper folders
 // next to the project folders (names that start with "_") get no structure
 // finding: no S4 (incorrect name) and no S6 (duplicate name) for _archive
 // in 2 shares. A new project folder that is not in Syncthing still gets S7.

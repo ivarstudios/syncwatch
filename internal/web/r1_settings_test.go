@@ -16,7 +16,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// W-016: a refused save of the Checks form showed the stored values again,
+// A refused save of the Checks form showed the stored values again,
 // with the error at the top of the page. Now the page comes back with what
 // was typed, the error above the Save button and the bad field marked, and
 // its revision still accepts the corrected save.
@@ -90,7 +90,7 @@ func TestRefusedChecksSaveKeepsTextThatIsNotADuration(t *testing.T) {
 		t.Fatalf("%d: %s", resp.StatusCode, checks)
 	}
 	msg := checks[strings.Index(checks, `id="checks-error"`):]
-	// RT-2: a value that is not a duration gets the message of the parser,
+	// A value that is not a duration gets the message of the parser,
 	// which names the format.
 	if !strings.Contains(msg, "H1 debounce: the value &#34;soon&#34; is not a duration.") ||
 		!strings.Contains(msg, "H7 PC offline for more than: the value &#34;3 days&#34; is not a duration. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.") {
@@ -136,7 +136,7 @@ func TestRefusedCollectorAndNotificationSavesKeepTypedValues(t *testing.T) {
 	}
 }
 
-// W-017: the Checks table explains Urgent and Debounce, and each Collector
+// The Checks table explains Urgent and Debounce, and each Collector
 // field that changes the detection time or the server load has a hint.
 func TestSettingsHelpTexts(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -165,7 +165,7 @@ func TestSettingsHelpTexts(t *testing.T) {
 	}
 }
 
-// W-043: the forms used the old caps (weekly_top 25, down_after_failures
+// The forms used the old caps (weekly_top 25, down_after_failures
 // 10) and the Notifications form dropped a larger weekly_top silently. The
 // forms now use the ranges of the validation, and a value out of range gets
 // its message.
@@ -200,7 +200,7 @@ func TestFormRangesFollowValidation(t *testing.T) {
 	}
 }
 
-// W-070: Settings → Servers said that only self-signed certificates are
+// Settings → Servers said that only self-signed certificates are
 // pinned; CA-signed certificates are pinned too (r0-a).
 func TestServersTextPinsEachCertificate(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -212,7 +212,7 @@ func TestServersTextPinsEachCertificate(t *testing.T) {
 	}
 }
 
-// W-018: with a role, the test message mentions it (notify), so the flash
+// With a role, the test message mentions it (notify), so the flash
 // tells the administrator what to check when the phone shows nothing.
 func TestTestMessageFlashNamesTheRole(t *testing.T) {
 	e := adminEnv(t, twoServers)
@@ -231,7 +231,7 @@ func TestTestMessageFlashNamesTheRole(t *testing.T) {
 	}
 }
 
-// W-039: settings notices showed YAML keys ("thresholds.inactive_project
+// Settings notices showed YAML keys ("thresholds.inactive_project
 // changed from 180d to 10m."), both complete lists for one changed entry,
 // and the client address glued to the last line. The lines now name the
 // labels of the Settings page, a list shows the entries it gained or lost,
@@ -275,7 +275,7 @@ func TestNoticeLinesUseLabels(t *testing.T) {
 	}
 }
 
-// W-026 (t_limiter_roles.py): an administrator session S, then 5 wrong
+// An administrator session S, then 5 wrong
 // logins from the same address. S then changed access or the password with
 // the correct password and got "Too many failed logins", and accept-cert
 // asked for the password that S had typed. The confirmations of a session
@@ -288,7 +288,7 @@ func TestFailedLoginsDoNotBlockAdminConfirmations(t *testing.T) {
 			t.Fatalf("wrong login %d: %d", i, code)
 		}
 	}
-	// DECISION (W-026): logins keep the count of the address for each role.
+	// Logins keep the count of the address for each role.
 	if code := e.stranger("correct horse battery"); code != http.StatusTooManyRequests {
 		t.Fatalf("login after 5 failures at the address: %d, want 429", code)
 	}
@@ -394,7 +394,7 @@ func TestLimiterRetryAfter(t *testing.T) {
 	}
 }
 
-// W-030: after the secret key changed, Settings showed the webhook and the
+// After the secret key changed, Settings showed the webhook and the
 // API token as "Set" although syncwatch could not decrypt them. The part of
 // the API token is TestUndecryptableAPITokenIsNotShownAsSet (api_test.go).
 func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
@@ -430,7 +430,7 @@ func TestUndecryptableSecretsAreNotShownAsSet(t *testing.T) {
 	}
 }
 
-// W-031: a refused confirmation (accept certificate with a wrong password
+// A refused confirmation (accept certificate with a wrong password
 // or API key) left no log line. Each refused confirmation now logs a WARN
 // line with the client address (and the server); an empty field is no try.
 func TestRefusedConfirmationsAreLogged(t *testing.T) {

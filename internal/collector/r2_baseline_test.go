@@ -10,7 +10,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
-// W-045: the next baseline scan is due after at most 1 day when the last
+// The next baseline scan is due after at most 1 day when the last
 // one took less than 10 seconds, else after baseline_interval. A baseline
 // interval of 1 day or less does not change.
 func TestBaselineEvery(t *testing.T) {

@@ -15,7 +15,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/pathx"
 )
 
-// "Scan now" (W-056): an administrator starts a structure scan of a server
+// "Scan now": an administrator starts a structure scan of a server
 // at once, from a structure finding on the Findings page (the server of the
 // finding) or from Settings → Structure (each enabled server). The scan is
 // the timed scan of the collector (collector.ScanNow): it only reads, one

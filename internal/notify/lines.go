@@ -211,7 +211,7 @@ const resolveAfterGap = 5 * time.Minute
 // 21:10–21:17". When the fault ended while syncwatch did not run, the end
 // is not known: "the fault started at 21:00 and was resolved while
 // syncwatch did not run, 21:04–21:24". A fault that syncwatch saw open
-// after its start did not end in that time (W-038): its LastSeen is after
+// after its start did not end in that time: its LastSeen is after
 // the end of the gap.
 func lasted(cfg *config.Config, r *store.Record, gaps []store.Gap) string {
 	loc := cfg.Location()

@@ -307,7 +307,7 @@ func (f *fakeDiscord) has(s string) bool {
 	return false
 }
 
-// Run wires the parts of wave 3: the gap and the heartbeat (also at a clean
+// Run wires the parts of version 0.9: the gap and the heartbeat (also at a clean
 // stop), the dead-man URL (called after the first evaluation, the log names
 // the host only), the health rules of /healthz, the trusted proxies, and the
 // settings notice of a certificate that the collector pins (OnPin).
