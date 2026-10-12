@@ -53,6 +53,8 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 	log, _ := s.st.Notifications(20)
 	for i := range log {
 		log[i].Channel = channelLabel(log[i].Channel)
+		// A title has folder labels and device names from Syncthing (text-5).
+		log[i].Summary, log[i].Error = showControls(log[i].Summary), showControls(log[i].Error)
 	}
 	_, hasViewer := s.setting(KeyViewerHash)
 	var kept int
@@ -1529,7 +1531,7 @@ func (s *Server) confirmImport(w http.ResponseWriter, r *http.Request, info requ
 	refuse := func(msg string) {
 		imports.release(id) // the pending import stays for a corrected confirmation
 		pv := s.buildImportPreview(p.data, old, c)
-		pv.ID, pv.Error = id, msg
+		pv.ID, pv.Error = id, showControls(msg) // msg can name servers
 		s.render(w, r, http.StatusUnprocessableEntity, "settings", info, s.settingsData(info, map[string]any{"ImportPreview": pv}))
 	}
 	removed := removedServers(old, c)

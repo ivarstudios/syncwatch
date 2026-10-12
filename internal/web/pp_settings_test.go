@@ -287,3 +287,74 @@ func TestOneSiteTypedInTwoSpellings(t *testing.T) {
 		t.Fatalf("notice of the new server: %q", all[n:])
 	}
 }
+
+// text-5: the import preview shows the names of devices and servers as the
+// other pages do: a character that changes the direction of text shows as
+// ‹U+202E›. Raw, it showed the rest of a line in reverse ("gnp.exe" as
+// "exe.png"). The names come from Syncthing (devices) and from the file
+// or the configuration (servers).
+func TestImportPreviewShowsDirectionControls(t *testing.T) {
+	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: secret-key-akka}, {name: "‮LOS", url: "https://b:1"}]`+"\n")
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.Loaded, s.MyID, s.LastContact = model.StatusUp, true, "AKKAAAA-1111111", time.Now()
+		s.Devices = map[string]*model.Device{relayPC: {ID: relayPC, Name: "‮gnp.exe‬"}}
+		s.Connections = map[string]*model.Connection{relayPC: {Connected: true, Type: "relay-client", StartedAt: time.Now()}}
+	})
+	e.eng.Evaluate()
+	csrf := e.csrf("/settings")
+	file := `servers: [{name: AKKA, url: "https://a:1"}, {name: "‮KEY", url: "https://k:1", api_key: key-k}, {name: "‮NOKEY", url: "https://n:1"}]
+devices: [{id: ` + relayPC + `, relay: true}]
+`
+	_, page, id := impPreview(e, csrf, file)
+	if id == "" {
+		t.Fatalf("no preview: %s", impError(page))
+	}
+	check := func(step, p string, want ...string) {
+		t.Helper()
+		if strings.ContainsFunc(p, hiddenControl) {
+			t.Errorf("%s: the card Export and import has a raw direction control: %q", step, p)
+		}
+		p = html.UnescapeString(p)
+		for _, w := range want {
+			if !strings.Contains(p, w) {
+				t.Errorf("%s: no %q", step, w)
+			}
+		}
+	}
+	check("preview", section(t, page, "import"),
+		"The device ‹U+202E›gnp.exe‹U+202C› (LAPTOPD) always connects through a relay.", // Changes
+		"syncwatch removes the server ‹U+202E›LOS and deletes",                          // Removed
+		"Remove the server ‹U+202E›LOS (syncwatch deletes its API key)",                 // DeleteLabel
+		"The server ‹U+202E›NOKEY has no API key for its API URL.",                      // KeyAgain
+		"the API key of the server ‹U+202E›KEY")                                         // Secrets
+	// A refused step 2 shows the preview again with the reason.
+	_, page = impConfirm(e, csrf, id, nil)
+	check("refused import", section(t, page, "import"), "Not imported. Select the checkbox to remove the server ‹U+202E›LOS.")
+}
+
+// text-5: the table "Recent notifications" shows the titles as the other
+// pages do. The title of an urgent message has the folder label or the
+// device name from Syncthing; the error can have the answer of Discord.
+func TestNotificationLogShowsDirectionControls(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	if err := e.st.LogNotification(time.Now(), "urgent", "discord", true, "", "🚨 Folder sync stopped: LIVE-‮ECRUOS1 on AKKA"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.LogNotification(time.Now(), "urgent", "discord", false, "HTTP 400: ‮LIVE", "🚨 Server unreachable: ‮LOS"); err != nil {
+		t.Fatal(err)
+	}
+	_, page := e.get("/settings")
+	i := strings.Index(page, `data-key="notify-log"`)
+	if i < 0 {
+		t.Fatal("no table Recent notifications")
+	}
+	log := page[i : i+strings.Index(page[i:], "</details>")]
+	if strings.ContainsFunc(log, hiddenControl) {
+		t.Errorf("the table Recent notifications has a raw direction control: %q", log)
+	}
+	for _, want := range []string{"Folder sync stopped: LIVE-‹U+202E›ECRUOS1 on AKKA", "Server unreachable: ‹U+202E›LOS", "✖ HTTP 400: ‹U+202E›LIVE"} {
+		if !strings.Contains(html.UnescapeString(log), want) {
+			t.Errorf("no %q in %q", want, log)
+		}
+	}
+}
