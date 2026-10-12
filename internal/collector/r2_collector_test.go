@@ -134,16 +134,24 @@ func TestRelayListenerRetryIsNotAConnection(t *testing.T) {
 	}
 }
 
+// The URI that H12 shows has no secret: no query (the token of a private
+// relay) and no user information (the password of a private relay pool,
+// which Syncthing sends to the pool as basic authentication).
 func TestRelayURI(t *testing.T) {
 	for in, want := range map[string]string{
 		kitRelay:                         "relay://10.123.1.60:22067",
 		"relay://relay.sim.invalid:443/": "relay://relay.sim.invalid:443",
 		dynRelays:                        dynRelays,
-		"dynamic+https://relays.example.invalid/endpoint?x=1": "dynamic+https://relays.example.invalid/endpoint",
-		"relay://%zz/?token=secret":                           "relay://%zz", // not a URL: the query still goes
-		"tcp://0.0.0.0:22000":                                 "",
-		"quic://0.0.0.0:22000":                                "",
-		"relay":                                               "",
+		"dynamic+https://relays.example.invalid/endpoint?x=1":                  "dynamic+https://relays.example.invalid/endpoint",
+		"dynamic+https://ivar:pool-pass-123@relays.example.invalid/endpoint":   "dynamic+https://relays.example.invalid/endpoint",
+		"dynamic+http://ivar@relays.example.invalid/endpoint":                  "dynamic+http://relays.example.invalid/endpoint",
+		"relay://ivar:relay-pass-456@10.115.1.60:22067/?id=X&token=t":          "relay://10.115.1.60:22067",
+		"relay://%zz/?token=secret":                                            "relay://%zz", // not a URL: the query still goes
+		"relay://ivar:relay-pass-789@%zz/?token=secret":                        "relay://%zz", // and the user information
+		"dynamic+https://ivar:pass/with@slash@relays.example.invalid/endpoint": "dynamic+https://relays.example.invalid/endpoint",
+		"tcp://0.0.0.0:22000":  "",
+		"quic://0.0.0.0:22000": "",
+		"relay":                "",
 	} {
 		got, ok := relayURI(in)
 		if got != want || ok != (want != "") {
