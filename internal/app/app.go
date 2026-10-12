@@ -611,7 +611,7 @@ func Run(ctx context.Context, o Options) error {
 	srvWeb.TrustProxies(o.TrustedProxies)
 	srvWeb.SetHealth(web.HealthOptions{Started: started, NotifyLimit: o.NotifyLimit, EvalLimit: evalLimit})
 	srvWeb.LogSetupToken(os.Stderr)
-	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run, heartbeat(st, log)}
+	workerFuncs := []func(context.Context){mgr.Run, eng.Run, ntf.Run, watcher.run}
 	deadmanAt := "off"
 	if o.DeadmanURL != "" {
 		dm, err := newDeadman(o.DeadmanURL, srvWeb.Ready, o.Version, log)
@@ -642,12 +642,16 @@ func Run(ctx context.Context, o Options) error {
 	// start that fails before this point (the TLS files, an address in use)
 	// did not run. Docker starts such a container again and again, and a
 	// heartbeat of each failed start would cut the gap.
-	if err := noteGap(st, started, holder.Get().Location(), log); err != nil {
+	prev, err := noteGap(st, started, holder.Get().Location(), log)
+	if err != nil {
 		log.Warn("cannot record the time when syncwatch did not run", "err", err)
 	}
 	if err := st.SetAliveAt(started); err != nil {
 		log.Warn("cannot record the heartbeat", "err", err)
 	}
+	// The heartbeat corrects the gap when the clock was behind at the start.
+	clock := &clockCheck{st: st, log: log, loc: holder.Get().Location(), prev: prev, started: started}
+	workerFuncs = append(workerFuncs, heartbeat(st, log, clock))
 	// Requests, the dashboard's event streams among them, end with reqCtx:
 	// shutdown cancels it first, so open tabs don't hold Shutdown back.
 	reqCtx, reqCancel := context.WithCancel(context.Background())

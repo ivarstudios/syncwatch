@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +53,7 @@ func TestGapAfterStop(t *testing.T) {
 			}
 		}
 		var logs bytes.Buffer
-		if err := noteGap(st, start, loc, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		if _, err := noteGap(st, start, loc, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		gaps, err := st.Gaps(time.Time{})
@@ -70,6 +72,95 @@ func TestGapAfterStop(t *testing.T) {
 		want := `level=INFO msg="syncwatch did not run" from=2026-10-11T21:14:00.000+02:00 to=2026-10-11T21:24:00.000+02:00 duration=10m0s`
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("%s: log %q, want %q", c.name, logs.String(), want)
+		}
+		st.Close()
+	}
+}
+
+// A host without a battery clock (for example a Raspberry Pi) starts with the
+// time of its last shutdown, and NTP sets the correct time after Docker
+// started syncwatch. The steps of Run at the start (noteGap, the first
+// heartbeat) use the wrong time. The heartbeat finds the step of the clock in
+// the first 10 minutes: the gap goes from the last heartbeat to the corrected
+// time of the start, with one more INFO line. The next message names the
+// corrected gap, also when a message named the gap of the start before.
+func TestGapAfterBootClock(t *testing.T) {
+	friday := time.Date(2026, 10, 9, 18, 0, 0, 0, time.UTC) // the last heartbeat (a clean stop)
+	monday := time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC) // the real time of the start
+	type gap struct {
+		from, to time.Time
+		reported bool
+	}
+	for _, c := range []struct {
+		name     string
+		prev     time.Time     // the last heartbeat; zero: the first start
+		clock    time.Time     // the clock at the start
+		reported bool          // a message named the gaps of the start
+		after    time.Duration // the first check: this time after the start (monotonic clock) ...
+		now      time.Time     // ... with this clock
+		want     []gap
+		lines    int // INFO lines "syncwatch did not run"
+	}{
+		{"clock behind, NTP after the start", friday, friday.Add(40 * time.Second), false, 30 * time.Second, monday.Add(30 * time.Second), []gap{{friday, monday, false}}, 1},
+		{"clock behind, the gap of the start ends too early", friday, friday.Add(3 * time.Minute), true, 30 * time.Second, monday.Add(30 * time.Second), []gap{{friday, monday, false}}, 2},
+		{"power loss, the clock behind the last heartbeat", monday.Add(-5 * time.Minute), monday.Add(-45 * time.Minute), false, 30 * time.Second, monday.Add(30 * time.Second), []gap{{monday.Add(-5 * time.Minute), monday, false}}, 1},
+		{"power loss, a quick start", monday.Add(-time.Minute), monday.Add(-41 * time.Minute), false, 30 * time.Second, monday.Add(30 * time.Second), nil, 0},
+		{"correct clock", friday, monday, true, 30 * time.Second, monday.Add(30 * time.Second), []gap{{friday, monday, true}}, 1},
+		{"a small step of the clock", monday.Add(-90 * time.Second), monday.Add(-time.Minute), false, 30 * time.Second, monday.Add(30 * time.Second), nil, 0},
+		{"a step after the first 10 minutes", friday, friday.Add(40 * time.Second), false, 11 * time.Minute, monday.Add(11 * time.Minute), nil, 0},
+		{"first start", time.Time{}, friday, false, 30 * time.Second, monday.Add(30 * time.Second), nil, 0},
+	} {
+		st, err := store.OpenMemory(make([]byte, 32))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !c.prev.IsZero() {
+			if err := st.SetAliveAt(c.prev); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var logs bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&logs, nil))
+		// The steps of Run at the start, then 2 checks of the heartbeat.
+		prev, err := noteGap(st, c.clock, time.UTC, log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetAliveAt(c.clock); err != nil {
+			t.Fatal(err)
+		}
+		if c.reported {
+			if err := st.MarkGapsReported(c.clock); err != nil {
+				t.Fatal(err)
+			}
+		}
+		clock := &clockCheck{st: st, log: log, loc: time.UTC, prev: prev, started: c.clock}
+		clock.check(c.now, c.after)
+		clock.check(c.now.Add(aliveEvery), c.after+aliveEvery)
+		gaps, err := st.Gaps(time.Time{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []gap
+		for _, g := range gaps {
+			got = append(got, gap{g.From, g.To, g.Reported})
+		}
+		show := func(gs []gap) string {
+			var out []string
+			for _, g := range gs {
+				out = append(out, fmt.Sprintf("%s → %s reported=%v", g.from.UTC().Format(time.DateTime), g.to.UTC().Format(time.DateTime), g.reported))
+			}
+			return "[" + strings.Join(out, ", ") + "]"
+		}
+		same := slices.EqualFunc(got, c.want, func(a, b gap) bool { return a.from.Equal(b.from) && a.to.Equal(b.to) && a.reported == b.reported })
+		if lines := strings.Count(logs.String(), `level=INFO msg="syncwatch did not run"`); !same || lines != c.lines {
+			t.Errorf("%s: gaps %s, want %s; %d INFO lines, want %d:\n%s", c.name, show(got), show(c.want), lines, c.lines, logs.String())
+		}
+		if c.name == "clock behind, NTP after the start" {
+			want := `level=INFO msg="syncwatch did not run" from=2026-10-09T18:00:00.000Z to=2026-10-12T08:00:00.000Z duration=62h0m0s clock_behind=61h59m20s`
+			if !strings.Contains(logs.String(), want) {
+				t.Errorf("%s: log %q, want %q", c.name, logs.String(), want)
+			}
 		}
 		st.Close()
 	}
