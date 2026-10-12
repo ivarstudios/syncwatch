@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/stclient"
 )
@@ -145,6 +146,14 @@ func (e *evaluator) peerViews(sv *model.Server) []model.Detail {
 	var out []model.Detail
 	for _, o := range e.Snapshot.Servers {
 		if o.ID == sv.ID || o.Status != model.StatusUp {
+			continue
+		}
+		// In polled mode the connections of o are from its last full check,
+		// and syncwatch sends no request to sv between 2 full checks: sv can
+		// be off from any time after its last contact. Only a check of o
+		// deadLinkTime after the first failed request to sv shows that
+		// Syncthing on sv runs.
+		if o.Mode == config.ModePolled && o.LastFullCheck.Sub(sv.DownSince) < deadLinkTime {
 			continue
 		}
 		if c := o.Connections[sv.MyID]; c != nil && c.Connected {

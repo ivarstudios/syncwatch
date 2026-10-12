@@ -74,3 +74,66 @@ func TestQuoteName(t *testing.T) {
 		}
 	}
 }
+
+// data-4: in polled mode, the connections of AKKA are from its last full
+// check. They show that Syncthing on SOL runs only when that check came 10
+// minutes (deadLinkTime) or more after the first failed request to SOL:
+// syncwatch sends no request between 2 full checks, thus SOL can be off
+// from any time after its last contact.
+func TestPolledPeerViewNeedsNewerData(t *testing.T) {
+	at := func(hhmm string) time.Time {
+		c, err := time.Parse("15:04", hhmm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return time.Date(2026, 10, 5, c.Hour(), c.Minute(), 0, 0, time.UTC)
+	}
+	c := ivarConfig(t)
+	c.Site = "IVAR Office"
+	c.Servers[0].Site, c.Servers[1].Site = "IVAR Office", "Branch office"
+	const runs = "AKKA is connected to SOL. Thus Syncthing on SOL runs, and the network path from syncwatch to SOL is down."
+	const api = "AKKA is connected to SOL. Thus Syncthing on SOL runs, and syncwatch cannot connect to the API address of SOL."
+	for _, tc := range []struct {
+		name                  string
+		mode                  string
+		eval, akkaCheck, down string // the time of the evaluation, of AKKA's last full check, of the first failed request to SOL
+		err                   string
+		want                  string // the row "What AKKA sees"
+	}{
+		// 11:50 the last full check of SOL; 11:55 the full check of AKKA,
+		// connected to SOL; 11:56 SOL is switched off; 12:05 the full check
+		// of SOL fails, H1 opens; 12:10 the next full check of AKKA.
+		{"H1 opens, data of AKKA from 11:55", "polled", "12:05", "11:55", "12:05", "timeout", ""},
+		{"4 minutes later, data of AKKA from 11:55", "polled", "12:09", "11:55", "12:05", "timeout", ""},
+		// AKKA's check is 11 minutes after the last contact, but SOL is
+		// switched off at 12:03, after that check.
+		{"data of AKKA from 12:01", "polled", "12:06", "12:01", "12:05", "timeout", ""},
+		// SOL's gate stops at 11:56 and Syncthing on SOL runs. 5 minutes
+		// after the first failed request, the connection can still be one
+		// that Syncthing did not close: no row yet.
+		{"gate stopped, data of AKKA from 12:10", "polled", "12:11", "12:10", "12:05", "connection refused", ""},
+		{"gate stopped, data of AKKA from 12:25", "polled", "12:26", "12:25", "12:05", "connection refused", api},
+		{"VPN down, data of AKKA from 12:25", "polled", "12:26", "12:25", "12:05", "timeout", runs},
+		// Events mode: the connections are live (no change).
+		{"events mode, live data", "events", "12:05", "08:00", "11:51", "timeout", runs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			akka := server("akka", "AKKA", akkaID)
+			sol := server("sol", "SOL", solID)
+			akka.Devices[solID] = &model.Device{ID: solID, Name: "SOL"}
+			sol.Devices[akkaID] = &model.Device{ID: akkaID, Name: "AKKA"}
+			akka.Mode, sol.Mode = tc.mode, tc.mode
+			akka.LastFullCheck, akka.LastContact = at(tc.akkaCheck), at(tc.akkaCheck)
+			if tc.mode == "events" {
+				akka.LastContact = at(tc.eval)
+			}
+			akka.Connections[solID] = &model.Connection{Connected: true, Type: "tcp-server", StartedAt: at("09:00")}
+			sol.LastFullCheck, sol.LastContact = at("11:50"), at("11:50")
+			sol.Status, sol.LastError, sol.DownSince = model.StatusDown, tc.err, at(tc.down)
+			fs := Evaluate(Input{Snapshot: &model.Snapshot{At: at(tc.eval), Servers: []*model.Server{akka, sol}}, Config: c, Now: at(tc.eval)})
+			if got := mustFind(t, fs, "H1", "Server SOL").DetailValue("What AKKA sees"); got != tc.want {
+				t.Errorf("at %s: row %q, want %q", tc.eval, got, tc.want)
+			}
+		})
+	}
+}
