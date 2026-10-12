@@ -441,7 +441,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		GUIURL:    strings.TrimRight(strings.TrimSpace(r.FormValue("gui_url")), "/"),
 		Disabled:  r.FormValue("disabled") == "on",
 		AllowHTTP: r.FormValue("allow_http") == "on",
-		Site:      strings.TrimSpace(r.FormValue("site")),
+		Site:      config.CleanSite(r.FormValue("site")),
 	}
 	if name == "" {
 		s.redirect(w, r, "/settings#servers", "A server needs a name.", true)
@@ -477,6 +477,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		sv.ID = id
 		c.Servers = append(c.Servers, sv)
 	}
+	c.SpellSite(sv.Site) // the typed spelling of a site is its spelling everywhere (import-4)
 	if err := c.Validate(); err != nil {
 		s.redirect(w, r, "/settings#servers", "Not saved. "+sentence(err.Error()), true)
 		return
@@ -519,6 +520,13 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		summary := "The API URL is " + sv.URL + "."
 		if sv.Site != "" {
 			summary += "\nThe site of the server is " + sv.Site + "."
+		}
+		// The spelling of the site can change the site of other servers and
+		// of syncwatch (SpellSite).
+		for _, l := range s.changesOf(cur, c) {
+			if !strings.HasPrefix(l, "The server "+sv.Name+" is added") {
+				summary += "\n" + l
+			}
 		}
 		s.announce(r, notify.Notice{Title: "Server " + name + " added", Summary: summary, Security: true})
 	} else {
@@ -616,7 +624,8 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	c.Timezone = strings.TrimSpace(r.FormValue("timezone"))
 	c.PublicURL = strings.TrimRight(strings.TrimSpace(r.FormValue("public_url")), "/")
 	if formHas(r, "site") {
-		c.Site = strings.TrimSpace(r.FormValue("site"))
+		c.Site = config.CleanSite(r.FormValue("site"))
+		c.SpellSite(c.Site) // the typed spelling of a site is its spelling everywhere (import-4)
 	}
 	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	clearNotices, noticesHook := r.FormValue("discord_notices_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_notices_webhook"))

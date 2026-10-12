@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/model"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
@@ -210,5 +211,79 @@ func TestImportedAPITokenIsCheckedAndShowsItsScope(t *testing.T) {
 		if tok, _ := e.st.APITokenByValue(tc.value); tok == nil || tok.Scope != tc.scope {
 			t.Fatalf("%s: the imported API token: %+v", tc.scope, tok)
 		}
+	}
+}
+
+// import-4: one site typed in two spellings is one site. The Servers and
+// Notifications forms make each white space a space (a no-break space from
+// Option-Space or a paste looks the same as a space). The spelling that the
+// administrator types is the spelling of the site everywhere: a site is the
+// same site without regard to case. H1 then names no VPN between a site and
+// itself.
+func TestOneSiteTypedInTwoSpellings(t *testing.T) {
+	e := adminEnv(t, twoServers)
+	csrf := e.csrf("/settings")
+	save := func(path string, f url.Values) {
+		t.Helper()
+		f.Set("csrf", csrf)
+		if msg, isErr := flash(e.post(path, f)); isErr {
+			t.Fatalf("%s: %s", path, msg)
+		}
+	}
+	h1 := func() string {
+		t.Helper()
+		e.eng.Evaluate()
+		for _, r := range e.eng.View().Open {
+			if r.Check == "H1" && r.Server == "akka" {
+				return r.Message + " / " + r.DetailValue("Possible causes")
+			}
+		}
+		t.Fatal("no open H1 for AKKA")
+		return ""
+	}
+	now := time.Now()
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Status, s.LastError, s.DownSince, s.LastContact = model.StatusDown, "timeout", now.Add(-10*time.Minute), now.Add(-11*time.Minute)
+	})
+	save("/settings/servers", url.Values{"orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "site": {"IVAR Office"}})
+	save("/settings/servers", url.Values{"orig_id": {"sol"}, "name": {"SOL"}, "url": {"https://b:1"}, "site": {"Branch office"}})
+	f := notifyForm(e.cfg.Get(), csrf)
+	f.Set("site", "IVAR\u00a0Office")
+	save("/settings/notifications", f)
+	if cfg := e.cfg.Get(); cfg.Site != "IVAR Office" || cfg.SiteOf("akka") != "IVAR Office" {
+		t.Fatalf("no-break space: syncwatch %+q, AKKA %+q", cfg.Site, cfg.SiteOf("akka"))
+	}
+	if got := h1(); !strings.HasPrefix(got, "Server AKKA is unreachable: timeout / ") || strings.Contains(got, "VPN between IVAR Office and IVAR Office") {
+		t.Fatalf("H1 with a no-break space: %+q", got)
+	}
+	_, page := e.get("/settings")
+	if i := strings.Index(page, `<datalist id="site-names">`); i < 0 || strings.Count(page[i:i+strings.Index(page[i:], "</datalist>")], "<option") != 2 {
+		t.Fatalf("the datalist does not offer each site one time: %s", page[i:])
+	}
+
+	// A case variant on a server: the typed spelling is the spelling of the
+	// site, also for syncwatch. The notice names both changes.
+	n := len(e.noticeList())
+	save("/settings/servers", url.Values{"orig_id": {"akka"}, "name": {"AKKA"}, "url": {"https://a:1"}, "site": {"IVAR office"}})
+	if cfg := e.cfg.Get(); cfg.Site != "IVAR office" || cfg.SiteOf("akka") != "IVAR office" {
+		t.Fatalf("case variant: syncwatch %+q, AKKA %+q", cfg.Site, cfg.SiteOf("akka"))
+	}
+	if all := e.noticeList(); len(all) != n+1 || !strings.Contains(all[n], "The site of the server AKKA changed from IVAR Office to IVAR office.") ||
+		!strings.Contains(all[n], "Site where syncwatch runs: IVAR Office → IVAR office") {
+		t.Fatalf("notice of the case variant: %q", all[n:])
+	}
+	if got := h1(); !strings.HasPrefix(got, "Server AKKA is unreachable: timeout / ") {
+		t.Fatalf("H1 with a case variant: %+q", got)
+	}
+
+	// A new server at the site of SOL, typed in capitals: one site, and the
+	// notice of the new server names the change of SOL.
+	n = len(e.noticeList())
+	save("/settings/servers", url.Values{"name": {"SIRIUS"}, "url": {"https://c:1"}, "api_key": {"key-sirius"}, "site": {"MARTIN\u00a0OFFICE"}})
+	if cfg := e.cfg.Get(); cfg.SiteOf("sol") != "BRANCH OFFICE" || cfg.SiteOf("sirius") != "BRANCH OFFICE" || cfg.Site != "IVAR office" {
+		t.Fatalf("new server: SOL %+q, SIRIUS %+q, syncwatch %+q", cfg.SiteOf("sol"), cfg.SiteOf("sirius"), cfg.Site)
+	}
+	if all := e.noticeList(); len(all) != n+1 || !strings.Contains(all[n], "Server SIRIUS added: The API URL is https://c:1.\nThe site of the server is BRANCH OFFICE.\nThe site of the server SOL changed from Branch office to BRANCH OFFICE.\n") {
+		t.Fatalf("notice of the new server: %q", all[n:])
 	}
 }
