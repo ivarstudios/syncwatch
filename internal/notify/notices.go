@@ -89,6 +89,16 @@ func (n *Notifier) notice(senders []Sender, own bool, built int, current bool, n
 	n.dmu.Unlock()
 	title := nt.Title
 	m := Message{Kind: KindNotice, Title: noticeIcon + title, Summary: nt.Summary, Color: ColorNotice, URL: cfg.PublicURL, Key: key}
+	p := pendingNotice{Key: key, Title: m.Title, Summary: m.Summary, Security: nt.Security, At: now}
+	if nt.Security {
+		// Kept before the first send: a stop of syncwatch while Discord does
+		// not answer (up to a minute) does not lose it. When the call
+		// returns, the notice is stored (the command line deletes its own
+		// copy then). The retries skip it until the first send ends.
+		kept := p
+		kept.sending = true
+		n.queueNotice(kept)
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -96,7 +106,6 @@ func (n *Notifier) notice(senders []Sender, own bool, built int, current bool, n
 		if own && built == n.generation() {
 			n.ownResult(now, gen, err)
 		}
-		p := pendingNotice{Key: key, Title: m.Title, Summary: m.Summary, Security: nt.Security, At: now}
 		if err != nil && own && nt.Security && !invalidMessage(err) && n.ownFailingFor(p, now) > noticeFallbackAfter {
 			// The webhook for settings notices fails for more than an hour:
 			// the channel of the findings too, as for a kept notice.
@@ -119,7 +128,8 @@ func (n *Notifier) notice(senders []Sender, own bool, built int, current bool, n
 		case nt.Security:
 			n.log.Warn("settings notice kept until a channel accepts it", "title", title, "err", err)
 			n.logFailures(now, m.Title, failed, "kept until a channel accepts it: ")
-			n.queueNotice(p)
+			n.firstSendFailed(key)
+			return
 		case rejected(err) && built == n.generation():
 			// The retry would go to the same channels, which refuse it:
 			// one decision, one log line.
@@ -131,7 +141,23 @@ func (n *Notifier) notice(senders []Sender, own bool, built int, current bool, n
 			p.GiveUp = now.Add(noticeRetryFor)
 			n.queueNotice(p)
 		}
+		if nt.Security {
+			n.dropNotice(key) // sent, or no channel takes it
+		}
 	}()
+}
+
+// firstSendFailed lets the retries send a security notice whose first send
+// failed. The stored list does not change.
+func (n *Notifier) firstSendFailed(key string) {
+	n.dmu.Lock()
+	for i := range n.notices {
+		if n.notices[i].Key == key {
+			n.notices[i].sending = false
+		}
+	}
+	n.dmu.Unlock()
+	n.Wake()
 }
 
 // chanErr is the failure of one channel.
@@ -287,12 +313,13 @@ func (n *Notifier) saveKept() {
 	}
 }
 
-// keptNotices returns a copy of the kept notices, oldest first.
+// keptNotices returns a copy of the kept notices, oldest first, without the
+// ones whose first send runs.
 func (n *Notifier) keptNotices() []pendingNotice {
 	n.dmu.Lock()
 	defer n.dmu.Unlock()
 	n.readKept()
-	return slices.Clone(n.notices)
+	return slices.DeleteFunc(slices.Clone(n.notices), func(p pendingNotice) bool { return p.sending })
 }
 
 // keptMessage is the message of a kept notice.

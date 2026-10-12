@@ -95,6 +95,9 @@ type pendingNotice struct {
 	// GiveUp is when a notice that is not about security is dropped; zero
 	// for a security notice, which is kept until a channel accepts it.
 	GiveUp time.Time `json:"give_up,omitzero"`
+	// sending: the first send of a security notice runs (see notice), and
+	// the retries skip it. Not stored: after a restart, the retries send it.
+	sending bool
 }
 
 // Settings notices that are not about security are retried for a day. At
@@ -136,7 +139,11 @@ func (n *Notifier) Delivery() Delivery {
 	defer n.dmu.Unlock()
 	n.readKept()
 	d := n.state
-	d.NoticesKept = len(n.notices)
+	for _, p := range n.notices {
+		if !p.sending {
+			d.NoticesKept++
+		}
+	}
 	return d
 }
 

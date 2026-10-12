@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -452,5 +453,90 @@ func TestRepeatTakesOnlyFindingsAnnouncedHalfAnIntervalBefore(t *testing.T) {
 	v.Open = v.Open[1:] // nothing is due on its own clock
 	if got := repeatDue(cfg, v, now); len(got) != 0 {
 		t.Fatalf("without a due finding: %v", ids(got))
+	}
+}
+
+// stuckSender is a Discord that does not answer: a send ends only when the
+// test releases it or the context ends.
+type stuckSender struct {
+	mu      sync.Mutex
+	sends   int
+	release chan struct{}
+}
+
+func (s *stuckSender) Name() string { return "discord" }
+
+func (s *stuckSender) Send(ctx context.Context, _ Message) error {
+	s.mu.Lock()
+	s.sends++
+	s.mu.Unlock()
+	select {
+	case <-s.release:
+		return errors.New("Discord: Post \"<webhook>\": EOF")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *stuckSender) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sends
+}
+
+// syncwatch stops while the first send of a security notice waits for
+// Discord. The notice is in the stored list before the send, thus the next
+// start sends it (notify-6). A notice of the command line is stored when
+// the call returns, before the caller deletes its own copy. The retries
+// skip a notice while its first send runs: no second copy.
+func TestSecurityNoticeSurvivesAStopDuringItsFirstSend(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	stuck := &stuckSender{release: make(chan struct{})}
+	defer close(stuck.release)
+	r.n.SetSenders(func() []Sender { return []Sender{stuck} })
+	r.n.Notice(Notice{Title: "Server AKKA changed", Summary: "The API key is replaced.", Security: true})
+	send := r.n.NoticeLater() // as the command line notices go (app.go)
+	send(Notice{Title: "Administrator password changed with the command line", Summary: "x", Security: true})
+	if kept := storedNotices(t, r.st); len(kept) != 2 || kept[0].Title != "🔧 Server AKKA changed" || !kept[1].Security {
+		t.Fatalf("stored when the calls return: %+v", kept)
+	}
+	waitFor(t, func() bool { return stuck.count() == 2 })
+	if d := r.n.Delivery(); d.NoticesKept != 0 {
+		t.Errorf("a notice in its first send counts as kept: %+v", d)
+	}
+	r.at(start.Add(time.Minute))
+	if n := stuck.count(); n != 2 {
+		t.Fatalf("the retry sent a notice in its first send again: %d sends", n)
+	}
+
+	// The stop, and a start on the same database with a channel that works.
+	r.restart()
+	r.n.now = func() time.Time { return r.now }
+	r.at(start.Add(2 * time.Minute))
+	msgs := r.sender.take()
+	if len(msgs) != 2 || msgs[0].Title != "🔧 Server AKKA changed" || !strings.HasPrefix(msgs[0].Summary, "The API key is replaced.\nChanged at 2026-10-06 10:00.") {
+		t.Fatalf("after the start: %+v", msgs)
+	}
+	if kept := storedNotices(t, r.st); len(kept) != 0 {
+		t.Fatalf("still stored after the send: %+v", kept)
+	}
+}
+
+// The first send of a security notice works: it is not stored after it, and
+// it is not sent again.
+func TestSecurityNoticeSentAtOnceIsNotKept(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	r.n.Notice(Notice{Title: "Server AKKA changed", Summary: "The API key is replaced.", Security: true})
+	waitFor(t, func() bool { return r.sender.sent() == 1 && pendingNotices(r) == 0 })
+	if kept := storedNotices(t, r.st); len(kept) != 0 {
+		t.Fatalf("stored after the send: %+v", kept)
+	}
+	r.at(start.Add(time.Minute))
+	if msgs := r.sender.take(); len(msgs) != 1 || msgs[0].Summary != "The API key is replaced." {
+		t.Fatalf("sent: %+v", msgs)
 	}
 }
