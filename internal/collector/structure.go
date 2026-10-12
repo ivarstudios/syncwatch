@@ -22,13 +22,19 @@ var scanTimerEvery = 10 * time.Second
 // maybeScan starts a structure scan in the background when one is due. In
 // events mode the loop calls it between long-polls, which can be
 // event_timeout apart, so scanTimer also calls it when a scan falls due.
+// ctx is the context of the session: the scan stops with the session.
 func (c *Collector) maybeScan(ctx context.Context) {
 	cfg := c.cfg.Get().Collector
 	c.scanMu.Lock()
 	defer c.scanMu.Unlock()
-	if cfg.Mode == config.ModeEvents && !c.scanTimerOn {
-		c.scanTimerOn = true
-		go c.scanTimer(ctx)
+	if ctx != c.sessCtx {
+		// A new session. Its scanTimer ends with it (the timer of the first
+		// session ran with that session only, and no timer followed it
+		// after a reconnect).
+		c.sessCtx = ctx
+		if cfg.Mode == config.ModeEvents {
+			go c.scanTimer(ctx)
+		}
 	}
 	if c.scanning || time.Since(c.lastScan) < cfg.StructureInterval.D() {
 		return
@@ -101,7 +107,7 @@ func (c *Collector) noteBaseline(took time.Duration) {
 
 // scanTimer starts due structure scans in events mode, where the loop sits
 // in a long-poll for up to event_timeout and would start them that late. It
-// runs for the collector's lifetime and only scans while the server is up.
+// runs for one session (ctx) and only scans while the server is up.
 func (c *Collector) scanTimer(ctx context.Context) {
 	t := time.NewTicker(scanTimerEvery)
 	defer t.Stop()

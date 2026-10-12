@@ -46,10 +46,10 @@ type Collector struct {
 	lastBase      time.Time
 	scanMu        sync.Mutex
 	scanning      bool
-	scanTimerOn   bool          // scanTimer runs (events mode)
-	baseTook      time.Duration // how long the last completed baseline scan took; see baselineEvery
-	baseKnown     bool          // a baseline scan completed since the start
-	baseChoice    string        // the baseline interval that noteBaseline logged last
+	sessCtx       context.Context // the context of the session that called maybeScan last; see maybeScan
+	baseTook      time.Duration   // how long the last completed baseline scan took; see baselineEvery
+	baseKnown     bool            // a baseline scan completed since the start
+	baseChoice    string          // the baseline interval that noteBaseline logged last
 	gaps          gapState
 	clearDue      map[string]time.Time // folders whose error events cleared, with when; see confirmClears
 	copies        copySet              // conflict copies counted from events; see conflictCopy

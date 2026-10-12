@@ -37,10 +37,11 @@ type fakeST struct {
 	requests map[string]int
 	paused   map[string]bool
 
-	dropEvents int    // close this many event long-polls without an answer
-	dropped    int    // event long-polls closed so far
-	startTime  string // overrides the fixture's startTime (a "restart")
-	inBytes    int64  // traffic totals since "start"
+	dropEvents int           // close this many event long-polls without an answer
+	dropped    int           // event long-polls closed so far
+	longPoll   time.Duration // how long an event long-poll waits for events; 0 is 2 seconds
+	startTime  string        // overrides the fixture's startTime (a "restart")
+	inBytes    int64         // traffic totals since "start"
 	outBytes   int64
 	conflicts  map[string]int // overrides the fixture's conflict counters
 
@@ -225,7 +226,13 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var since int64
 		fmt.Sscan(q.Get("since"), &since)
-		deadline := time.After(2 * time.Second)
+		f.mu.Lock()
+		wait := f.longPoll
+		f.mu.Unlock()
+		if wait == 0 {
+			wait = 2 * time.Second
+		}
+		deadline := time.After(wait)
 		for {
 			f.mu.Lock()
 			var out []stclient.Event
