@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
@@ -189,7 +190,10 @@ func sig2(v float64) string {
 // list was read, and the time of the list when it is older than the
 // completion.
 func (e *evaluator) neededFiles(nl model.NeedList, c model.Completion) string {
-	parts := append([]string(nil), nl.Names...)
+	parts := make([]string, 0, len(nl.Names)+1)
+	for _, name := range nl.Names {
+		parts = append(parts, quoteName(name))
+	}
 	if more := nl.Items - int64(len(nl.Names)); more > 0 {
 		parts = append(parts, fmt.Sprintf("…and %d more", more))
 	}
@@ -198,6 +202,18 @@ func (e *evaluator) neededFiles(nl model.NeedList, c model.Completion) string {
 		s += " (list from " + e.clock(nl.At) + ")"
 	}
 	return s
+}
+
+// quoteName gives a file name as it is, or as a quoted Go string ("brief ",
+// "a\r\nb") when the dashboard would not show a character of it: white
+// space at the start or at the end, or a control character. HTML removes
+// or joins these characters, and they are often the reason why Windows
+// refuses the name.
+func quoteName(name string) string {
+	if strings.ContainsFunc(name, unicode.IsControl) || strings.TrimSpace(name) != name {
+		return strconv.Quote(name)
+	}
+	return name
 }
 
 // clock writes a time in the configured zone: "14:05", with the date when it

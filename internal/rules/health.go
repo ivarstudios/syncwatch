@@ -316,7 +316,7 @@ func (e *evaluator) folderHealth(sv *model.Server) {
 				if i == 5 {
 					break
 				}
-				paths = append(paths, fe.Path+": "+fe.Error)
+				paths = append(paths, quoteName(fe.Path)+": "+fe.Error)
 			}
 			var since time.Time
 			if f.State == "error" && !dbFull {
