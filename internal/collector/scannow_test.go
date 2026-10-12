@@ -266,3 +266,128 @@ func TestScanThatCannotListAShareKeepsItsTime(t *testing.T) {
 		t.Fatalf("no shares: %d shares, the last scan %v (before %v)", len(none.Shares), last(), end4)
 	}
 }
+
+// A scan that stops before the end writes no result and does not count:
+// End tells why it stopped, the timed scans count from the scan before it,
+// and an administrator can start the next scan at once. Before, the next
+// press got "too soon" for 30 seconds with a scan without a result, and the
+// next timed scan came 1 interval after the stopped one (review of W-056,
+// finding 3).
+func TestScanNowStoppedScanDoesNotCount(t *testing.T) {
+	fake := newFakeST(t)
+	var hold atomic.Bool
+	release := make(chan struct{})
+	srv := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/system/browse" && hold.Load() {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		fake.ServeHTTP(w, r)
+	})
+	defer close(release)
+	c, hub, h, stop := startCollector(t, srv, "")
+	defer stop()
+	state := func() (lastScan, lastBase, manualAt time.Time) {
+		c.scanMu.Lock()
+		defer c.scanMu.Unlock()
+		return c.lastScan, c.lastBase, c.manualAt
+	}
+	last := func() (at time.Time) {
+		hub.View("akka", func(s *model.Server) { at = s.LastStructureScan })
+		return at
+	}
+	running := func() (<-chan struct{}, *ScanEnd) {
+		c.scanMu.Lock()
+		defer c.scanMu.Unlock()
+		return c.scanDone, c.scanEnd
+	}
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	c.maybeScan(ctx1) // the first scan of the session
+	waitUntil(t, "the end of the first scan", func() bool { d, _ := running(); return d == nil && !last().IsZero() })
+	first := last()
+	scan0, base0, _ := state()
+
+	// Scan now, and the session ends during the scan (a dropped long-poll,
+	// the VPN).
+	hold.Store(true)
+	res := c.ScanNow()
+	if res.State != ScanStarted || res.End == nil {
+		t.Fatalf("Scan now: %+v", res)
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel1()
+	waitDone(t, res.Done)
+	hold.Store(false)
+	if res.End.Stopped != ScanStopSession {
+		t.Fatalf("a scan whose session ended: stopped %q, want %q", res.End.Stopped, ScanStopSession)
+	}
+	if got := last(); !got.Equal(first) {
+		t.Fatalf("a stopped scan moved the last scan from %v to %v", first, got)
+	}
+	if scan, base, manual := state(); !scan.Equal(scan0) || !base.Equal(base0) || !manual.IsZero() {
+		t.Fatalf("a stopped scan counts: the timed scans from %v (want %v), baseline %v (want %v), the 30 seconds from %v (want none)",
+			scan, scan0, base, base0, manual)
+	}
+
+	// The next session: no timed scan is due yet, and the administrator can
+	// start a scan at once.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	c.maybeScan(ctx2)
+	again := c.ScanNow()
+	if again.State != ScanStarted {
+		t.Fatalf("a press after the stopped scan: %+v, want a new scan", again)
+	}
+	waitDone(t, again.Done)
+	if again.End.Stopped != "" || !last().After(first) {
+		t.Fatalf("the new scan: stopped %q, the last scan %v (before %v)", again.End.Stopped, last(), first)
+	}
+
+	// A timed baseline scan that stops: the next regular scan stays due,
+	// and the next session starts it at once. The baseline scans count
+	// from the stopped one: the next session does not start it again.
+	due := time.Now().Add(-2 * time.Hour)
+	c.scanMu.Lock()
+	c.lastScan, c.lastBase = due, time.Now().Add(-8*24*time.Hour)
+	c.scanMu.Unlock()
+	hold.Store(true)
+	ctx3, cancel3 := context.WithCancel(context.Background())
+	c.maybeScan(ctx3)
+	timed, end := running()
+	if timed == nil {
+		t.Fatal("no timed scan started")
+	}
+	_, stoppedBase, _ := state()
+	time.Sleep(50 * time.Millisecond)
+	cancel3()
+	waitDone(t, timed)
+	hold.Store(false)
+	if scan, base, _ := state(); end.Stopped != ScanStopSession || !scan.Equal(due) || !base.Equal(stoppedBase) || base.Before(due) {
+		t.Fatalf("the stopped baseline scan: stopped %q, the regular scans count from %v (want %v), the baseline scans from %v (want %v)",
+			end.Stopped, scan, due, base, stoppedBase)
+	}
+	before := last()
+	ctx4, cancel4 := context.WithCancel(context.Background())
+	defer cancel4()
+	c.maybeScan(ctx4)
+	waitUntil(t, "the due scan in the next session", func() bool { return last().After(before) })
+	if structureOf(hub).ScanBaseline {
+		t.Fatal("the next session started the stopped baseline scan again")
+	}
+
+	// A scan of a server whose first full check is not complete.
+	waitUntil(t, "the end of the due scan", func() bool { d, _ := running(); return d == nil })
+	hub.Update("akka", func(s *model.Server) { s.Loaded = false })
+	c.scanMu.Lock()
+	c.startScan(ctx4, h.Get().Collector)
+	done, end := c.scanDone, c.scanEnd
+	c.scanMu.Unlock()
+	waitDone(t, done)
+	if end.Stopped != ScanStopNotLoaded {
+		t.Fatalf("a server that is not loaded: stopped %q, want %q", end.Stopped, ScanStopNotLoaded)
+	}
+}

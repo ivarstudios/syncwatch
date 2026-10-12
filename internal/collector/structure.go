@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -45,24 +46,42 @@ func (c *Collector) maybeScan(ctx context.Context) {
 // startScan starts a structure scan in the background: a baseline scan when
 // one is due, else a regular scan. The timed scans (maybeScan) and the scans
 // that an administrator starts (ScanNow) both start here. The caller holds
-// scanMu, and no scan runs.
+// scanMu, and no scan runs. A scan that stops before the end (its session
+// ends) writes no result and does not count (W-056): the next regular scan
+// is due as if it did not start, and manualEvery does not count it. A
+// stopped baseline scan still counts for the next baseline scan: it is long,
+// and sessions that end during it must not start it again and again.
 func (c *Collector) startScan(ctx context.Context, cfg config.Collector) {
 	c.scanning = true
-	done := make(chan struct{})
-	c.scanDone = done
+	done, end := make(chan struct{}), &ScanEnd{}
+	c.scanDone, c.scanEnd = done, end
 	baseline := time.Since(c.lastBase) >= c.baselineEvery(cfg)
-	c.lastScan = time.Now()
+	prev, start := c.lastScan, time.Now()
+	c.lastScan = start
 	if baseline {
-		c.lastBase = c.lastScan
+		c.lastBase = start
 	}
 	go func() {
+		var err error
 		defer func() {
 			c.scanMu.Lock()
-			c.scanning, c.scanDone = false, nil
+			if err != nil {
+				end.Stopped = ScanStopSession
+				if errors.Is(err, errNotLoaded) {
+					end.Stopped = ScanStopNotLoaded
+				}
+				if c.lastScan.Equal(start) {
+					c.lastScan = prev
+				}
+				if c.manualAt.Equal(start) {
+					c.manualAt = time.Time{}
+				}
+			}
+			c.scanning, c.scanDone, c.scanEnd = false, nil, nil
 			c.scanMu.Unlock()
 			close(done)
 		}()
-		if err := c.scan(ctx, baseline); err != nil {
+		if err = c.scan(ctx, baseline); err != nil {
 			c.log.Warn("structure scan failed", "err", shortErr(err))
 		}
 	}()
@@ -89,16 +108,34 @@ type ScanStart struct {
 	// Next is the earliest start of the next scan that an administrator
 	// can start (ScanTooSoon).
 	Next time.Time
-	// Done is closed when the last scan is complete. It is nil when no scan
+	// Done is closed at the end of the last scan. It is nil when no scan
 	// runs.
 	Done <-chan struct{}
+	// End tells how the scan of Done ended: complete, or stopped before the
+	// end. Read it only after Done is closed. It is nil when Done is nil.
+	End *ScanEnd
 }
+
+// ScanEnd tells how a structure scan ended. The scan writes it before its
+// Done channel closes.
+type ScanEnd struct {
+	// Stopped is empty for a complete scan: the scan wrote its result to
+	// the hub. Else it tells why the scan stopped before the end.
+	Stopped string
+}
+
+// Why a structure scan stopped before the end (ScanEnd.Stopped).
+const (
+	ScanStopSession   = "session"    // the session of the server ended: a lost connection, a change of the settings, or the stop of syncwatch
+	ScanStopNotLoaded = "not-loaded" // the first full check of the server is not complete
+)
 
 // ScanNow starts a structure scan of the server at once, for an
 // administrator (W-056). The scan is the same as a timed scan (startScan),
 // thus it only reads. One scan of a server runs at a time, and an
 // administrator can start 1 scan of a server in manualEvery. The timed
-// scans continue from the start of this scan.
+// scans continue from the start of this scan. A scan that stops before the
+// end counts for neither (startScan).
 func (c *Collector) ScanNow() ScanStart {
 	up := false
 	c.hub.View(c.id, func(s *model.Server) { up = s.Status == model.StatusUp && s.Loaded })
@@ -109,14 +146,14 @@ func (c *Collector) ScanNow() ScanStart {
 		return ScanStart{State: ScanNotUp}
 	}
 	if !c.manualAt.IsZero() && time.Since(c.manualAt) < manualEvery {
-		return ScanStart{State: ScanTooSoon, Started: c.lastScan, Next: c.manualAt.Add(manualEvery), Done: c.scanDone}
+		return ScanStart{State: ScanTooSoon, Started: c.lastScan, Next: c.manualAt.Add(manualEvery), Done: c.scanDone, End: c.scanEnd}
 	}
 	if c.scanning {
-		return ScanStart{State: ScanRunning, Started: c.lastScan, Done: c.scanDone}
+		return ScanStart{State: ScanRunning, Started: c.lastScan, Done: c.scanDone, End: c.scanEnd}
 	}
 	c.startScan(ctx, c.cfg.Get().Collector)
 	c.manualAt = c.lastScan
-	return ScanStart{State: ScanStarted, Started: c.lastScan, Done: c.scanDone}
+	return ScanStart{State: ScanStarted, Started: c.lastScan, Done: c.scanDone, End: c.scanEnd}
 }
 
 // A baseline scan that took less than fastBaseline makes the next one due
@@ -315,15 +352,20 @@ func (c *Collector) rescanFolders(ctx context.Context, ids map[string]bool) {
 	c.log.Info("project folders scanned again after missed events", "folders", len(tops), "listings", listings.Load(), "failed", failed.Load(), "took", time.Since(now).Round(time.Millisecond))
 }
 
+// errNotLoaded stops a structure scan of a server whose first full check is
+// not complete: the scan needs the paths of its Syncthing folders.
+var errNotLoaded = errors.New("the first full check of the server is not complete")
+
 // scan lists every share's top level and searches project folders for
 // nested project folders: folders not in Syncthing on every scan, synced
 // folders only on a baseline scan (events cover them in between) except in
 // polled mode, which has no events and therefore walks them every time.
+// It returns an error, and writes nothing, when it stops before the end.
 func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	var sv *model.Server
 	c.hub.View(c.id, func(s *model.Server) { sv = s.Clone() })
 	if sv == nil || !sv.Loaded {
-		return nil
+		return errNotLoaded
 	}
 	cfg := c.cfg.Get()
 	cs := c.cfg.Structure()

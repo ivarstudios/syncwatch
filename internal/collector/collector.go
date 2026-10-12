@@ -47,6 +47,7 @@ type Collector struct {
 	scanMu        sync.Mutex
 	scanning      bool
 	scanDone      chan struct{}   // closed when the running scan is complete; nil while no scan runs
+	scanEnd       *ScanEnd        // how the running scan ended, written before scanDone closes; nil while no scan runs
 	sessCtx       context.Context // the context of the session that called maybeScan last; see maybeScan and ScanNow
 	manualAt      time.Time       // when the last scan that an administrator started began; see ScanNow
 	baseTook      time.Duration   // how long the last completed baseline scan took; see baselineEvery
