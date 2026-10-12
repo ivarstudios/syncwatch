@@ -14,22 +14,38 @@ type Record struct {
 	model.Finding
 	Since              time.Time // when the condition started (for display)
 	OpenedAt           time.Time // when the monitor opened it
-	LastSeen           time.Time
+	LastSeen           time.Time // the last evaluation that saw it open; the database has it at least every 10 minutes and at the resolution
 	ResolvedAt         time.Time // zero while open
-	Stale              bool      // frozen because a server it depends on is unreachable
+	Stale              bool      // frozen (a server it depends on is unreachable) or held (r1: a device that is away)
+	UrgentSince        time.Time // when it became urgent (zero while it isn't)
 	PingedAt           time.Time // urgent message sent
+	RepeatedAt         time.Time // the last repeat of the urgent message; zero when none
 	ResolvedNotifiedAt time.Time // "resolved" message sent
 }
 
 // Open reports whether the finding is open.
 func (r *Record) Open() bool { return r.ResolvedAt.IsZero() }
 
+// UrgentFrom is when the urgent debounce starts counting: the opening, or
+// the moment the finding became urgent if that came later.
+func (r *Record) UrgentFrom() time.Time {
+	if r.UrgentSince.After(r.OpenedAt) {
+		return r.UrgentSince
+	}
+	return r.OpenedAt
+}
+
+// recordData holds the parts of a record that have no column of their own.
+// An older syncwatch reads the keys it knows and drops the others.
 type recordData struct {
-	Checks  []string       `json:"checks,omitempty"`
-	Related []string       `json:"related,omitempty"`
-	Details []model.Detail `json:"details,omitempty"`
-	Paths   []string       `json:"paths,omitempty"`
-	Link    string         `json:"link,omitempty"`
+	Checks       []string       `json:"checks,omitempty"`
+	Related      []string       `json:"related,omitempty"`
+	Details      []model.Detail `json:"details,omitempty"`
+	Paths        []string       `json:"paths,omitempty"`
+	Link         string         `json:"link,omitempty"`
+	UrgentSince  int64          `json:"urgent_since,omitempty"` // Unix ms
+	RepeatedAt   int64          `json:"repeated_at,omitempty"`  // Unix ms
+	ResolvedText string         `json:"resolved_text,omitempty"`
 }
 
 const findingCols = `id, check_id, severity, category, server, subject, message, data, urgent, since, opened_at, last_seen, resolved_at, stale, pinged_at, resolved_notified_at`
@@ -50,7 +66,8 @@ func scanRecord(sc interface{ Scan(...any) error }) (*Record, error) {
 	if len(r.Checks) == 0 {
 		r.Checks = []string{r.Check}
 	}
-	r.Urgent, r.Stale = urgent == 1, stale == 1
+	r.ResolvedText, r.RepeatedAt = d.ResolvedText, fromMS(d.RepeatedAt)
+	r.Urgent, r.Stale, r.UrgentSince = urgent == 1, stale == 1, fromMS(d.UrgentSince)
 	r.Since, r.OpenedAt, r.LastSeen = fromMS(since), fromMS(opened), fromMS(last)
 	r.ResolvedAt, r.PingedAt, r.ResolvedNotifiedAt = fromMS(resolved), fromMS(pinged), fromMS(notified)
 	return &r, nil
@@ -65,7 +82,8 @@ func b2i(b bool) int {
 
 // SaveRecord inserts or replaces a finding record.
 func (s *Store) SaveRecord(r *Record) error {
-	data, _ := json.Marshal(recordData{Checks: r.Checks, Related: r.Related, Details: r.Details, Paths: r.Paths, Link: r.Link})
+	data, _ := json.Marshal(recordData{Checks: r.Checks, Related: r.Related, Details: r.Details, Paths: r.Paths, Link: r.Link, UrgentSince: ms(r.UrgentSince),
+		RepeatedAt: ms(r.RepeatedAt), ResolvedText: r.ResolvedText})
 	_, err := s.db.Exec(`INSERT INTO findings(`+findingCols+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET check_id=excluded.check_id, severity=excluded.severity, category=excluded.category,
 		server=excluded.server, subject=excluded.subject, message=excluded.message, data=excluded.data, urgent=excluded.urgent,
@@ -118,6 +136,25 @@ func (s *Store) queryRecords(q string, args ...any) ([]*Record, error) {
 	return out, rows.Err()
 }
 
+// FindingSeenSince reports whether a finding is open, or was resolved at or
+// after t, according to the findings table or the history.
+func (s *Store) FindingSeenSince(id string, t time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM findings WHERE id=? AND (resolved_at=0 OR resolved_at>=?))
+		OR EXISTS(SELECT 1 FROM history WHERE finding_id=? AND (resolved_at=0 OR resolved_at>=?))`, id, ms(t), id, ms(t)).Scan(&n)
+	return n == 1, err
+}
+
+// PruneIgnores deletes ignores of findings that are neither open nor were
+// resolved at or after t.
+func (s *Store) PruneIgnores(t time.Time) error {
+	_, err := s.db.Exec(`DELETE FROM snoozes WHERE kind=?
+		AND NOT EXISTS(SELECT 1 FROM findings WHERE id=snoozes.finding_id AND (resolved_at=0 OR resolved_at>=?))
+		AND NOT EXISTS(SELECT 1 FROM history WHERE finding_id=snoozes.finding_id AND (resolved_at=0 OR resolved_at>=?))`,
+		IgnoreKind, ms(t), ms(t))
+	return err
+}
+
 // PruneResolved deletes resolved findings older than t that need no notification.
 func (s *Store) PruneResolved(t time.Time) error {
 	_, err := s.db.Exec(`DELETE FROM findings WHERE resolved_at<>0 AND resolved_at<? AND (pinged_at=0 OR resolved_notified_at<>0)`, ms(t))
@@ -148,6 +185,13 @@ func (s *Store) HistoryOpen(r *Record) error {
 // HistoryResolve closes the open occurrence of a finding.
 func (s *Store) HistoryResolve(id string, at time.Time) error {
 	_, err := s.db.Exec(`UPDATE history SET resolved_at=? WHERE finding_id=? AND resolved_at=0`, ms(at), id)
+	return err
+}
+
+// HistoryResolveNote closes the open occurrence of a finding and adds a
+// note to its message, e.g. why it was closed without being fixed.
+func (s *Store) HistoryResolveNote(id string, at time.Time, note string) error {
+	_, err := s.db.Exec(`UPDATE history SET resolved_at=?, message=message || ? WHERE finding_id=? AND resolved_at=0`, ms(at), " ("+note+")", id)
 	return err
 }
 

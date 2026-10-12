@@ -23,7 +23,8 @@ func (e *evaluator) sameLabelDifferentIDs() {
 		if !sv.Loaded {
 			continue
 		}
-		for _, f := range sv.Folders {
+		for _, id := range sortedFolderIDs(sv) {
+			f := sv.Folders[id]
 			if f.Label == "" {
 				continue
 			}
@@ -49,10 +50,11 @@ func (e *evaluator) sameLabelDifferentIDs() {
 		sort.Strings(parts)
 		label := e.labelOf(locs[0].server, locs[0].id)
 		e.add("X1", "", "label:"+k, model.Finding{
-			Subject: label,
-			Related: sortedKeys(servers),
-			Message: fmt.Sprintf("Folder %q has different folder IDs on different servers (%s); it was probably added separately instead of shared", label, strings.Join(parts, ", ")),
-			Details: []model.Detail{detail("Folder IDs", strings.Join(parts, ", "))},
+			Subject:      label,
+			Related:      sortedKeys(servers),
+			Message:      fmt.Sprintf("Folder %q has different folder IDs on different servers (%s). Possible cause: the folder was added separately on each server, not shared from one to the other", label, strings.Join(parts, ", ")),
+			Details:      []model.Detail{detail("Folder IDs", strings.Join(parts, ", "))},
+			ResolvedText: fmt.Sprintf("The folders with the label %q have 1 folder ID now.", label),
 		})
 	}
 }
@@ -108,10 +110,11 @@ func (e *evaluator) folderShareTypes() {
 		sort.Strings(parts)
 		label := e.labelOf(ps[0].server, id)
 		e.add("X2", "", "folder:"+id, model.Finding{
-			Subject: label,
-			Related: sortedKeys(servers),
-			Message: fmt.Sprintf("Folder %s is in different share types on different servers (%s)", label, strings.Join(parts, ", ")),
-			Details: []model.Detail{detail("Folder ID", id), detail("Shares", strings.Join(parts, ", "))},
+			Subject:      label,
+			Related:      sortedKeys(servers),
+			Message:      fmt.Sprintf("Folder %s is in different share types on different servers (%s)", label, strings.Join(parts, ", ")),
+			Details:      []model.Detail{detail("Folder ID", id), detail("Shares", strings.Join(parts, ", "))},
+			ResolvedText: fmt.Sprintf("Folder %s is in shares of the same type now.", label),
 		})
 	}
 }

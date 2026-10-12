@@ -15,56 +15,122 @@ func (e *evaluator) structure() {
 		if !sv.Loaded {
 			continue
 		}
-		e.overlaps(sv)
-		e.shareRoots(sv)
+		roots := e.shareRootFolders(sv)
+		e.overlaps(sv, roots)
+		e.shareRoots(sv, roots)
 		e.nested(sv)
 		e.directories(sv)
 	}
 }
 
-// S1: one Syncthing folder inside another.
-func (e *evaluator) overlaps(sv *model.Server) {
-	st := pathx.StyleFor(sv.PathSep)
-	ids := sortedFolderIDs(sv)
-	for _, a := range ids {
-		for _, b := range ids {
-			fa, fb := sv.Folders[a], sv.Folders[b]
-			if a == b || fa.Path == "" || fb.Path == "" {
-				continue
-			}
-			if !st.Within(fb.Path, fa.Path) {
-				continue
-			}
-			e.add("S1", sv.ID, "overlap:"+fb.ID+":"+fa.ID, model.Finding{
-				Subject: fmt.Sprintf("%s inside %s on %s", fb.DisplayName(), fa.DisplayName(), sv.Name),
-				Message: fmt.Sprintf("Syncthing folder %s is inside folder %s on %s; files would be synced twice", fb.DisplayName(), fa.DisplayName(), sv.Name),
-				Details: []model.Detail{
-					detail("Inner folder", fb.ID+" — "+fb.Path),
-					detail("Outer folder", fa.ID+" — "+fa.Path),
-				},
-			})
-		}
+// shareRootFolders returns the Syncthing folders whose path is a share root
+// (the condition of S2), by folder ID. Empty while S2 is disabled: then S1
+// reports the folders inside them as before.
+func (e *evaluator) shareRootFolders(sv *model.Server) map[string]ShareRef {
+	roots := map[string]ShareRef{}
+	if !e.Config.CheckEnabled("S2") {
+		return roots
 	}
-}
-
-// S2: a share root that is itself a Syncthing folder.
-func (e *evaluator) shareRoots(sv *model.Server) {
 	st := pathx.StyleFor(sv.PathSep)
 	add, exclude := e.sharesConfig(sv)
 	shares := DetectShares(sv, add, exclude, e.Structure)
 	for _, id := range sortedFolderIDs(sv) {
 		f := sv.Folders[id]
 		for _, sh := range shares {
-			if !st.Equal(f.Path, sh.Path) {
+			if st.Equal(f.Path, sh.Path) {
+				roots[f.ID] = sh
+				break
+			}
+		}
+	}
+	return roots
+}
+
+// S1: one Syncthing folder inside another, or two at the same path. A
+// folder inside a share-root folder gets no S1: the S2 finding of the share
+// root lists it (one finding for one cause).
+func (e *evaluator) overlaps(sv *model.Server, roots map[string]ShareRef) {
+	st := pathx.StyleFor(sv.PathSep)
+	ids := sortedFolderIDs(sv)
+	for i, a := range ids {
+		for j, b := range ids {
+			fa, fb := sv.Folders[a], sv.Folders[b]
+			if a == b || fa.Path == "" || fb.Path == "" {
 				continue
 			}
-			e.add("S2", sv.ID, "share-root:"+f.ID, model.Finding{
-				Subject: fmt.Sprintf("%s on %s", sh.Name, sv.Name),
-				Message: fmt.Sprintf("Share root %s on %s is itself a Syncthing folder (%s); sync project folders individually instead", sh.Name, sv.Name, f.DisplayName()),
-				Details: []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path)},
+			if st.Equal(fa.Path, fb.Path) {
+				if i < j {
+					e.add("S1", sv.ID, "same:"+fa.ID+":"+fb.ID, model.Finding{
+						Subject: fmt.Sprintf("%s and %s on %s", fa.DisplayName(), fb.DisplayName(), sv.Name),
+						Message: fmt.Sprintf("Syncthing folders %s and %s have the same path on %s. Syncthing syncs the files 2 times", fa.DisplayName(), fb.DisplayName(), sv.Name),
+						Details: []model.Detail{
+							detail("Folder", fa.ID+" — "+fa.Path),
+							detail("Folder", fb.ID+" — "+fb.Path),
+						},
+						ResolvedText: fmt.Sprintf("Syncthing folders %s and %s on %s do not have the same path now.", fa.DisplayName(), fb.DisplayName(), sv.Name),
+					})
+				}
+				continue
+			}
+			if !st.Within(fb.Path, fa.Path) {
+				continue
+			}
+			if _, root := roots[fa.ID]; root {
+				continue // S2
+			}
+			e.add("S1", sv.ID, "overlap:"+fb.ID+":"+fa.ID, model.Finding{
+				Subject: fmt.Sprintf("%s inside %s on %s", fb.DisplayName(), fa.DisplayName(), sv.Name),
+				Message: fmt.Sprintf("Syncthing folder %s is inside Syncthing folder %s on %s. Syncthing syncs the files 2 times", fb.DisplayName(), fa.DisplayName(), sv.Name),
+				Details: []model.Detail{
+					detail("Inner folder", fb.ID+" — "+fb.Path),
+					detail("Outer folder", fa.ID+" — "+fa.Path),
+				},
+				ResolvedText: fmt.Sprintf("Syncthing folder %s is not inside Syncthing folder %s on %s now.", fb.DisplayName(), fa.DisplayName(), sv.Name),
 			})
-			break
 		}
+	}
+}
+
+// maxListed is how many folders a finding lists in its details; a last row
+// gives the number of the others.
+const maxListed = 20
+
+// S2: a share root that is itself a Syncthing folder. The Syncthing folders
+// inside it are rows of this finding, not S1 findings of their own.
+func (e *evaluator) shareRoots(sv *model.Server, roots map[string]ShareRef) {
+	st := pathx.StyleFor(sv.PathSep)
+	ids := sortedFolderIDs(sv)
+	for _, id := range ids {
+		sh, ok := roots[id]
+		if !ok {
+			continue
+		}
+		f := sv.Folders[id]
+		details := []model.Detail{detail("Folder ID", f.ID), detail("Path", f.Path)}
+		inside := 0
+		for _, other := range ids {
+			o := sv.Folders[other]
+			if other == id || o.Path == "" || !st.Within(o.Path, f.Path) {
+				continue
+			}
+			inside++
+			if inside <= maxListed {
+				details = append(details, detail("Syncthing folder inside", o.ID+" — "+o.Path))
+			}
+		}
+		if inside > maxListed {
+			details = append(details, detail("More folders inside", fmt.Sprint(inside-maxListed)))
+		}
+		msg := fmt.Sprintf("Share root %s on %s is a Syncthing folder (%s). ", sh.Name, sv.Name, f.DisplayName())
+		if inside > 0 {
+			msg += fmt.Sprintf("It contains %s. ", Plural(inside, "other Syncthing folder", "other Syncthing folders"))
+		}
+		e.add("S2", sv.ID, "share-root:"+f.ID, model.Finding{
+			Subject:      fmt.Sprintf("%s on %s", sh.Name, sv.Name),
+			Message:      msg + "Sync each project folder as a separate Syncthing folder",
+			Details:      details,
+			ResolvedText: fmt.Sprintf("Share root %s on %s is not a Syncthing folder now.", sh.Name, sv.Name),
+		})
 	}
 }
 
@@ -84,11 +150,12 @@ func (e *evaluator) nested(sv *model.Server) {
 		if n.FolderID != "" {
 			details = append(details, detail("Syncthing folder", n.FolderID))
 		}
-		e.add("S3", sv.ID, "nested:"+strings.ToLower(n.Path), model.Finding{
-			Subject: fmt.Sprintf("%s/%s/%s on %s", share, parent, rel, sv.Name),
-			Message: fmt.Sprintf("Project folder %s is nested inside project folder %s (%s on %s)", st.Base(n.Path), parent, share, sv.Name),
-			Since:   n.FoundAt,
-			Details: details,
+		e.add("S3", sv.ID, "nested:"+pathKey(st, n.Path), model.Finding{
+			Subject:      fmt.Sprintf("%s/%s/%s on %s", share, parent, rel, sv.Name),
+			Message:      fmt.Sprintf("Project folder %s is nested inside project folder %s (%s on %s)", st.Base(n.Path), parent, share, sv.Name),
+			Since:        n.FoundAt,
+			Details:      details,
+			ResolvedText: fmt.Sprintf("Project folder %s is not inside project folder %s now.", st.Base(n.Path), parent),
 		})
 	}
 }
@@ -123,7 +190,7 @@ func (e *evaluator) directories(sv *model.Server) {
 			var reasons []dirReason
 			isProject := cs.IsProject(d.Name)
 			if cs.HasProjectPattern() && !isProject {
-				reasons = append(reasons, dirReason{"S4", "name doesn't match the project pattern"})
+				reasons = append(reasons, dirReason{"S4", "name does not match the project pattern"})
 			}
 			if isProject {
 				reasons = append(reasons, e.placement(sh, d)...)
@@ -142,7 +209,7 @@ func (e *evaluator) directories(sv *model.Server) {
 				reasons = append(reasons, dirReason{"S6", "same name also in " + strings.Join(elsewhere, ", ")})
 			}
 			if isProject && len(d.FolderIDs) == 0 {
-				reasons = append(reasons, dirReason{"S7", "not covered by any Syncthing folder"})
+				reasons = append(reasons, dirReason{"S7", "not in any Syncthing folder"})
 			}
 			if len(reasons) == 0 {
 				continue
@@ -163,7 +230,7 @@ func (e *evaluator) placement(sh *model.Share, d *model.Dir) []dirReason {
 	case len(tokens) > 1:
 		out = append(out, dirReason{"S5", "name has more than one type token (" + strings.Join(tokens, ", ") + ")"})
 	case len(tokens) == 1 && shareType != "" && !strings.EqualFold(tokens[0], shareType):
-		out = append(out, dirReason{"S5", fmt.Sprintf("name says %s but the share is %s", tokens[0], shareType)})
+		out = append(out, dirReason{"S5", fmt.Sprintf("type token %s does not match share type %s", tokens[0], shareType)})
 	}
 	if cs.ShareType != nil {
 		for _, p := range cs.Placement {
@@ -173,7 +240,7 @@ func (e *evaluator) placement(sh *model.Share, d *model.Dir) []dirReason {
 			for _, k := range sortedKeys(p.Must) {
 				want := p.Must[k]
 				if !config.AttrSatisfies(sh.Attrs[k], want) {
-					out = append(out, dirReason{"S5", fmt.Sprintf("names matching %s must be in a share where %s is %s", p.Source, k, want)})
+					out = append(out, dirReason{"S5", fmt.Sprintf("names that match %s must be in a share where %s is %s", p.Source, k, want)})
 				}
 			}
 		}
@@ -213,18 +280,31 @@ func (e *evaluator) addDir(sv *model.Server, sh *model.Share, d *model.Dir, reas
 		details = append(details, detail("Share attributes", attrDisplay(sh.Attrs)))
 	}
 	e.out = append(e.out, model.Finding{
-		ID:       model.FindingID("DIR", sv.ID, strings.ToLower(d.Path)),
+		ID:       model.FindingID("DIR", sv.ID, pathKey(pathx.StyleFor(sv.PathSep), d.Path)),
 		Check:    primary,
 		Checks:   checks,
 		Severity: sev,
 		Category: model.CatStructure,
 		Server:   sv.ID,
 		Subject:  fmt.Sprintf("%s/%s on %s", sh.Name, d.Name, sv.Name),
-		Message:  fmt.Sprintf("%s in %s on %s: %s", d.Name, sh.Name, sv.Name, strings.Join(texts, "; ")),
+		Message:  fmt.Sprintf("Directory %s in share %s on %s: %s", d.Name, sh.Name, sv.Name, strings.Join(texts, " · ")),
 		Details:  details,
 		Link:     e.link(sv.ID),
 		Urgent:   urgent,
+		// One sentence for the reasons of S4–S7 together.
+		ResolvedText: fmt.Sprintf("Directory %s in share %s on %s agrees with the structure rules now.", d.Name, sh.Name, sv.Name),
 	})
+}
+
+// pathKey is the part of a finding ID that names a directory: the cleaned
+// path, lower-cased only on servers whose file system ignores case, so that
+// LIVE-Dup and LIVE-DUP on a Linux server stay two findings.
+func pathKey(st pathx.Style, p string) string {
+	p = st.Clean(p)
+	if st.CaseInsensitive {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 func attrDisplay(a map[string]string) string {

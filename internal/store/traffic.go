@@ -10,15 +10,18 @@ import (
 // since the previous one.
 type TrafficSample struct {
 	In, Out int64         // bytes received and sent since the previous reading
-	Over    time.Duration // time since the previous reading; 0 for the first one
+	Over    time.Duration // time since the previous reading; 0 for the first one and after a gap
+	Gap     bool          // the previous reading was too long ago; this one is only a baseline
 }
 
 // RecordTraffic stores a reading of a server's traffic counters (bytes
 // received and sent since Syncthing started) and records the increase since
-// the previous reading. The counters restart from zero when Syncthing
-// restarts (startTime changes, or a counter goes down); the whole value is
-// new then. The first reading is only a baseline.
-func (s *Store) RecordTraffic(server, startTime string, in, out int64, at time.Time) (TrafficSample, error) {
+// the previous reading. A counter restarts from zero when Syncthing
+// restarts (startTime changes, or that counter goes down); its whole value
+// is new then. The first reading, and a reading more than maxGap after the
+// previous one (syncwatch or the server was away, so the increase can't be
+// placed in time), is only a baseline.
+func (s *Store) RecordTraffic(server, startTime string, in, out int64, at time.Time, maxGap time.Duration) (TrafficSample, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return TrafficSample{}, err
@@ -33,12 +36,16 @@ func (s *Store) RecordTraffic(server, startTime string, in, out int64, at time.T
 		// first reading: baseline only
 	case err != nil:
 		return TrafficSample{}, err
+	case at.Sub(fromMS(prevAt)) > maxGap:
+		sample.Gap = true
 	default:
 		sample.Over = at.Sub(fromMS(prevAt))
-		if prevStart != startTime || in < prevIn || out < prevOut {
-			sample.In, sample.Out = in, out
-		} else {
-			sample.In, sample.Out = in-prevIn, out-prevOut
+		restarted := prevStart != startTime
+		if sample.In = in - prevIn; restarted || in < prevIn {
+			sample.In = in
+		}
+		if sample.Out = out - prevOut; restarted || out < prevOut {
+			sample.Out = out
 		}
 	}
 	if sample.In > 0 || sample.Out > 0 {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,8 @@ import (
 // Secret names.
 const (
 	SecretDiscordWebhook = "notify.discord_webhook"
-	SecretAPIToken       = "api.token"
+	SecretNoticesWebhook = "notify.discord_notices_webhook" // the Discord webhook for settings notices
+	SecretAPIToken       = "api.token"                      // the single API token of an older version; see migrateAPIToken
 )
 
 // ServerAPIKeySecret is the secret name of a server's API key.
@@ -67,28 +69,76 @@ func LoadKey(dataDir, envValue string) ([]byte, error) {
 	if envValue = strings.TrimSpace(envValue); envValue != "" {
 		b, err := base64.StdEncoding.DecodeString(envValue)
 		if err != nil || len(b) != 32 {
-			return nil, errors.New("SYNCWATCH_SECRET_KEY must be a base64-encoded 32-byte random key; create one with: openssl rand -base64 32")
+			return nil, errors.New("SYNCWATCH_SECRET_KEY must be 32 random bytes, base64-encoded. Make one with: openssl rand -base64 32")
 		}
 		return b, nil
 	}
 	path := filepath.Join(dataDir, "secret.key")
-	if b, err := os.ReadFile(path); err == nil {
-		key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
-		if err != nil || len(key) != 32 {
-			return nil, fmt.Errorf("%s is not a valid key", path)
-		}
+	key, err := readKeyFile(path)
+	if err == nil {
 		return key, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
 	}
-	key := make([]byte, 32)
+	if !errors.Is(err, fs.ErrNotExist) {
+		// The file exists but holds no key (yet): another process may have
+		// created it a moment ago and not written it. Wait for the key
+		// rather than refuse to start on a file that is on its way.
+		return awaitKeyFile(path)
+	}
+	key = make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0o600); err != nil {
+	err = createKeyFile(path, key)
+	if errors.Is(err, fs.ErrExist) {
+		// Another process created it at the same moment: use its key.
+		return awaitKeyFile(path)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("writing %s: %w", path, err)
 	}
 	return key, nil
+}
+
+// awaitKeyFile reads a key file that another process is writing, giving it
+// up to a second to finish; the last read error is returned otherwise.
+func awaitKeyFile(path string) ([]byte, error) {
+	var (
+		key []byte
+		err error
+	)
+	for i := 0; i < 20; i++ {
+		if key, err = readKeyFile(path); err == nil {
+			return key, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return nil, err
+}
+
+func readKeyFile(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("%s is not a valid secret key", path)
+	}
+	return key, nil
+}
+
+// createKeyFile writes a new key file for the owner only. It fails with
+// fs.ErrExist rather than overwrite a file another process just created.
+func createKeyFile(path string, key []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte(base64.StdEncoding.EncodeToString(key) + "\n"))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func (s *Store) aead() (cipher.AEAD, error) {
@@ -129,15 +179,53 @@ func (s *Store) Secret(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return s.decrypt(name, nonce, ct)
+}
+
+// decrypt opens the stored value of a secret. A nonce of the wrong size is
+// an error, not a panic in gcm.Open.
+func (s *Store) decrypt(name string, nonce, ct []byte) (string, error) {
 	gcm, err := s.aead()
 	if err != nil {
 		return "", err
 	}
+	if len(nonce) != gcm.NonceSize() {
+		return "", fmt.Errorf("cannot decrypt the secret %s: check the secret key", name)
+	}
 	pt, err := gcm.Open(nil, nonce, ct, []byte(name))
 	if err != nil {
-		return "", fmt.Errorf("secret %s can't be decrypted (wrong secret key?)", name)
+		return "", fmt.Errorf("cannot decrypt the secret %s: check the secret key", name)
 	}
 	return string(pt), nil
+}
+
+// UnreadableSecrets returns the names of the stored secrets that the secret
+// key cannot decrypt, and the number of stored secrets. A new or changed
+// secret key makes all of them unreadable.
+func (s *Store) UnreadableSecrets() (names []string, total int, err error) {
+	gcm, err := s.aead()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(`SELECT name, nonce, ciphertext FROM secrets ORDER BY name`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var nonce, ct []byte
+		if err := rows.Scan(&name, &nonce, &ct); err != nil {
+			return nil, 0, err
+		}
+		total++
+		if len(nonce) != gcm.NonceSize() {
+			names = append(names, name)
+		} else if _, err := gcm.Open(nil, nonce, ct, []byte(name)); err != nil {
+			names = append(names, name)
+		}
+	}
+	return names, total, rows.Err()
 }
 
 // HasSecret reports whether a secret is set, without decrypting it.

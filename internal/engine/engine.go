@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/pathx"
 	"github.com/ivarstudios/syncwatch/internal/rules"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -31,6 +33,7 @@ type Engine struct {
 	mu          sync.Mutex
 	open        map[string]*store.Record
 	obs         map[string]store.Observation
+	holds       map[string]time.Time // held observations: when their timer stopped (see hold)
 	snoozes     map[string]store.Snooze
 	persisted   map[string]time.Time // last LastSeen written per open record
 	snap        *model.Snapshot
@@ -56,7 +59,7 @@ func New(st *store.Store, hub *model.Hub, cfg *config.Holder, now func() time.Ti
 	}
 	e := &Engine{
 		st: st, hub: hub, cfg: cfg, now: now, log: log,
-		open: map[string]*store.Record{}, persisted: map[string]time.Time{},
+		open: map[string]*store.Record{}, holds: map[string]time.Time{}, persisted: map[string]time.Time{},
 		subs: map[chan uint64]struct{}{}, trigger: make(chan struct{}, 1),
 		snap: &model.Snapshot{},
 	}
@@ -118,19 +121,28 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
+// resolvedMemory is how long a resolved finding is kept: it can still be
+// snoozed or ignored (a re-open stays hidden), and an ignore outlives it
+// by this much.
+const resolvedMemory = 90 * 24 * time.Hour
+
+// errUnknownFinding is returned for snoozes of findings that don't exist.
+var errUnknownFinding = errors.New("No open or recent finding has this ID.")
+
 // Prune removes old history, expired snoozes and sessions.
 func (e *Engine) Prune() {
 	now := e.now()
 	for _, err := range []error{
-		e.st.PruneResolved(now.Add(-90 * 24 * time.Hour)),
+		e.st.PruneResolved(now.Add(-resolvedMemory)),
 		e.st.PruneHistory(now.Add(-400 * 24 * time.Hour)),
 		e.st.PruneConflicts(now.Add(-60 * 24 * time.Hour)),
 		e.st.PruneTraffic(now.Add(-8 * 24 * time.Hour)),
 		e.st.PruneSnoozes(now),
+		e.st.PruneIgnores(now.Add(-resolvedMemory)),
 		e.st.PruneSessions(now),
 	} {
 		if err != nil {
-			e.log.Warn("pruning the database", "err", err)
+			e.log.Warn("cannot delete old records from the database", "err", err)
 		}
 	}
 	if z, err := e.st.Snoozes(); err == nil {
@@ -140,29 +152,217 @@ func (e *Engine) Prune() {
 	}
 }
 
-func staleServers(snap *model.Snapshot) map[string]bool {
-	out := map[string]bool{}
-	for _, sv := range snap.Servers {
-		if sv.Status != model.StatusUp || !sv.Loaded {
-			out[sv.ID] = true
-		}
-	}
-	return out
+// freezer decides which findings are frozen: kept as they are, neither
+// opening nor resolving, because the data they would be judged on can't be
+// trusted right now.
+type freezer struct {
+	present   map[string]bool // in the snapshot at all (configured and enabled)
+	stale     map[string]bool // not up, or not loaded since the start
+	unknown   map[string]bool // not contacted since the start
+	unscanned map[string]bool // up, but no structure scan has finished since the start
+	failed    map[string]failedShares
 }
 
-func frozen(stale map[string]bool, check, server string, related []string) bool {
-	if check == "H1" || check == "H3" {
+// failedShares are the shares of one server whose last listing failed.
+type failedShares struct {
+	st    pathx.Style
+	paths []string
+}
+
+func newFreezer(snap *model.Snapshot) *freezer {
+	z := &freezer{present: map[string]bool{}, stale: map[string]bool{}, unknown: map[string]bool{}, unscanned: map[string]bool{}, failed: map[string]failedShares{}}
+	for _, sv := range snap.Servers {
+		z.present[sv.ID] = true
+		if sv.Status == model.StatusUnknown {
+			z.unknown[sv.ID] = true
+		}
+		if sv.Status != model.StatusUp || !sv.Loaded {
+			z.stale[sv.ID] = true
+			continue
+		}
+		if sv.Structure == nil || sv.Structure.ScannedAt.IsZero() {
+			z.unscanned[sv.ID] = true
+			continue
+		}
+		var paths []string
+		for _, sh := range sv.Structure.Shares {
+			if sh.Error != "" {
+				paths = append(paths, sh.Path)
+			}
+		}
+		if len(paths) > 0 {
+			z.failed[sv.ID] = failedShares{st: pathx.StyleFor(sv.PathSep), paths: paths}
+		}
+	}
+	return z
+}
+
+// isStale reports whether a server can't vouch for anything right now. A
+// server missing from the snapshot can't either.
+func (z *freezer) isStale(id string) bool { return z.stale[id] || !z.present[id] }
+
+// allStale reports whether every one of the servers is stale (none for an
+// empty list).
+func (z *freezer) allStale(ids []string) bool {
+	if len(ids) == 0 {
 		return false
 	}
-	if server != "" && stale[server] {
-		return true
+	for _, id := range ids {
+		if !z.isStale(id) {
+			return false
+		}
 	}
-	for _, r := range related {
-		if stale[r] {
+	return true
+}
+
+func (z *freezer) anyStale(ids []string) bool {
+	for _, id := range ids {
+		if z.isStale(id) {
 			return true
 		}
 	}
 	return false
+}
+
+// anyPresentStale reports whether one of the servers that are still in the
+// configuration is stale.
+func (z *freezer) anyPresentStale(ids []string) bool {
+	for _, id := range ids {
+		if z.present[id] && z.stale[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// absenceCheck reports whether a finding says that a device is absent: H7
+// (PC offline), C2 (inactive device) and H12 for a device that always
+// connects through a relay (no server: the device has no connection). A
+// server that cannot be reached can still have the device connected, so
+// such a finding can only be judged while every server that has the device
+// configured is reachable.
+func absenceCheck(f model.Finding) bool {
+	switch f.Check {
+	case "H7", "C2":
+		return true
+	case "H12":
+		return f.Server == ""
+	}
+	return false
+}
+
+// gone reports whether the servers a finding depends on have left the
+// configuration (removed or disabled): it can't be judged again, and there
+// is nobody to report it resolved either.
+func (z *freezer) gone(f model.Finding) bool {
+	if f.Server != "" && !z.present[f.Server] {
+		return true
+	}
+	return len(f.Related) > 0 && !z.anyPresent(f.Related)
+}
+
+// keepObservation reports whether a condition that is no longer produced
+// keeps its timer: while the servers it depends on can't be judged (the
+// open record's rule, else all of its servers stale), unless they have
+// left the configuration.
+func (z *freezer) keepObservation(rec *store.Record, o store.Observation) bool {
+	if rec != nil {
+		return !z.gone(rec.Finding) && z.frozen(rec.Finding)
+	}
+	return z.anyPresent(o.Servers) && z.allStale(o.Servers)
+}
+
+func (z *freezer) anyPresent(ids []string) bool {
+	for _, id := range ids {
+		if z.present[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// structureCheck reports whether a check needs the structure scan (S3 and
+// the per-directory checks S4–S7).
+func structureCheck(check string) bool {
+	switch check {
+	case "S3", "S4", "S5", "S6", "S7":
+		return true
+	}
+	return false
+}
+
+// frozen reports whether a finding must keep its current state.
+func (z *freezer) frozen(f model.Finding) bool {
+	if f.Check == "H1" || f.Check == "H3" {
+		// Reachability findings follow the server's status; only "not
+		// contacted yet" (after a start) says nothing about it.
+		return z.unknown[f.Server]
+	}
+	if f.Server == "" {
+		if absenceCheck(f) && z.anyPresentStale(f.Related) {
+			return true
+		}
+		// Other cross-server findings are judged on whichever related
+		// servers are reachable; only when none is can nothing be said
+		// about them.
+		return z.allStale(f.Related)
+	}
+	if z.isStale(f.Server) || z.anyStale(f.Related) {
+		return true
+	}
+	if structureCheck(f.Check) {
+		if z.unscanned[f.Server] {
+			return true
+		}
+		if fs, ok := z.failed[f.Server]; ok {
+			p := f.DetailValue("Path")
+			for _, sp := range fs.paths {
+				if fs.st.Within(p, sp) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// heldPersist is how often the moved timer of a held observation is
+// written to the database. After a restart of syncwatch, at most this much
+// of the time held counts as time towards the minimum duration.
+const heldPersist = 10 * time.Minute
+
+// hold stops the timer of a held finding's observation: the time from now
+// until the hold ends does not count towards its minimum duration (H5
+// counts only the time a device is connected). A held finding starts no
+// observation.
+func (e *Engine) hold(id string, now time.Time, add map[string]store.Observation) {
+	o, ok := e.obs[id]
+	if !ok {
+		return
+	}
+	from, ok := e.holds[id]
+	if !ok {
+		e.holds[id] = now
+		return
+	}
+	if now.Sub(from) >= heldPersist {
+		o.Since = o.Since.Add(now.Sub(from))
+		e.obs[id], e.holds[id], add[id] = o, now, o
+	}
+}
+
+// release starts the timer of an observation again after a hold: the
+// observation starts later by the time it was held.
+func (e *Engine) release(id string, now time.Time, add map[string]store.Observation) {
+	from, ok := e.holds[id]
+	if !ok {
+		return
+	}
+	delete(e.holds, id)
+	if o, ok := e.obs[id]; ok {
+		o.Since = o.Since.Add(now.Sub(from))
+		e.obs[id], add[id] = o, o
+	}
 }
 
 func findingServers(f model.Finding) []string {
@@ -175,27 +375,44 @@ func findingServers(f model.Finding) []string {
 
 // Evaluate runs the rules once and updates the findings.
 func (e *Engine) Evaluate() {
+	if !e.hub.Ready() {
+		// The collector manager hasn't published the server set yet; an
+		// empty snapshot would resolve every open finding.
+		return
+	}
 	cfg := e.cfg.Get()
 	snap := e.hub.Snapshot()
 	now := e.now()
 	snap.At = now
+	snap.Disabled = e.disabledServers(cfg)
+	snap.Links = snap.ServerLinks()
+	snap.SiteLinks = model.SiteLinks(snap.Links, cfg.SiteOf, serverOrder(cfg))
 	conflicts, err := e.st.ConflictsSince(now.Add(-cfg.Thresholds.ConflictWindow.D()))
 	if err != nil {
-		e.log.Warn("reading conflict history", "err", err)
+		e.log.Warn("cannot read the conflict history", "err", err)
 	}
 	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts})
-	stale := staleServers(snap)
+	z := newFreezer(snap)
 
 	e.mu.Lock()
 	produced := map[string]bool{}
+	held := map[string]bool{}
 	current := map[string]model.Finding{}
 	obsAdd := map[string]store.Observation{}
 	var obsRemove []string
 	for _, f := range fs {
 		produced[f.ID] = true
-		if frozen(stale, f.Check, f.Server, f.Related) {
+		if f.Held {
+			// Judged from a last known state: like a frozen finding, and
+			// its timer stops.
+			held[f.ID] = true
+			e.hold(f.ID, now, obsAdd)
 			continue
 		}
+		if z.frozen(f) {
+			continue
+		}
+		e.release(f.ID, now, obsAdd)
 		o, ok := e.obs[f.ID]
 		if !ok {
 			o = store.Observation{Since: now, Servers: findingServers(f)}
@@ -205,7 +422,10 @@ func (e *Engine) Evaluate() {
 			e.obs[f.ID] = o
 			obsAdd[f.ID] = o
 		}
-		if now.Sub(o.Since) < f.MinDuration {
+		// The minimum duration gates opening only: a finding that is open
+		// stays open while its condition holds, also after the threshold
+		// was raised.
+		if now.Sub(o.Since) < f.MinDuration && e.open[f.ID] == nil {
 			continue
 		}
 		current[f.ID] = f
@@ -214,10 +434,11 @@ func (e *Engine) Evaluate() {
 		if produced[id] {
 			continue
 		}
-		if frozen(stale, "", "", o.Servers) {
+		if z.keepObservation(e.open[id], o) {
 			continue
 		}
 		delete(e.obs, id)
+		delete(e.holds, id)
 		obsRemove = append(obsRemove, id)
 	}
 
@@ -226,15 +447,21 @@ func (e *Engine) Evaluate() {
 		rec := e.open[id]
 		if rec == nil {
 			rec = &store.Record{Finding: f, Since: e.obs[id].Since, OpenedAt: now, LastSeen: now}
+			if f.Urgent {
+				rec.UrgentSince = now
+			}
 			if old, err := e.st.Record(id); err == nil && old != nil && !old.Open() && !old.PingedAt.IsZero() && old.ResolvedNotifiedAt.IsZero() {
 				// It flapped back before its "resolved" message went out:
-				// carry on as the same, already-announced problem.
+				// carry on as the same, already-announced problem. The time
+				// of the last repeat goes with it, or the notifier repeats
+				// the urgent message again at once (W-050).
 				rec.PingedAt = old.PingedAt
+				rec.RepeatedAt = old.RepeatedAt
 			}
 			e.open[id] = rec
 			e.save(rec)
 			if err := e.st.HistoryOpen(rec); err != nil {
-				e.log.Warn("writing history", "err", err)
+				e.log.Warn("cannot write the finding history", "err", err)
 			}
 			e.persisted[id] = now
 			changed = true
@@ -244,6 +471,15 @@ func (e *Engine) Evaluate() {
 		upd := sameContent(rec.Finding, f)
 		rec.LastSeen = now
 		if !upd || rec.Stale {
+			// A finding that becomes urgent later (a check switched to
+			// urgent, a directory gaining an urgent reason) gets its own
+			// debounce from that moment rather than pinging at once.
+			switch {
+			case f.Urgent && !rec.Urgent:
+				rec.UrgentSince = now
+			case !f.Urgent:
+				rec.UrgentSince = time.Time{}
+			}
 			rec.Finding = f
 			rec.Stale = false
 			e.save(rec)
@@ -258,7 +494,21 @@ func (e *Engine) Evaluate() {
 		if _, ok := current[id]; ok {
 			continue
 		}
-		if frozen(stale, rec.Check, rec.Server, rec.Related) {
+		if z.gone(rec.Finding) {
+			// The server was removed or disabled in the settings: close the
+			// finding quietly, a "resolved" message would be misleading.
+			rec.ResolvedAt, rec.ResolvedNotifiedAt = now, now
+			e.save(rec)
+			if err := e.st.HistoryResolveNote(id, now, "server removed or disabled"); err != nil {
+				e.log.Warn("cannot write the finding history", "err", err)
+			}
+			delete(e.open, id)
+			delete(e.persisted, id)
+			changed = true
+			e.log.Info("finding closed", "reason", "server removed or disabled", "check", rec.Check, "subject", rec.Subject, "id", id)
+			continue
+		}
+		if z.frozen(rec.Finding) || held[id] {
 			if !rec.Stale {
 				rec.Stale = true
 				e.save(rec)
@@ -266,11 +516,13 @@ func (e *Engine) Evaluate() {
 			}
 			continue
 		}
+		// LastSeen stays the time of the last evaluation that saw the
+		// finding open: the resolved message tells from it whether the
+		// fault ended while syncwatch did not run (W-038).
 		rec.ResolvedAt = now
-		rec.LastSeen = now
 		e.save(rec)
 		if err := e.st.HistoryResolve(id, now); err != nil {
-			e.log.Warn("writing history", "err", err)
+			e.log.Warn("cannot write the finding history", "err", err)
 		}
 		delete(e.open, id)
 		delete(e.persisted, id)
@@ -292,7 +544,7 @@ func (e *Engine) Evaluate() {
 	e.mu.Unlock()
 
 	if err := e.st.ApplyObservations(obsAdd, obsRemove); err != nil {
-		e.log.Warn("writing observations", "err", err)
+		e.log.Warn("cannot save the observations", "err", err)
 	}
 	if publish {
 		e.publish(ver)
@@ -302,17 +554,44 @@ func (e *Engine) Evaluate() {
 	}
 }
 
+// disabledServers lists the servers that are disabled in the configuration,
+// with the device ID each had when it was polled last. The collector does
+// not poll them, but their devices are servers, not PCs (no H7, C2, C3 or
+// PC counts for a NAS that an administrator disabled).
+func (e *Engine) disabledServers(cfg *config.Config) []model.DisabledServer {
+	var out []model.DisabledServer
+	for _, s := range cfg.Servers {
+		if !s.Disabled {
+			continue
+		}
+		id, _ := e.st.ServerDeviceID(s.ID)
+		out = append(out, model.DisabledServer{ID: s.ID, Name: s.Name, MyID: id})
+	}
+	return out
+}
+
+// serverOrder lists the server IDs in configuration order, disabled servers
+// included (the order of the sites follows their first server).
+func serverOrder(cfg *config.Config) []string {
+	ids := make([]string, len(cfg.Servers))
+	for i, s := range cfg.Servers {
+		ids[i] = s.ID
+	}
+	return ids
+}
+
 func (e *Engine) save(r *store.Record) {
 	if err := e.st.SaveRecord(r); err != nil {
-		e.log.Error("saving finding", "id", r.ID, "err", err)
+		e.log.Error("cannot save the finding", "id", r.ID, "err", err)
 	}
 }
 
-// sameContent compares the parts of a finding that matter to viewers.
+// sameContent compares the parts of a finding that matter to viewers, and
+// the sentence of its resolved message.
 func sameContent(a, b model.Finding) bool {
 	return a.Check == b.Check && a.Severity == b.Severity && a.Subject == b.Subject && a.Message == b.Message &&
 		a.Urgent == b.Urgent && a.Link == b.Link && slices.Equal(a.Checks, b.Checks) && slices.Equal(a.Paths, b.Paths) &&
-		slices.Equal(a.Related, b.Related) && reflect.DeepEqual(a.Details, b.Details)
+		slices.Equal(a.Related, b.Related) && reflect.DeepEqual(a.Details, b.Details) && a.ResolvedText == b.ResolvedText
 }
 
 // visibleFingerprint hashes what the dashboard shows of the snapshot (server
@@ -322,6 +601,16 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 	h := fnv.New64a()
 	w := func(parts ...any) {
 		fmt.Fprintln(h, parts...)
+	}
+	for _, ds := range snap.Disabled {
+		w("disabled", ds.ID, ds.Name, ds.MyID)
+	}
+	// The connection rows show the state and its start time.
+	for _, l := range snap.Links {
+		w("link", l.A, l.B, l.State, l.Since.Unix())
+	}
+	for _, l := range snap.SiteLinks {
+		w("site link", l.A, l.B, l.State, l.Since.Unix())
 	}
 	for _, sv := range snap.Servers {
 		w(sv.ID, sv.Status, sv.Version, sv.LastError, sv.Loaded, sv.Mode, sv.Cert.NotAfter.Unix())
@@ -413,11 +702,34 @@ func (e *Engine) MarkPinged(ids []string, at time.Time) { e.mark(ids, at, false)
 // MarkResolvedNotified records that "resolved" messages went out.
 func (e *Engine) MarkResolvedNotified(ids []string, at time.Time) { e.mark(ids, at, true) }
 
+// MarkRepeated records that a repeat of the urgent message went out for
+// findings. Only open findings are repeated: an ID that is not open is
+// skipped.
+func (e *Engine) MarkRepeated(ids []string, at time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, id := range ids {
+		if r := e.open[id]; r != nil {
+			r.RepeatedAt = at
+			e.save(r)
+		}
+	}
+}
+
 func (e *Engine) mark(ids []string, at time.Time, resolved bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, id := range ids {
 		r := e.open[id]
+		if r != nil && resolved {
+			// The "resolved" message was about an earlier occurrence that
+			// has re-opened since, inheriting its PingedAt and RepeatedAt
+			// (see Evaluate). That occurrence is done with; the new one is
+			// unannounced.
+			r.PingedAt, r.RepeatedAt = time.Time{}, time.Time{}
+			e.save(r)
+			continue
+		}
 		if r == nil {
 			var err error
 			if r, err = e.st.Record(id); err != nil || r == nil {
@@ -446,10 +758,23 @@ func (e *Engine) Ignore(id, reason, by string) error {
 func (e *Engine) setSnooze(z store.Snooze) error {
 	z.CreatedAt = e.now()
 	e.mu.Lock()
-	if r := e.open[z.FindingID]; r != nil {
+	r := e.open[z.FindingID]
+	if r != nil {
 		z.Subject = r.Check + " " + r.Subject
 	}
 	e.mu.Unlock()
+	if r == nil {
+		// Only a problem that exists, or did recently, can be hidden. IDs
+		// are predictable, so otherwise a server's future H1/H3 could be
+		// muted in advance without anyone seeing it.
+		seen, err := e.st.FindingSeenSince(z.FindingID, z.CreatedAt.Add(-resolvedMemory))
+		if err != nil {
+			return err
+		}
+		if !seen {
+			return errUnknownFinding
+		}
+	}
 	if err := e.st.SetSnooze(z); err != nil {
 		return err
 	}

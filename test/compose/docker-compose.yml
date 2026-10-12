@@ -19,6 +19,38 @@ x-syncthing: &syncthing
     PGID: "1000"
     STGUIADDRESS: https://0.0.0.0:8384
     STNOUPGRADE: "1"
+  # Before the first start, generate the config and turn off everything that
+  # reaches outside the test network (global and local discovery, relays, NAT
+  # traversal, usage and crash reporting, auto-upgrade), as
+  # test/harness/syncthing.go does for native processes. Every start checks
+  # the config again and refuses to run Syncthing if any of it is on; then
+  # the image's own entrypoint takes over.
+  entrypoint:
+    - /bin/sh
+    - -c
+    - |
+      set -eu
+      C="$${STHOMEDIR:-/var/syncthing/config}"
+      if [ ! -f "$$C/config.xml" ]; then
+        chown "$$PUID:$$PGID" "$$HOME" || true
+        su-exec "$$PUID:$$PGID" env HOME="$$HOME" /bin/syncthing generate --home="$$C" --no-port-probing
+      fi
+      su-exec "$$PUID:$$PGID" sed -i \
+        -e 's|<globalAnnounceEnabled>true<|<globalAnnounceEnabled>false<|' \
+        -e 's|<localAnnounceEnabled>true<|<localAnnounceEnabled>false<|' \
+        -e 's|<relaysEnabled>true<|<relaysEnabled>false<|' \
+        -e 's|<natEnabled>true<|<natEnabled>false<|' \
+        -e 's|<urAccepted>0<|<urAccepted>-1<|' \
+        -e 's|<autoUpgradeIntervalH>[0-9]*<|<autoUpgradeIntervalH>0<|' \
+        -e 's|<crashReportingEnabled>true<|<crashReportingEnabled>false<|' \
+        "$$C/config.xml"
+      for k in globalAnnounceEnabled localAnnounceEnabled relaysEnabled natEnabled crashReportingEnabled; do
+        grep -q "<$$k>false</$$k>" "$$C/config.xml" || { echo "syncthing-init: $$k is not off; refusing to start" >&2; exit 1; }
+      done
+      grep -q '<urAccepted>-1</urAccepted>' "$$C/config.xml" || { echo "syncthing-init: usage reporting is not off; refusing to start" >&2; exit 1; }
+      grep -q '<autoUpgradeIntervalH>0</autoUpgradeIntervalH>' "$$C/config.xml" || { echo "syncthing-init: auto-upgrade is not off; refusing to start" >&2; exit 1; }
+      echo "syncthing-init: discovery, relays, NAT traversal, usage and crash reporting and auto-upgrade are off" >&2
+      exec /bin/entrypoint.sh /bin/syncthing
 
 services:
   e2e-akka:
@@ -99,7 +131,7 @@ services:
           pc_offline: 40s
         notifications:
           discord_webhook: http://discord.e2e.invalid:8080/api/webhooks/1/compose-token
-          discord_role_id: "555"
+          discord_role_id: "555000000000000000"
           quiet_hours: "off"
           reminder_time: "off"
           weekly_day: "off"
@@ -132,6 +164,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:
+      SYNCWATCH_GATE_LISTEN: ":8080"   # this stack addresses the gate on 8080 (the image's default is 8385)
       SYNCWATCH_GATE_SYNCTHING: https://sol.e2e.invalid:8384
       SYNCWATCH_GATE_SYNCTHING_KEY: key-sol-compose-0123456789
       SYNCWATCH_GATE_TOKEN: gate-token-sol-compose-0123456789

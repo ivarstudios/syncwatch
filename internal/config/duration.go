@@ -14,10 +14,14 @@ import (
 // units and is written back in the largest whole unit.
 type Duration time.Duration
 
+// MaxDuration is the longest duration any setting accepts: 10 years.
+const MaxDuration = 10 * 365 * 24 * time.Hour
+
 // D returns the value as a time.Duration.
 func (d Duration) D() time.Duration { return time.Duration(d) }
 
 // ParseDuration parses Go durations plus d and w units, e.g. "90d", "1w2d", "36h".
+// Negative values and values above MaxDuration are errors.
 func ParseDuration(s string) (Duration, error) {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "0" {
@@ -31,7 +35,7 @@ func ParseDuration(s string) (Duration, error) {
 			i++
 		}
 		if i == 0 {
-			return 0, fmt.Errorf("invalid duration %q", s)
+			return 0, fmt.Errorf("the value %q is not a duration. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.", s)
 		}
 		j := i
 		for j < len(rest) && (rest[j] < '0' || rest[j] > '9') && rest[j] != '.' {
@@ -39,24 +43,31 @@ func ParseDuration(s string) (Duration, error) {
 		}
 		num, unit := rest[:i], rest[i:j]
 		rest = rest[j:]
+		var d time.Duration
 		switch unit {
 		case "d", "w":
 			n, err := strconv.ParseFloat(num, 64)
 			if err != nil {
-				return 0, fmt.Errorf("invalid duration %q", s)
+				return 0, fmt.Errorf("the value %q is not a duration. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.", s)
 			}
 			mult := 24 * time.Hour
 			if unit == "w" {
 				mult *= 7
 			}
-			total += time.Duration(n * float64(mult))
-		default:
-			d, err := time.ParseDuration(num + unit)
-			if err != nil {
-				return 0, fmt.Errorf("invalid duration %q", s)
+			if n*float64(mult) > float64(MaxDuration) {
+				return 0, fmt.Errorf("the duration %q is longer than the maximum of 10 years.", s)
 			}
-			total += d
+			d = time.Duration(n * float64(mult))
+		default:
+			var err error
+			if d, err = time.ParseDuration(num + unit); err != nil {
+				return 0, fmt.Errorf("the value %q is not a duration. Use a number and a unit, for example 30s, 15m, 24h, 3d or 2w.", s)
+			}
 		}
+		if d > MaxDuration-total {
+			return 0, fmt.Errorf("the duration %q is longer than the maximum of 10 years.", s)
+		}
+		total += d
 	}
 	return Duration(total), nil
 }
@@ -113,4 +124,26 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	}
 	*d = v
 	return nil
+}
+
+// Words writes the duration as digits and a unit word for sentences:
+// "5 seconds", "10 minutes", "1 hour", "7 days".
+func (d Duration) Words() string {
+	v := d.D()
+	unit := func(n int64, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %ss", n, one)
+	}
+	switch {
+	case v >= 24*time.Hour && v%(24*time.Hour) == 0:
+		return unit(int64(v/(24*time.Hour)), "day")
+	case v >= time.Hour && v%time.Hour == 0:
+		return unit(int64(v/time.Hour), "hour")
+	case v >= time.Minute && v%time.Minute == 0:
+		return unit(int64(v/time.Minute), "minute")
+	default:
+		return unit(int64(v/time.Second), "second")
+	}
 }

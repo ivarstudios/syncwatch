@@ -37,12 +37,20 @@ func (s Structure) Compile() (*CompiledStructure, error) {
 	var err error
 	if s.ProjectPattern != "" {
 		if cs.Project, err = regexp.Compile(flags + s.ProjectPattern); err != nil {
-			return nil, fmt.Errorf("structure.project_pattern: %v", err)
+			return nil, fmt.Errorf("structure.project_pattern: the regular expression is not valid: %v", err)
 		}
 	}
+	// Placement rules read attributes from the named groups of
+	// share_type_from_path, so an attribute name must be one of them.
+	groups := map[string]bool{}
 	if s.ShareTypeFromPath != "" {
-		if cs.ShareType, err = regexp.Compile(s.ShareTypeFromPath); err != nil {
-			return nil, fmt.Errorf("structure.share_type_from_path: %v", err)
+		if cs.ShareType, err = regexp.Compile(flags + s.ShareTypeFromPath); err != nil {
+			return nil, fmt.Errorf("structure.share_type_from_path: the regular expression is not valid: %v", err)
+		}
+		for _, n := range cs.ShareType.SubexpNames() {
+			if n != "" {
+				groups[n] = true
+			}
 		}
 	}
 	for _, t := range s.TypeTokens {
@@ -54,19 +62,41 @@ func (s Structure) Compile() (*CompiledStructure, error) {
 	for i, p := range s.Placement {
 		re, err := regexp.Compile(flags + p.WhenNameMatches)
 		if err != nil {
-			return nil, fmt.Errorf("structure.placement[%d].when_name_matches: %v", i, err)
+			return nil, fmt.Errorf("structure.placement[%d].when_name_matches: the regular expression is not valid: %v", i, err)
 		}
 		if len(p.ShareMustHave) == 0 {
-			return nil, fmt.Errorf("structure.placement[%d]: share_must_have is empty", i)
+			return nil, fmt.Errorf("structure.placement[%d]: share_must_have is empty. Add at least 1 named group with true or false, for example me: true.", i)
+		}
+		for attr := range p.ShareMustHave {
+			if !groups[attr] {
+				return nil, fmt.Errorf("structure.placement[%d]: the share_must_have attribute %q is not a named group of share_type_from_path (the groups are: %s).", i, attr, groupNames(cs.ShareType))
+			}
 		}
 		cs.Placement = append(cs.Placement, CompiledPlacement{Source: p.WhenNameMatches, When: re, Must: p.ShareMustHave})
 	}
 	for _, g := range s.IgnoreDirs {
 		if _, err := path.Match(g, ""); err != nil {
-			return nil, fmt.Errorf("structure.ignore_dirs: bad pattern %q", g)
+			return nil, fmt.Errorf("structure.ignore_dirs: the pattern %q is not valid.", g)
 		}
 	}
 	return cs, nil
+}
+
+// groupNames lists the named groups of a pattern for error messages.
+func groupNames(re *regexp.Regexp) string {
+	if re == nil {
+		return "none, because share_type_from_path is not set"
+	}
+	var names []string
+	for _, n := range re.SubexpNames() {
+		if n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // IsProject reports whether a directory name matches the project pattern.

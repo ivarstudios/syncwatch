@@ -30,7 +30,20 @@ func (s Severity) String() string {
 // Lower is the lowercase name, for CSS classes and filters.
 func (s Severity) Lower() string { return strings.ToLower(s.String()) }
 
-// ParseSeverity parses ERROR/WARN/INFO, case-insensitively.
+// Label is the display name of the severity: ERROR, WARNING or INFO. The
+// API keeps the values of String() and Lower() (error, warn, info).
+func (s Severity) Label() string {
+	switch s {
+	case Error:
+		return "ERROR"
+	case Warn:
+		return "WARNING"
+	default:
+		return "INFO"
+	}
+}
+
+// ParseSeverity parses ERROR/WARN/INFO (or the display names), case-insensitively.
 func ParseSeverity(s string) Severity {
 	switch strings.ToUpper(s) {
 	case "ERROR":
@@ -70,6 +83,9 @@ type Finding struct {
 	Details  []Detail `json:"details,omitempty"`
 	Paths    []string `json:"paths,omitempty"` // up to 5 failing file paths
 	Link     string   `json:"link,omitempty"`  // Open in Syncthing
+	// ResolvedText is one sentence for the resolved message, for example
+	// "Server SOL can be reached again."; "" when the rule sets none.
+	ResolvedText string `json:"resolved_text,omitempty"`
 
 	// MinDuration is how long the condition must hold before the finding opens.
 	MinDuration time.Duration `json:"-"`
@@ -77,6 +93,11 @@ type Finding struct {
 	Since time.Time `json:"-"`
 	// Urgent is set from the check configuration.
 	Urgent bool `json:"urgent"`
+	// Held marks a finding whose condition cannot be seen now, from the
+	// last known state (H5 for a device that is away). The engine keeps an
+	// open record open and stale, opens no new one and stops the timer of
+	// its observation. Not stored.
+	Held bool `json:"-"`
 }
 
 // FindingID is a stable hash of a check, server and subject key.

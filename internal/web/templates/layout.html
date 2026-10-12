@@ -13,14 +13,14 @@
 <script src="/assets/htmx-ext-sse.js" defer></script>
 <script src="/assets/app.js" defer></script>
 </head>
-<body{{if .Role}} hx-ext="sse" sse-connect="/events"{{end}}>
+<body{{if .Role}} hx-ext="sse" sse-connect="/events" data-tz-offset="{{.TZOffset}}"{{end}}>
 <header class="top">
   <a class="brand" href="/"><img class="logo" src="/assets/syncwatch-icon.svg" alt="" width="21" height="24">syncwatch</a>
   {{if .Role}}
-  <nav aria-label="Main">
+  <nav aria-label="Main navigation">
     <a href="/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
     <a href="/grid" {{if eq .Nav "grid"}}aria-current="page"{{end}}>Folders</a>
-    <a href="/problems" {{if eq .Nav "problems"}}aria-current="page"{{end}}>Problems</a>
+    <a href="/problems" {{if eq .Nav "problems"}}aria-current="page"{{end}}>Findings</a>
     {{if eq .Role "admin"}}<a href="/settings" {{if eq .Nav "settings"}}aria-current="page"{{end}}>Settings</a>{{end}}
   </nav>
   {{if .LoggedIn}}
@@ -35,6 +35,7 @@
 </header>
 <main>
 {{template "alert" .}}
+{{if .Role}}<div id="sw-conn" class="conn-lost" role="status" hidden>✖ <strong>No connection to syncwatch</strong> from <span class="sw-conn-since"></span>. The page shows old data.</div>{{end}}
 {{if .Flash}}<div class="flash ok" role="status">✔ {{.Flash}}</div>{{end}}
 {{if .FlashErr}}<div class="flash err" role="alert">✖ {{.FlashErr}}</div>{{end}}
 {{end}}
@@ -47,16 +48,27 @@
 {{end}}
 
 {{define "alert"}}{{if .Role}}<div id="sw-alert" hx-get="/frag/alert" hx-trigger="every 60s" hx-swap="outerHTML">
-{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications are failing</strong> since {{.Since}}{{with .Error}}: {{.}}{{end}}. Nobody is told about new problems until this is fixed{{if eq $.Role "admin"}} under <a href="/settings#notifications">Settings → Notifications</a>{{end}}.</div>{{end -}}
+{{- with .Alert}}<div class="flash err" role="alert">✖ <strong>Notifications fail</strong> from {{.Since}}{{with .Error}}: {{.}}{{end}}. syncwatch tries again {{with .NextTry}}at {{.}}{{else}}automatically{{end}}. If Discord refuses the webhook (HTTP 401, 403 or 404), {{if eq $.Role "admin"}}type a new webhook URL in <a href="/settings#notifications">Settings → Notifications</a>{{else}}an administrator must type a new webhook URL in Settings → Notifications{{end}}.</div>{{end -}}
 </div>{{end}}{{end}}
 
 {{define "sev"}}<span class="sev sev-{{.Severity}}" title="{{.SeverityLabel}}">{{.Icon}} {{.SeverityLabel}}</span>{{end}}
+
+{{/* The site filter of the Overview and the Folders page (C11): the sites, 2 or more. app.js applies it and remembers it. */}}
+{{define "site-filter"}}<label class="site-filter">Site
+    <select id="site-filter" autocomplete="off">
+      <option value="">All sites</option>
+      {{range .}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>{{end}}
+
+{{/* The sites of an element for the site filter: data-site for 1 site, data-sites (1 site on each line) for more, nothing for none (always shown). */}}
+{{define "site-attr"}}{{if eq (len .) 1}} data-site="{{index . 0}}"{{else if .}} data-sites="{{join . "\n"}}"{{end}}{{end}}
 
 {{define "error"}}{{template "head" .}}
 <section class="card narrow">
   <h1>{{.Data.Title}}</h1>
   <p>{{.Data.Message}}</p>
-  <p><a href="/">Back to the dashboard</a></p>
+  <p><a href="/">Go to the dashboard</a></p>
 </section>
 {{template "foot" .}}{{end}}
 
@@ -70,20 +82,20 @@
     <label>Password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
     <button type="submit">Log in</button>
   </form>
-  <p class="muted">Use the admin password, or the viewer password if viewing is password-protected.</p>
+  <p class="muted">Type the administrator password. If a viewer password is set, the viewer password is also correct.</p>
 </section>
 {{template "foot" .}}{{end}}
 
 {{define "setup"}}{{template "head" .}}
 <section class="card narrow">
-  <h1>Set up syncwatch</h1>
-  <p>Choose the admin password. To prove you run this server, enter the one-time
-  <strong>setup token</strong> printed in the syncwatch log (for Docker: <code>docker logs syncwatch</code>).</p>
+  <h1>First start</h1>
+  <p>Type a new administrator password. Type the <strong>setup token</strong> from the syncwatch log
+  (for Docker: <code>docker logs syncwatch</code>). The setup token shows that you control the host that runs syncwatch.</p>
   {{with .Data.Error}}<p class="flash err" role="alert">✖ {{.}}</p>{{end}}
   <form method="post" action="/setup">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <label>Setup token <input name="token" value="{{.Data.Token}}" autocomplete="off" required></label>
-    <label>Admin password (at least 10 characters) <input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
+    <label>Administrator password (at least 10 characters) <input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
     <label>Repeat password <input type="password" name="password2" autocomplete="new-password" minlength="10" required></label>
     <button type="submit">Save and continue</button>
   </form>

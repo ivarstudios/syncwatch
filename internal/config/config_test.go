@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +17,7 @@ servers:
     url: https://192.168.2.10:8384
 notifications:
   discord_webhook: https://discord.com/api/webhooks/1/abc
-  discord_role_id: "123456"
+  discord_role_id: "123456789012345678"
 structure:
   project_pattern: '^(ME-)?LIVE-[A-Za-z0-9]'
   share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$'
@@ -81,7 +83,7 @@ func TestParseAndExport(t *testing.T) {
 
 func TestValidateErrors(t *testing.T) {
 	_, err := ParseYAML([]byte("servers: [{name: a, url: ftp://x}]\nstructure: {project_pattern: '('}\n"))
-	if err == nil || !strings.Contains(err.Error(), "url must be") || !strings.Contains(err.Error(), "project_pattern") {
+	if err == nil || !strings.Contains(err.Error(), "the API URL (url) must be") || !strings.Contains(err.Error(), "project_pattern") {
 		t.Fatalf("expected errors, got %v", err)
 	}
 	if _, err := ParseYAML([]byte("bogus: 1\n")); err == nil {
@@ -105,6 +107,401 @@ func TestDuration(t *testing.T) {
 	}
 	if _, err := ParseDuration("abc"); err == nil {
 		t.Fatal("bad duration accepted")
+	}
+}
+
+// Large d/w values used to overflow into a negative duration that passed
+// validation; a check debounce of 1000000w then pinged at once and the stored
+// configuration could not be loaded again.
+func TestDurationOverflowAndLimit(t *testing.T) {
+	for _, s := range []string{"1000000w", "999999999d", "106752d", "2562047h2562047h", "9223372036854775808ns", "3651d", "522w", "87601h", "3650d1s", "-5m", "1e3h"} {
+		d, err := ParseDuration(s)
+		if err == nil || d != 0 {
+			t.Errorf("%s: got %v (%d ns), err %v; want an error", s, d, int64(d), err)
+		}
+	}
+	for s, want := range map[string]time.Duration{"3650d": MaxDuration, "521w": 521 * 7 * 24 * time.Hour, "87600h": MaxDuration, "1.5d": 36 * time.Hour, "3649d23h": MaxDuration - time.Hour} {
+		if d, err := ParseDuration(s); err != nil || d.D() != want {
+			t.Errorf("%s: got %v %v, want %v", s, d, err, want)
+		}
+	}
+	if Duration(MaxDuration).String() != "3650d" {
+		t.Fatalf("format of the maximum: %s", Duration(MaxDuration))
+	}
+	c, err := ParseYAML([]byte("servers: [{name: a, url: 'https://10.0.0.1:8384'}]\nchecks: {H1: {debounce: 1000000w}}\n"))
+	if err == nil {
+		t.Fatalf("overflowed debounce accepted: H1 debounce %v", c.Debounce("H1"))
+	}
+}
+
+// Validate must reject a negative duration wherever one can get in: through a
+// JSON number of nanoseconds (the stored form), a check debounce, or a value
+// set in code. ApplyDefaults only replaces zero, so negatives reach Validate.
+func TestNegativeDurationsRejected(t *testing.T) {
+	for _, js := range []string{
+		`{"collector":{"request_timeout":-1}}`,
+		`{"thresholds":{"paused":-3600000000000}}`,
+		`{"checks":{"H1":{"debounce":-1}}}`,
+		`{"access":{"session_ttl":-1}}`,
+	} {
+		var c Config
+		if err := json.Unmarshal([]byte(js), &c); err != nil {
+			t.Fatal(err)
+		}
+		c.ApplyDefaults()
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "must be between") {
+			t.Errorf("%s: negative duration accepted: %v", js, err)
+		}
+	}
+	c := Default()
+	c.Thresholds.PCOffline = Duration(-time.Hour)
+	if err := c.Validate(); err == nil {
+		t.Fatal("negative threshold accepted")
+	}
+}
+
+// Every bound names the field and the allowed range. Zero means the default.
+func TestValidateBounds(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	bad := map[string]string{
+		"collector: {request_timeout: 500ms}":   "Request timeout (collector.request_timeout): the value must be between 1 second and 10 minutes.",
+		"collector: {request_timeout: 11m}":     "Request timeout (collector.request_timeout): the value must be between 1 second and 10 minutes.",
+		"collector: {down_after_failures: 21}":  "Mark unreachable after failures (collector.down_after_failures): the value must be between 1 and 20.",
+		"collector: {concurrency: 17}":          "Parallel requests for each server (collector.concurrency): the value must be between 1 and 16.",
+		"collector: {event_timeout: 4s}":        "Event long-poll timeout (collector.event_timeout): the value must be between 5 seconds and 10 minutes.",
+		"collector: {event_timeout: 11m}":       "Event long-poll timeout (collector.event_timeout): the value must be between 5 seconds and 10 minutes.",
+		"collector: {full_check_interval: 59s}": "Full check every (collector.full_check_interval): the value must be between 1 minute and 7 days.",
+		"collector: {full_check_interval: 8d}":  "Full check every (collector.full_check_interval): the value must be between 1 minute and 7 days.",
+		"collector: {poll_interval: 30s}":       "Poll interval (polled mode) (collector.poll_interval): the value must be between 1 minute and 1 day.",
+		"collector: {poll_interval: 25h}":       "Poll interval (polled mode) (collector.poll_interval): the value must be between 1 minute and 1 day.",
+		"collector: {structure_interval: 10s}":  "Structure scan every (collector.structure_interval): the value must be between 1 minute and 7 days.",
+		"collector: {structure_interval: 2w}":   "Structure scan every (collector.structure_interval): the value must be between 1 minute and 7 days.",
+		"collector: {baseline_interval: 59m}":   "Baseline scan every (collector.baseline_interval): the value must be between 1 hour and 90 days.",
+		"collector: {baseline_interval: 91d}":   "Baseline scan every (collector.baseline_interval): the value must be between 1 hour and 90 days.",
+		"structure: {nested_scan_depth: 11}":    "structure.nested_scan_depth: the value must be between 1 and 10.",
+		"notifications: {weekly_top: 51}":       "Findings listed in the weekly report (notifications.weekly_top): the value must be between 1 and 50.",
+		"access: {session_ttl: 59m}":            "access.session_ttl: the value must be between 1 hour and 365 days.",
+		"access: {session_ttl: 366d}":           "access.session_ttl: the value must be between 1 hour and 365 days.",
+		"checks: {H1: {debounce: 31d}}":         "H1 debounce (checks.H1.debounce): the value must be between 0 seconds and 30 days.",
+		"thresholds: {paused: 9s}":              "H6 paused for more than (thresholds.paused): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {failing_files: 5s}":       "H4 with only failed items after (thresholds.failing_files): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {stuck_sync: 1ms}":         "H5 stuck sync after (thresholds.stuck_sync): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {pc_offline: 1s}":          "H7 PC offline for more than (thresholds.pc_offline): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {conflict_window: 1s}":     "H10 conflicts in the last (thresholds.conflict_window): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {inactive_project: 1s}":    "C1 no file change for (thresholds.inactive_project): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {old_device: 1s}":          "C2 device not seen for (thresholds.old_device): the value must be between 10 seconds and 3650 days.",
+		"thresholds: {dead_share: 1s}":          "C3 folder not used by device after (thresholds.dead_share): the value must be between 10 seconds and 3650 days.",
+	}
+	for in, want := range bad {
+		_, err := ParseYAML([]byte(srv + in + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", in, err, want)
+		}
+	}
+	ok := []string{
+		"collector: {request_timeout: 1s, down_after_failures: 20, concurrency: 1, event_timeout: 5s, full_check_interval: 1m, poll_interval: 24h, structure_interval: 7d, baseline_interval: 1h}",
+		"collector: {request_timeout: 10m, down_after_failures: 1, concurrency: 16, full_check_interval: 7d, poll_interval: 1m, baseline_interval: 90d}",
+		"structure: {nested_scan_depth: 10}\nnotifications: {weekly_top: 50}\naccess: {session_ttl: 365d}",
+		"checks: {H1: {debounce: 0}, H2: {debounce: 30d}}",
+		"thresholds: {paused: 10s, pc_offline: 3650d, failing_files: 0}",
+	}
+	for _, in := range ok {
+		if _, err := ParseYAML([]byte(srv + in + "\n")); err != nil {
+			t.Errorf("%s: %v", in, err)
+		}
+	}
+	c, err := ParseYAML([]byte(srv + "thresholds: {failing_files: 0}\ncollector: {concurrency: 0}\n"))
+	if err != nil || c.Thresholds.FailingFiles.D() != time.Hour || c.Collector.Concurrency != 3 {
+		t.Fatalf("zero should mean the default: %v %v", c, err)
+	}
+}
+
+// Clone used to be a YAML round trip with errors ignored: one unreadable
+// value silently reset every later section. Now it is a field-by-field deep
+// copy that shares nothing with the original.
+func TestCloneIsDeepAndComplete(t *testing.T) {
+	c, err := ParseYAML([]byte(ivarYAML + "access: {viewer: open, mode: proxy}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.API.Token = "swt_x"
+	c.Notify.QuietHours, c.Notify.WeeklyTop = "off", 7
+	c.Structure.TypeTokens = nil // nil stays nil, so an export doesn't change
+	cl := c.Clone()
+	if !reflect.DeepEqual(c, cl) {
+		t.Fatalf("clone differs:\n%+v\n%+v", c, cl)
+	}
+	if cl.Servers[0].APIKey != "secret-akka" || cl.API.Token != "swt_x" {
+		t.Fatal("secrets lost")
+	}
+	// Mutate every reference in the clone; the original must not change.
+	cl.Servers[0].Name = "changed"
+	*cl.Checks["H7"].Debounce = Duration(time.Minute)
+	*cl.Checks["H7"].Urgent = false
+	cl.Checks["H1"] = Check{}
+	cl.Structure.IgnoreDirs[0] = "changed"
+	cl.Structure.Placement[0].ShareMustHave["me"] = "changed"
+	cl.Structure.Placement[0].WhenNameMatches = "changed"
+	cl.Shares.Add["SIRIUS"][0] = "changed"
+	cl.Shares.Add["new"] = []string{"x"}
+	if c.Servers[0].Name != "AKKA" || c.Debounce("H7") != time.Hour || !c.Urgent("H7") || len(c.Checks) != 1 ||
+		c.Structure.IgnoreDirs[0] != "@Recycle" || c.Structure.Placement[0].ShareMustHave["me"] != "true" ||
+		c.Structure.Placement[0].WhenNameMatches != "^ME-LIVE-" || c.Shares.Add["SIRIUS"][0] == "changed" || len(c.Shares.Add) != 1 {
+		t.Fatalf("clone shares memory with the original: %+v", c)
+	}
+	// A clone of a config with a bad value keeps every section instead of
+	// resetting the ones after it.
+	bad := Default()
+	bad.Checks["H1"] = Check{Debounce: new(Duration)}
+	*bad.Checks["H1"].Debounce = Duration(-1)
+	bad.Access.Viewer = ViewerOpen
+	bad.Thresholds.PCOffline = Duration(10 * 24 * time.Hour)
+	bad.Structure.ProjectPattern = "^LIVE-"
+	bc := bad.Clone()
+	if bc.Access.Viewer != ViewerOpen || bc.Thresholds.PCOffline != bad.Thresholds.PCOffline || bc.Structure.ProjectPattern != "^LIVE-" || bc.Debounce("H1") != -1 {
+		t.Fatalf("clone reset sections: %+v", bc)
+	}
+}
+
+func TestParseClockStrict(t *testing.T) {
+	ok := map[string]int{"08:00": 480, "8:05": 485, "23:59": 23*60 + 59, "0:00": 0, "00:00": 0, " 12:30 ": 750, "19:00": 19 * 60}
+	for in, want := range ok {
+		if got, err := ParseClock(in); err != nil || got != want {
+			t.Errorf("%q: got %d %v, want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"08:00junk", "8:5", "+8:00", "-8:00", "24:00", "8:60", "8", "8:00pm", "", "08:00:00", "8.00", "08-00", "a8:00", "008:00"} {
+		if got, err := ParseClock(in); err == nil {
+			t.Errorf("%q accepted as %d", in, got)
+		}
+	}
+	if s, e, err := ParseRange("22:00-07:00"); err != nil || s != 22*60 || e != 7*60 {
+		t.Fatalf("range: %d %d %v", s, e, err)
+	}
+	for _, in := range []string{"22:00-22:00", "22:00", "22:00-07:00-1", "22:00-7", "22:00-07:00x", "-"} {
+		if _, _, err := ParseRange(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	for _, in := range []string{
+		"notifications: {quiet_hours: '22:00-22:00'}",
+		"notifications: {quiet_hours: '22:00-07:00junk'}",
+		"notifications: {reminder_time: '8:5'}",
+		"notifications: {reminder_time: '+8:00'}",
+		"notifications: {weekly_time: '08:00pm'}",
+	} {
+		if _, err := ParseYAML([]byte(srv + in + "\n")); err == nil {
+			t.Errorf("%s accepted", in)
+		}
+	}
+	// "off" in any case, and "" means the default (not off).
+	c, err := ParseYAML([]byte(srv + "notifications: {quiet_hours: OFF, reminder_time: Off, weekly_day: ' oFF '}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Notify.QuietHours != "off" || c.Notify.ReminderTime != "off" || c.Notify.WeeklyDay != "off" {
+		t.Fatalf("off not canonical: %+v", c.Notify)
+	}
+	c, err = ParseYAML([]byte(srv + "notifications: {quiet_hours: '', reminder_time: '', weekly_day: ''}\n"))
+	if err != nil || c.Notify.QuietHours != "22:00-07:00" || c.Notify.ReminderTime != "08:00" || c.Notify.WeeklyDay != "monday" {
+		t.Fatalf("empty should mean the default: %+v %v", c.Notify, err)
+	}
+}
+
+// Ids are looked up ignoring case and used in URLs, JSON keys and secret
+// names, so they have a fixed charset and are unique ignoring case; names
+// too, since lookups also match names.
+func TestServerIDs(t *testing.T) {
+	const u = "url: 'https://10.0.0.1:8384'"
+	bad := map[string]string{
+		"servers: [{id: AKKA, name: a, " + u + "}]":                                 "the server ID \"AKKA\" is not valid",
+		"servers: [{id: 'a,b', name: a, " + u + "}]":                                "the server ID \"a,b\" is not valid",
+		"servers: [{id: '<b>x</b>', name: a, " + u + "}]":                           "Use 1 to 40 characters",
+		"servers: [{id: '-a', name: a, " + u + "}]":                                 "Use 1 to 40 characters",
+		"servers: [{id: 'a b', name: a, " + u + "}]":                                "Use 1 to 40 characters",
+		"servers: [{id: " + strings.Repeat("a", 41) + ", name: a, " + u + "}]":      "Use 1 to 40 characters",
+		"servers: [{id: akka, name: A, " + u + "}, {id: AKKA, name: B, " + u + "}]": "already in use by the server akka",
+		"servers: [{id: akka, name: A, " + u + "}, {id: akka, name: B, " + u + "}]": "already in use by the server akka",
+		"servers: [{name: Akka, " + u + "}, {name: AKKA, " + u + "}]":               "name \"AKKA\" is already in use by the server akka",
+		"servers: [{name: A, id: nas, " + u + "}, {name: nas, id: b, " + u + "}]":   "Server b: the ID or name \"nas\" is already in use by the server nas",
+		"servers: [{name: nas, id: a, " + u + "}, {name: B, id: NAS, " + u + "}]":   "already in use by the server a",
+	}
+	for in, want := range bad {
+		_, err := ParseYAML([]byte(in + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", in, err, want)
+		}
+	}
+	c, err := ParseYAML([]byte("servers: [{id: " + strings.Repeat("a", 40) + ", name: a, " + u + "}, {id: nas-1, name: 'NAS 1', " + u + "}, {id: '9', name: nine, " + u + "}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sv, ok := c.ServerByKey("nas 1"); !ok || sv.ID != "nas-1" {
+		t.Fatalf("lookup by name: %+v %v", sv, ok)
+	}
+	// Generated ids: a slug that is empty or taken gets -2, -3, …; long names are cut to 40.
+	c, err = ParseYAML([]byte("servers: [{name: ÅÄÖ, " + u + "}, {name: ÖÄÅ, " + u + "}, {name: 'NAS 1', " + u + "}, {id: nas-1, name: Other, " + u + "}, {name: '" + strings.Repeat("x", 39) + "yz', " + u + "}, {name: '" + strings.Repeat("x", 39) + "yzz', " + u + "}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range c.Servers {
+		ids = append(ids, s.ID)
+	}
+	want := []string{"server", "server-2", "nas-1-2", "nas-1", strings.Repeat("x", 39) + "y", strings.Repeat("x", 38) + "-2"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ids %q, want %q", ids, want)
+	}
+	if Slug("--Hello, World!--") != "hello-world" || Slug("") != "server" || len(Slug(strings.Repeat("ab-", 30))) > 40 {
+		t.Fatalf("slug: %q %q %q", Slug("--Hello, World!--"), Slug(""), Slug(strings.Repeat("ab-", 30)))
+	}
+}
+
+// An omitted ignore_dirs means the defaults; an explicit empty list means
+// none. Both through YAML and through the stored JSON form.
+func TestIgnoreDirsNilVersusEmpty(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	c, err := ParseYAML([]byte(srv + "structure: {project_pattern: '^LIVE-'}\n"))
+	if err != nil || !reflect.DeepEqual(c.Structure.IgnoreDirs, DefaultIgnoreDirs) {
+		t.Fatalf("omitted: %q %v", c.Structure.IgnoreDirs, err)
+	}
+	e, err := ParseYAML([]byte(srv + "structure: {ignore_dirs: []}\n"))
+	if err != nil || e.Structure.IgnoreDirs == nil || len(e.Structure.IgnoreDirs) != 0 {
+		t.Fatalf("explicit empty: %#v %v", e.Structure.IgnoreDirs, err)
+	}
+	for _, in := range []*Config{c, e} {
+		b, _ := json.Marshal(in)
+		var back Config
+		if err := json.Unmarshal(b, &back); err != nil {
+			t.Fatal(err)
+		}
+		back.ApplyDefaults()
+		if !reflect.DeepEqual(back.Structure.IgnoreDirs, in.Structure.IgnoreDirs) || !reflect.DeepEqual(in.Clone().Structure.IgnoreDirs, in.Structure.IgnoreDirs) {
+			t.Fatalf("round trip changed ignore_dirs: %q -> %q, clone %q", in.Structure.IgnoreDirs, back.Structure.IgnoreDirs, in.Clone().Structure.IgnoreDirs)
+		}
+	}
+	var nilCfg Config
+	nilCfg.ApplyDefaults()
+	if !reflect.DeepEqual(nilCfg.Structure.IgnoreDirs, DefaultIgnoreDirs) {
+		t.Fatal("nil should get the defaults")
+	}
+}
+
+// A placement attribute that is not a named group of share_type_from_path
+// can never be satisfied, so every matching project would fail placement.
+func TestPlacementAttributesMatchGroups(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	for in, want := range map[string]string{
+		"structure: {share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$', placement: [{when_name_matches: '^ME-', share_must_have: {ME: true}}]}": "the share_must_have attribute \"ME\" is not a named group of share_type_from_path (the groups are: me, type)",
+		"structure: {placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                                                                   "attribute \"me\" is not a named group",
+		"structure: {share_type_from_path: '-LIVE-[1-5][A-Z]+$', placement: [{when_name_matches: '^ME-', share_must_have: {me: true}}]}":                       "(the groups are: none",
+	} {
+		_, err := ParseYAML([]byte(srv + in + "\n"))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", in, err, want)
+		}
+	}
+	c, err := ParseYAML([]byte(srv + "structure: {case_insensitive: true, share_type_from_path: '-LIVE-(?P<type>[1-5][A-Z]+)$', placement: [{when_name_matches: '^LIVE-', share_must_have: {type: 1SOURCE}}]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, _ := c.Structure.Compile()
+	if attrs, ok := cs.ShareAttrs("sol-live-1source"); !ok || attrs["type"] != "1source" {
+		t.Fatalf("case_insensitive not applied to share_type_from_path: %v %v", attrs, ok)
+	}
+	if !cs.Placement[0].When.MatchString("live-x") {
+		t.Fatal("case_insensitive not applied to when_name_matches")
+	}
+}
+
+func TestDiscordRoleID(t *testing.T) {
+	const srv = "servers: [{name: a, url: 'https://10.0.0.1:8384'}]\n"
+	for _, id := range []string{"123456", "42", "1234567890123456", "123456789012345678901", "12345678901234567a", "<@&123456789012345678>"} {
+		if _, err := ParseYAML([]byte(srv + "notifications: {discord_role_id: '" + id + "'}\n")); err == nil || !strings.Contains(err.Error(), "17 to 20 digits") {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+	for _, id := range []string{"12345678901234567", "777000111000000000", "12345678901234567890", ""} {
+		if _, err := ParseYAML([]byte(srv + "notifications: {discord_role_id: '" + id + "'}\n")); err != nil {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+}
+
+// The stored webhook is the canonical form, so an invisible character from a
+// paste can't turn into a 404 from Discord later.
+func TestDiscordWebhookCanonical(t *testing.T) {
+	for in, want := range map[string]string{
+		" https://DISCORD.com/api/webhooks/123/abc-DEF_1/ ":                              "https://discord.com/api/webhooks/123/abc-DEF_1",
+		"\u200bhttps://discord.com/api/webhooks/123/abc\u200b\ufeff\n":                   "https://discord.com/api/webhooks/123/abc",
+		"https://canary.discord.com/api/v10/webhooks/123/abc?thread_id=9#frag":           "https://canary.discord.com/api/v10/webhooks/123/abc?thread_id=9",
+		"HTTPS://discordapp.com/api/webhooks/123/abc":                                    "https://discordapp.com/api/webhooks/123/abc",
+		"\u00a0https://ptb.discordapp.com/api/webhooks/123/abc\u2060":                    "https://ptb.discordapp.com/api/webhooks/123/abc",
+		"https://discord.com/api/webhooks/123/" + strings.Repeat("a", 68) + "?wait=true": "https://discord.com/api/webhooks/123/" + strings.Repeat("a", 68) + "?wait=true",
+	} {
+		got, err := CanonicalDiscordWebhook(in)
+		if err != nil || got != want {
+			t.Errorf("%q: got %q %v, want %q", in, got, err, want)
+		}
+		if err := CheckDiscordWebhook(in); err != nil {
+			t.Errorf("%q refused: %v", in, err)
+		}
+	}
+	for _, in := range []string{
+		"https://discord.com/api/webhooks/abc/def",
+		"https://discord.com/api/webhooks/123/ab\u200bc",
+		"https://discord.com/api/webhooks/123/ab c",
+		"https://discord.com/api/webhooks/123/a%20b",
+		"https://discord\u200b.com/api/webhooks/123/abc",
+		"https://discord.com/api/webhooks/123/abc/def",
+		"https://discord.com/api/webhooks/123/",
+		"https://discord.com/api/webhooks/123",
+		"https://discord.com/api/webhooks/123/abc\u200bdef",
+	} {
+		if _, err := CanonicalDiscordWebhook(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+	// An import stores the canonical form.
+	c, err := ParseYAML([]byte("servers: [{name: a, url: 'https://10.0.0.1:8384'}]\nnotifications: {discord_webhook: ' https://DISCORD.com/api/webhooks/1/abc/ '}\n"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if c.Notify.DiscordWebhook != "https://discord.com/api/webhooks/1/abc" {
+		t.Fatalf("import stored %q", c.Notify.DiscordWebhook)
+	}
+	AllowAnyWebhook = true
+	defer func() { AllowAnyWebhook = false }()
+	if got, err := CanonicalDiscordWebhook(" http://discord.e2e.invalid:8080/api/webhooks/1/x\u200b"); err != nil || got != "http://discord.e2e.invalid:8080/api/webhooks/1/x" {
+		t.Errorf("override: %q %v", got, err)
+	}
+}
+
+// url.Parse accepts an empty host name with a port and non-ASCII whitespace
+// in the host; both are rejected.
+func TestServerURLHost(t *testing.T) {
+	for _, bad := range []string{
+		"servers: [{name: a, url: 'https://:8384'}]",
+		"servers: [{name: a, url: 'https://\u00a0nas:8384'}]",
+		"servers: [{name: a, url: 'https://nas\u00a0:8384'}]",
+		"servers: [{name: a, url: 'https://'}]",
+		"servers: [{name: a, url: 'https://10.0.0.1:8384', gui_url: 'https://:8384'}]",
+		"public_url: 'https://:8080'",
+		"public_url: 'https://\u00a0sw.lan'",
+	} {
+		if _, err := ParseYAML([]byte(bad + "\n")); err == nil {
+			t.Errorf("accepted: %q", bad)
+		}
+	}
+	for _, ok := range []string{
+		"servers: [{name: a, url: 'https://[::1]:8384'}]",
+		"servers: [{name: a, url: 'https://nas.lan'}]",
+		"servers: [{name: a, url: 'https://10.0.0.1:8384/st'}]",
+	} {
+		if _, err := ParseYAML([]byte(ok + "\n")); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
 	}
 }
 

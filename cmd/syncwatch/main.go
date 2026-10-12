@@ -7,15 +7,17 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	_ "time/tzdata" // time zones in minimal containers
 
@@ -23,6 +25,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/probe"
 	"github.com/ivarstudios/syncwatch/internal/settings"
+	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/web"
 )
 
@@ -41,9 +44,18 @@ func env(key, def string) string {
 	return def
 }
 
-func envBool(key string) bool {
-	b, _ := strconv.ParseBool(os.Getenv(key))
-	return b
+// envBool reads a yes/no variable: true/false, 1/0, yes/no or on/off in any
+// case; unset means false. Anything else is an error naming the variable, so
+// a misspelt SYNCWATCH_TLS_SELF_SIGNED can't silently mean plain HTTP.
+func envBool(key string) (bool, error) {
+	v := os.Getenv(key)
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "t", "true", "yes", "on":
+		return true, nil
+	case "", "0", "f", "false", "no", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("%s must be true or false, not %q", key, v)
 }
 
 // splitList splits a comma-separated list, dropping empty items.
@@ -55,6 +67,83 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// Limits of SYNCWATCH_HEALTH_NOTIFY_LIMIT.
+const (
+	defaultNotifyLimit = 15 * time.Minute
+	minNotifyLimit     = time.Minute
+	maxNotifyLimit     = 24 * time.Hour
+)
+
+// envNotifyLimit reads SYNCWATCH_HEALTH_NOTIFY_LIMIT: how long notifications
+// can fail before /healthz answers 503. A duration such as 15m or 1h, from 1
+// minute to 1 day; not set = 15 minutes.
+func envNotifyLimit() (time.Duration, error) {
+	const key = "SYNCWATCH_HEALTH_NOTIFY_LIMIT"
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return defaultNotifyLimit, nil
+	}
+	d, err := config.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if d.D() < minNotifyLimit || d.D() > maxNotifyLimit {
+		return 0, fmt.Errorf("%s: the value must be between %s and %s.", key, config.Duration(minNotifyLimit).Words(), config.Duration(maxNotifyLimit).Words())
+	}
+	return d.D(), nil
+}
+
+// envDeadmanURL reads SYNCWATCH_DEADMAN_URL: the address of an outside
+// monitor service that syncwatch calls while it is healthy. Not set = off.
+// The error does not repeat the value: it can contain a secret.
+func envDeadmanURL() (string, error) {
+	v := strings.TrimSpace(os.Getenv("SYNCWATCH_DEADMAN_URL"))
+	if v == "" {
+		return "", nil
+	}
+	if _, err := app.ParseDeadmanURL(v); err != nil {
+		return "", fmt.Errorf("SYNCWATCH_DEADMAN_URL: %w", err)
+	}
+	return v, nil
+}
+
+// envTrustedProxies reads SYNCWATCH_TRUSTED_PROXIES: the IP addresses or
+// CIDR prefixes of the reverse proxies whose X-Forwarded-Proto header counts,
+// comma-separated. Not set = no proxy.
+func envTrustedProxies() ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, v := range splitList(os.Getenv("SYNCWATCH_TRUSTED_PROXIES")) {
+		p, ok := parseProxy(v)
+		if !ok {
+			return nil, fmt.Errorf("SYNCWATCH_TRUSTED_PROXIES: %q is not an IP address or a CIDR prefix. Use for example 172.18.0.2 or 172.18.0.0/16.", v)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// parseProxy reads one IP address (a prefix of that address only) or CIDR
+// prefix. An IPv4 address in IPv6 form counts as the IPv4 address, because
+// syncwatch compares the client addresses in that form.
+func parseProxy(v string) (netip.Prefix, bool) {
+	if strings.Contains(v, "/") {
+		p, err := netip.ParsePrefix(v)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		if a := p.Addr(); a.Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(a.Unmap(), p.Bits()-96)
+		}
+		return p.Masked(), true
+	}
+	a, err := netip.ParseAddr(v)
+	if err != nil || a.Zone() != "" {
+		return netip.Prefix{}, false
+	}
+	a = a.Unmap()
+	return netip.PrefixFrom(a, a.BitLen()), true
 }
 
 func defaultDataDir() string {
@@ -84,31 +173,49 @@ func newLogger(level, format string) *slog.Logger {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `syncwatch %s — read-only dashboard, weekly report and urgent pings for Syncthing
+	fmt.Fprintf(os.Stderr, `syncwatch %s — read-only dashboard, weekly report and urgent messages for Syncthing
 
 Usage:
   syncwatch [serve] [flags]          run the monitor (default)
-  syncwatch probe [flags]            API probe; writes a findings report
-  syncwatch gate [flags]             read-only gate in front of one Syncthing (holds its API key; see README)
-  syncwatch reset-admin-password     set a new admin password from stdin
+  syncwatch probe [flags]            test the API of a server (writes a probe report)
+  syncwatch gate [flags]             read-only gate next to a server (keeps its API key, see README)
+  syncwatch reset-admin-password     set a new administrator password from stdin
   syncwatch import-config FILE       replace the configuration with a YAML file
   syncwatch export-config            print the configuration as YAML (no secrets)
-  syncwatch healthcheck              exit 0 if the local server answers /healthz
+  syncwatch healthcheck              exit 0 if syncwatch on this host answers /healthz
   syncwatch version
 
 Run "syncwatch <command> -h" for the flags of a command.
 `, version)
 }
 
-func main() {
-	args := os.Args[1:]
-	cmd := "serve"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+// command picks the subcommand: the first argument, or serve when it is a
+// flag. --version and -h/--help work without a command.
+func command(args []string) (string, []string) {
+	if len(args) == 0 {
+		return "serve", nil
 	}
+	switch args[0] {
+	case "-version", "--version":
+		return "version", args[1:]
+	case "-h", "-help", "--help":
+		return "help", args[1:]
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "serve", args
+	}
+	return args[0], args[1:]
+}
+
+func main() {
+	cmd, args := command(os.Args[1:])
 	// Test setups with a fake Discord; never needed in production.
-	config.AllowAnyWebhook = envBool("SYNCWATCH_ALLOW_ANY_WEBHOOK")
-	var err error
+	anyWebhook, err := envBool("SYNCWATCH_ALLOW_ANY_WEBHOOK")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "syncwatch:", err)
+		os.Exit(1)
+	}
+	config.AllowAnyWebhook = anyWebhook
 	switch cmd {
 	case "serve":
 		err = serve(args)
@@ -124,9 +231,9 @@ func main() {
 		err = exportConfig(args)
 	case "healthcheck":
 		err = healthcheck(args)
-	case "version", "--version":
+	case "version":
 		fmt.Println("syncwatch", version)
-	case "help", "-h", "--help":
+	case "help":
 		usage()
 	default:
 		usage()
@@ -140,7 +247,7 @@ func main() {
 
 func dataFlags(fs *flag.FlagSet) (*string, *string) {
 	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory (env SYNCWATCH_DATA)")
-	key := fs.String("secret-key", "", "secrets key; default: env SYNCWATCH_SECRET_KEY or <data>/secret.key")
+	key := fs.String("secret-key", "", "secret key (env SYNCWATCH_SECRET_KEY, default <data>/secret.key)")
 	return data, key
 }
 
@@ -152,16 +259,32 @@ func secretKey(flagVal string) string {
 }
 
 func serve(args []string) error {
+	selfSigned, err := envBool("SYNCWATCH_TLS_SELF_SIGNED")
+	if err != nil {
+		return err
+	}
+	notifyLimit, err := envNotifyLimit()
+	if err != nil {
+		return err
+	}
+	deadman, err := envDeadmanURL()
+	if err != nil {
+		return err
+	}
+	proxies, err := envTrustedProxies()
+	if err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data, key := dataFlags(fs)
-	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, e.g. 192.168.1.10:8080 (env SYNCWATCH_LISTEN; the default is loopback only)")
-	cfgFile := fs.String("config", env("SYNCWATCH_CONFIG", ""), "bootstrap YAML imported on first start (env SYNCWATCH_CONFIG; default <data>/syncwatch.yaml)")
+	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, for example 192.168.1.10:8080 (env SYNCWATCH_LISTEN, default loopback only)")
+	cfgFile := fs.String("config", env("SYNCWATCH_CONFIG", ""), "bootstrap file that syncwatch imports on first start (env SYNCWATCH_CONFIG, default <data>/syncwatch.yaml)")
 	level := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
 	format := fs.String("log-format", env("SYNCWATCH_LOG_FORMAT", "text"), "text or json (env SYNCWATCH_LOG_FORMAT)")
 	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve HTTPS with this certificate file (env SYNCWATCH_TLS_CERT)")
-	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
-	tlsSelf := fs.Bool("tls-self-signed", envBool("SYNCWATCH_TLS_SELF_SIGNED"), "serve HTTPS with a self-signed certificate kept in the data directory (env SYNCWATCH_TLS_SELF_SIGNED)")
-	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "extra names or IP addresses for the self-signed certificate, comma-separated, e.g. the host's LAN address (env SYNCWATCH_TLS_HOSTS)")
+	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "private key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
+	tlsSelf := fs.Bool("tls-self-signed", selfSigned, "serve HTTPS with a self-signed certificate in the data directory (env SYNCWATCH_TLS_SELF_SIGNED)")
+	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "more names or IP addresses for the self-signed certificate, comma-separated, for example the LAN address (env SYNCWATCH_TLS_HOSTS)")
 	_ = fs.Parse(args)
 	if *cfgFile == "" {
 		*cfgFile = *data + string(os.PathSeparator) + "syncwatch.yaml"
@@ -174,55 +297,70 @@ func serve(args []string) error {
 		DataDir: *data, Listen: *listen, ConfigFile: *cfgFile, SecretKey: secretKey(*key),
 		AdminPassword: os.Getenv("SYNCWATCH_ADMIN_PASSWORD"), Version: version, Log: log,
 		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSSelfSigned: *tlsSelf, TLSHosts: splitList(*tlsHosts),
+		TrustedProxies: proxies, NotifyLimit: notifyLimit, DeadmanURL: deadman,
 	})
 }
 
 // runGate serves the read-only gate: it holds Syncthing's API key and
 // gives syncwatch a token for the allowlisted GET endpoints only.
 func runGate(args []string) error {
-	fs := flag.NewFlagSet("gate", flag.ExitOnError)
-	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory for the gate's token, certificate and Syncthing pin (env SYNCWATCH_DATA)")
-	listen := fs.String("listen", env("SYNCWATCH_LISTEN", "127.0.0.1:8385"), "listen address; syncwatch must reach it, e.g. 192.168.1.10:8385 (env SYNCWATCH_LISTEN)")
-	syncthing := fs.String("syncthing", env("SYNCWATCH_GATE_SYNCTHING", "https://127.0.0.1:8384"), "Syncthing's GUI/API URL as the gate reaches it (env SYNCWATCH_GATE_SYNCTHING)")
-	keyFile := fs.String("syncthing-key-file", env("SYNCWATCH_GATE_SYNCTHING_KEY_FILE", ""), "file holding Syncthing's API key (env SYNCWATCH_GATE_SYNCTHING_KEY_FILE; or set SYNCWATCH_GATE_SYNCTHING_KEY)")
-	cfgXML := fs.String("syncthing-config", env("SYNCWATCH_GATE_SYNCTHING_CONFIG", ""), "Syncthing's config.xml, to read the API key from (env SYNCWATCH_GATE_SYNCTHING_CONFIG)")
-	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve with this certificate instead of a self-signed one (env SYNCWATCH_TLS_CERT)")
-	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
-	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "extra names or addresses for the self-signed certificate (env SYNCWATCH_TLS_HOSTS)")
-	level := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
-	_ = fs.Parse(args)
-	log := newLogger(*level, env("SYNCWATCH_LOG_FORMAT", "text"))
+	o, level := gateOptions(args)
+	o.Log = newLogger(level, env("SYNCWATCH_LOG_FORMAT", "text"))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return app.RunGate(ctx, app.GateOptions{
+	return app.RunGate(ctx, o)
+}
+
+// gateOptions parses the gate's flags. The gate has its own listen
+// variable: the image sets SYNCWATCH_LISTEN for serve, and a gate
+// container must not inherit it.
+func gateOptions(args []string) (o app.GateOptions, level string) {
+	fs := flag.NewFlagSet("gate", flag.ExitOnError)
+	data := fs.String("data", env("SYNCWATCH_DATA", defaultDataDir()), "data directory for the gate token, certificate and pinned Syncthing fingerprint (env SYNCWATCH_DATA)")
+	listen := fs.String("listen", env("SYNCWATCH_GATE_LISTEN", "127.0.0.1:8385"), "listen address that syncwatch can reach, for example 192.168.1.10:8385 (env SYNCWATCH_GATE_LISTEN)")
+	syncthing := fs.String("syncthing", env("SYNCWATCH_GATE_SYNCTHING", "https://127.0.0.1:8384"), "API URL of Syncthing as the gate reaches it (env SYNCWATCH_GATE_SYNCTHING)")
+	keyFile := fs.String("syncthing-key-file", env("SYNCWATCH_GATE_SYNCTHING_KEY_FILE", ""), "file with the Syncthing API key (env SYNCWATCH_GATE_SYNCTHING_KEY_FILE, or the key in SYNCWATCH_GATE_SYNCTHING_KEY)")
+	cfgXML := fs.String("syncthing-config", env("SYNCWATCH_GATE_SYNCTHING_CONFIG", ""), "Syncthing config.xml to read the API key from (env SYNCWATCH_GATE_SYNCTHING_CONFIG)")
+	roots := fs.String("browse-roots", env("SYNCWATCH_GATE_BROWSE_ROOTS", ""), "more directories that the gate token can list, comma-separated (env SYNCWATCH_GATE_BROWSE_ROOTS, default the parent directories of the Syncthing folders)")
+	tlsCert := fs.String("tls-cert", env("SYNCWATCH_TLS_CERT", ""), "serve with this certificate instead of a self-signed one (env SYNCWATCH_TLS_CERT)")
+	tlsKey := fs.String("tls-key", env("SYNCWATCH_TLS_KEY", ""), "private key file for --tls-cert (env SYNCWATCH_TLS_KEY)")
+	tlsHosts := fs.String("tls-hosts", env("SYNCWATCH_TLS_HOSTS", ""), "more names or IP addresses for the self-signed certificate, comma-separated (env SYNCWATCH_TLS_HOSTS)")
+	lvl := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
+	_ = fs.Parse(args)
+	return app.GateOptions{
 		DataDir: *data, Listen: *listen, Syncthing: *syncthing,
 		KeyFile: *keyFile, Key: os.Getenv("SYNCWATCH_GATE_SYNCTHING_KEY"), ConfigXML: *cfgXML,
-		Token:   os.Getenv("SYNCWATCH_GATE_TOKEN"),
-		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSHosts: splitList(*tlsHosts), Log: log,
-	})
+		Token: os.Getenv("SYNCWATCH_GATE_TOKEN"), BrowseRoots: splitList(*roots),
+		TLSCert: *tlsCert, TLSKey: *tlsKey, TLSHosts: splitList(*tlsHosts),
+	}, *lvl
 }
 
 func runProbe(args []string) error {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
 	var o probe.Options
 	var shares stringList
-	fs.StringVar(&o.Name, "name", "server", "server name for the report")
-	fs.StringVar(&o.URL, "url", "", "Syncthing GUI/API URL, e.g. https://192.168.3.10:8384")
-	fs.StringVar(&o.APIKey, "api-key", os.Getenv("SYNCWATCH_PROBE_API_KEY"), "API key (or env SYNCWATCH_PROBE_API_KEY)")
-	fs.StringVar(&o.Out, "out", "docs/api-findings.md", "report file to write (appends a section per server)")
-	fs.StringVar(&o.Record, "record", "", "directory to save raw (secret-free) responses as test fixtures")
+	fs.StringVar(&o.Name, "name", "server", "server name for the probe report")
+	fs.StringVar(&o.URL, "url", "", "API URL of the server, for example https://192.168.3.10:8384")
+	fs.StringVar(&o.APIKey, "api-key", os.Getenv("SYNCWATCH_PROBE_API_KEY"), "API key of the server (env SYNCWATCH_PROBE_API_KEY)")
+	fs.StringVar(&o.Out, "out", "docs/api-findings.md", "report file to write (the probe appends a section for each server)")
+	fs.StringVar(&o.Record, "record", "", "directory to save the raw API responses (without secrets) as test fixtures")
 	fs.DurationVar(&o.EventTimeout, "event-timeout", 50*time.Second, "long-poll timeout to test against the VPN idle timeout")
 	fs.DurationVar(&o.EventWait, "event-wait", 2*time.Minute, "how long to listen for events")
-	fs.StringVar(&o.Pin, "pin", "", "expected certificate fingerprint (hex SHA-256), if known")
-	fs.Var(&shares, "share", "share root to browse (repeatable); default: parents of folder paths")
-	fs.StringVar(&o.ProjectPattern, "project-pattern", "", "project_pattern from your structure rules, to estimate the structure scan's load")
+	fs.StringVar(&o.Pin, "pin", "", "certificate fingerprint to accept (hex SHA-256, upper case and colons permitted), if known")
+	fs.Var(&shares, "share", "share root to browse, repeatable (default: the parent directories of the folder paths)")
+	fs.StringVar(&o.ProjectPattern, "project-pattern", "", "project_pattern from your structure rules, to estimate the load of the structure scan")
 	fs.IntVar(&o.ScanDepth, "scan-depth", 3, "nested_scan_depth for the estimate")
-	fs.IntVar(&o.ScanBudget, "scan-budget", 20000, "most directory listings the estimate may make (it extrapolates beyond)")
+	fs.IntVar(&o.ScanBudget, "scan-budget", 20000, "limit of directory listings for the estimate (the probe calculates the rest)")
 	_ = fs.Parse(args)
 	o.Shares = shares
 	if o.URL == "" || o.APIKey == "" {
-		return fmt.Errorf("probe needs --url and --api-key")
+		return fmt.Errorf("the probe needs --url and --api-key")
 	}
+	pin, err := stclient.NormalizePin(o.Pin)
+	if err != nil {
+		return fmt.Errorf("--pin: %w", err)
+	}
+	o.Pin = pin
 	log := newLogger("info", "text")
 	return probe.Run(context.Background(), o, log)
 }
@@ -236,20 +374,21 @@ func resetPassword(args []string) error {
 	fs := flag.NewFlagSet("reset-admin-password", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	_ = fs.Parse(args)
-	fmt.Fprint(os.Stderr, "New admin password: ")
-	pw, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && pw == "" {
-		return fmt.Errorf("reading password: %w", err)
-	}
-	pw = strings.TrimRight(pw, "\r\n")
-	if len([]rune(pw)) < web.MinPasswordLength {
-		return fmt.Errorf("the password must be at least %d characters", web.MinPasswordLength)
-	}
-	st, err := app.OpenStore(*data, secretKey(*key))
+	// Before asking for a password: a wrong --data is reported at once.
+	st, err := app.OpenExistingStore(*data, secretKey(*key))
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	fmt.Fprint(os.Stderr, "New administrator password: ")
+	pw, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && pw == "" {
+		return fmt.Errorf("cannot read the password: %w", err)
+	}
+	pw = strings.TrimRight(pw, "\r\n")
+	if len([]rune(pw)) < web.MinPasswordLength {
+		return fmt.Errorf("the password must have at least %d characters", web.MinPasswordLength)
+	}
 	h, err := web.HashPassword(pw)
 	if err != nil {
 		return err
@@ -260,7 +399,12 @@ func resetPassword(args []string) error {
 	if err := st.DeleteSessions(""); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Admin password changed; all sessions were logged out.")
+	// The server that runs sends a settings notice (a server that does not
+	// run sends it when it starts).
+	if err := app.RecordPasswordReset(st); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "The new administrator password is set. syncwatch logged out all sessions.")
 	return nil
 }
 
@@ -271,21 +415,26 @@ func importConfig(args []string) error {
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: syncwatch import-config [--data DIR] FILE")
 	}
-	st, err := app.OpenStore(*data, secretKey(*key))
+	st, err := app.OpenExistingStore(*data, secretKey(*key))
 	if err != nil {
 		return err
 	}
 	defer st.Close()
-	c, n, err := app.ImportFile(st, fs.Arg(0))
+	// No confirmation: a person who can run this command can also change the
+	// database. The output says what the import removed.
+	imp, err := app.ImportFile(st, fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Imported %d server(s) and %d secret(s). Restart syncwatch to apply.\n", len(c.Servers), n)
-	if n > 0 {
-		fmt.Fprintf(os.Stderr, "The secrets are stored encrypted now, but %s still contains them in plaintext: delete it.\n", fs.Arg(0))
+	fmt.Fprintf(os.Stderr, "syncwatch imported %s and %s. A syncwatch that runs uses the new configuration in less than 10 seconds. If syncwatch does not run, it uses the new configuration on the next start.\n", plural(len(imp.Config.Servers), "server", "servers"), plural(imp.Secrets, "secret", "secrets"))
+	if line := app.RemovedLine(imp.Removed); line != "" {
+		fmt.Fprintln(os.Stderr, line)
 	}
-	if need := settings.NeedKey(st, c); len(need) > 0 {
-		fmt.Fprintf(os.Stderr, "Enter the API key again for %s: an API key is only sent to the URL it was entered for.\n", strings.Join(need, ", "))
+	if imp.Secrets > 0 {
+		fmt.Fprintf(os.Stderr, "syncwatch stores the secrets encrypted. The file %s still contains them unencrypted. Delete the file.\n", fs.Arg(0))
+	}
+	if need := settings.NeedKey(st, imp.Config); len(need) > 0 {
+		fmt.Fprintf(os.Stderr, "Type the API key again for %s. syncwatch sends an API key only to the URL that you typed it for.\n", strings.Join(need, ", "))
 	}
 	return nil
 }
@@ -294,7 +443,7 @@ func exportConfig(args []string) error {
 	fs := flag.NewFlagSet("export-config", flag.ExitOnError)
 	data, key := dataFlags(fs)
 	_ = fs.Parse(args)
-	st, err := app.OpenStore(*data, secretKey(*key))
+	st, err := app.OpenExistingStore(*data, secretKey(*key))
 	if err != nil {
 		return err
 	}
@@ -304,7 +453,7 @@ func exportConfig(args []string) error {
 		return err
 	}
 	if c == nil {
-		return fmt.Errorf("no configuration stored yet")
+		return fmt.Errorf("there is no stored configuration")
 	}
 	b, err := c.ExportYAML()
 	if err != nil {
@@ -318,7 +467,8 @@ func exportConfig(args []string) error {
 // (loopback if it listens on all interfaces) and http or https as configured.
 func healthURL() string {
 	scheme := "http"
-	if os.Getenv("SYNCWATCH_TLS_CERT") != "" || envBool("SYNCWATCH_TLS_SELF_SIGNED") {
+	// A bad value stops serve itself, so the check can't pass either way.
+	if selfSigned, _ := envBool("SYNCWATCH_TLS_SELF_SIGNED"); os.Getenv("SYNCWATCH_TLS_CERT") != "" || selfSigned {
 		scheme = "https"
 	}
 	host, port, err := net.SplitHostPort(env("SYNCWATCH_LISTEN", defaultListen))
@@ -346,7 +496,37 @@ func healthcheck(args []string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check returned HTTP %d", resp.StatusCode)
+		// The first line of the answer gives the reason, for example
+		// "notifications fail from 2026-10-11 21:04" (docker inspect shows it).
+		if line := firstLine(resp.Body); line != "" {
+			return fmt.Errorf("the health check returned HTTP %d: %s", resp.StatusCode, line)
+		}
+		return fmt.Errorf("the health check returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// firstLine returns the first line of an answer, at most 200 characters,
+// without control characters.
+func firstLine(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 4<<10))
+	line, _, _ := strings.Cut(string(b), "\n")
+	line = strings.Map(func(c rune) rune {
+		if unicode.IsControl(c) {
+			return -1
+		}
+		return c
+	}, line)
+	if r := []rune(strings.TrimSpace(line)); len(r) > 200 {
+		return string(r[:200]) + "…"
+	}
+	return strings.TrimSpace(line)
+}
+
+// plural writes a count with its noun: "1 server", "3 servers".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }

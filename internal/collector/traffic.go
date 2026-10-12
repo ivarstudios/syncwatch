@@ -9,10 +9,12 @@ import (
 
 // trafficEvery is how often a server's traffic counters are read: one
 // cheap /rest/system/connections call, for the bytes moved per day and week
-// and the current transfer rate.
+// and the current transfer rate. One /rest/system/status call at the same
+// time reads the relay listeners (see sampleListeners).
 var trafficEvery = time.Minute
 
-// trafficLoop reads the traffic counters while the collector runs.
+// trafficLoop reads the traffic counters and the relay listeners while the
+// collector runs.
 func (c *Collector) trafficLoop(ctx context.Context) {
 	t := time.NewTicker(c.trafficEvery)
 	defer t.Stop()
@@ -23,6 +25,7 @@ func (c *Collector) trafficLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		c.sampleTraffic(ctx)
+		c.sampleListeners(ctx)
 	}
 }
 
@@ -41,10 +44,16 @@ func (c *Collector) sampleTraffic(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	sm, err := c.st.RecordTraffic(c.id, start.UTC().Format(time.RFC3339), tr.InBytesTotal, tr.OutBytesTotal, now)
+	// After more than three missed samples the increase can't be placed in
+	// time (syncwatch was down, or the server unreachable): it is dropped
+	// rather than booked at "now".
+	sm, err := c.st.RecordTraffic(c.id, start.UTC().Format(time.RFC3339), tr.InBytesTotal, tr.OutBytesTotal, now, 3*c.trafficEvery)
 	if err != nil {
-		c.log.Warn("recording traffic", "err", err)
+		c.log.Warn("cannot save the traffic data", "err", err)
 		return
+	}
+	if sm.Gap {
+		c.log.Debug("traffic counters started again after a gap in the readings")
 	}
 	if secs := sm.Over.Seconds(); secs > 0 {
 		c.update(func(s *model.Server) {

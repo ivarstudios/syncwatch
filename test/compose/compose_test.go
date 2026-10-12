@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	role     = "555"
+	role     = "555000000000000000"
 	token    = "swt_compose_token_0123456789"
 	password = "compose-admin-password"
 	swURL    = "https://127.0.0.1:18780" // the image serves HTTPS by default
@@ -104,10 +104,10 @@ func TestCompose(t *testing.T) {
 		if err := i.WaitReady(ctx, 120*time.Second); err != nil {
 			t.Fatal(err)
 		}
-		if err := i.Call(ctx, http.MethodPatch, "/rest/config/options", map[string]any{
-			"globalAnnounceEnabled": false, "localAnnounceEnabled": false, "relaysEnabled": false,
-			"natEnabled": false, "urAccepted": -1, "crashReportingEnabled": false,
-		}, nil); err != nil {
+		// The init step in docker-compose.yml turned discovery, relays, NAT
+		// traversal, usage and crash reporting and auto-upgrade off before
+		// the first start; a stack that reaches outside must not run.
+		if err := i.CheckIsolated(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if err := i.SetName(ctx); err != nil {
@@ -198,12 +198,15 @@ func TestCompose(t *testing.T) {
 		if err := insts["e2e-sol"].AddFolder(ctx, "root", "SOL source share", share("SOL-LIVE-1SOURCE"), nil); err != nil {
 			t.Fatal(err)
 		}
+		// r2 (W-046): the folders inside the share root are rows of S2, not
+		// S1 findings.
 		if _, err := sw.WaitStatus(ctx, 2*time.Minute, func(st *harness.Status) bool {
-			return st.Find("S2", "SOL-LIVE-1SOURCE") != nil && st.Find("S1", "inside SOL source share") != nil
+			return st.Find("S2", "SOL-LIVE-1SOURCE") != nil && st.Find("S2", "other Syncthing folder") != nil &&
+				st.Find("S1", "inside SOL source share") == nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		waitDiscord(t, since, 90*time.Second, "S1/S2 ping", func(m harness.DiscordMessage) bool { return m.Mentions(role) && strings.Contains(m.Text(), "SOL") })
+		waitDiscord(t, since, 90*time.Second, "S2 ping", func(m harness.DiscordMessage) bool { return m.Mentions(role) && strings.Contains(m.Text(), "SOL") })
 	})
 
 	// SOL is watched through the read-only gate. From outside, the gate

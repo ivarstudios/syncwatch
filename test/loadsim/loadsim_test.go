@@ -94,6 +94,11 @@ func TestStructureScanLoad(t *testing.T) {
 	if err := nas.WaitReady(ctx, 3*time.Minute); err != nil {
 		t.Fatal(err)
 	}
+	// The init step in docker-compose.yml turned everything that reaches
+	// outside the test network off before the first start.
+	if err := nas.CheckIsolated(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// The share: project folders with fanout subdirectories on each of
 	// three levels (the scan's default depth) and one more level below.
@@ -127,10 +132,11 @@ done`, share, fanout, projects)
 	}
 	t.Logf("%d Syncthing folders added in %v", synced, time.Since(start).Round(time.Second))
 
-	// syncwatch starts now: its first structure scan is a baseline (it
-	// descends into every project folder), the next one a minute later only
-	// into the project folders that aren't Syncthing folders.
-	dc(t, "up", "-d", "syncwatch")
+	// syncwatch starts now (built from the current tree, not a stale image):
+	// its first structure scan is a baseline (it descends into every project
+	// folder), the next one a minute later only into the project folders
+	// that aren't Syncthing folders.
+	dc(t, "up", "-d", "--build", "syncwatch")
 	sw, _ := harness.StartSyncwatchRemote(swURL, "loadsim-admin-password", token)
 	var slowest time.Duration
 	deadline := time.Now().Add(45 * time.Minute)
@@ -196,7 +202,7 @@ done`, share, fanout, projects)
 		t.Fatalf("probe: %v\n%s", err, out)
 	}
 	b, _ := os.ReadFile(report)
-	est := regexp.MustCompile(`(Regular|Baseline) scan .*about \*\*(\d+) listings\*\*`).FindAllStringSubmatch(string(b), -1)
+	est := regexp.MustCompile(`(Structure|Baseline) scan .*approximately \*\*(\d+) listings\*\*`).FindAllStringSubmatch(string(b), -1)
 	if len(est) != 2 {
 		t.Fatalf("no estimate in the probe report:\n%s", b)
 	}

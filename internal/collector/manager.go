@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
@@ -20,10 +21,17 @@ type Manager struct {
 	cfg *config.Holder
 	log *slog.Logger
 
+	// OnPin, when set, is called after the collector pinned the certificate
+	// of a server without an administrator: at the first contact (renewal
+	// false) or for a CA-signed renewal for the same host name (renewal true).
+	// It runs in its own goroutine, after the pin is saved. Set it before Run.
+	OnPin func(serverID, fingerprint string, renewal bool)
+
 	mu      sync.Mutex
 	ctx     context.Context
 	running map[string]*running
 	lastCol config.Collector
+	keyErr  bool // the last Sync couldn't read some server's API key
 }
 
 type running struct {
@@ -39,18 +47,37 @@ func NewManager(hub *model.Hub, st *store.Store, cfg *config.Holder, log *slog.L
 	return &Manager{hub: hub, st: st, cfg: cfg, log: log, running: map[string]*running{}}
 }
 
+// keyRetry is how often Sync runs on its own while a server's API key can't
+// be read (a database error, a secret key being restored), so monitoring
+// resumes without a settings save.
+var keyRetry = 5 * time.Minute
+
 // Run starts collectors and keeps them in line with the configuration until ctx ends.
 func (m *Manager) Run(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
 	m.mu.Unlock()
 	m.Sync()
-	<-ctx.Done()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, r := range m.running {
-		r.cancel()
-		<-r.done
+	t := time.NewTicker(keyRetry)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			for _, r := range m.running {
+				r.cancel()
+				<-r.done
+			}
+			return
+		case <-t.C:
+			m.mu.Lock()
+			retry := m.keyErr
+			m.mu.Unlock()
+			if retry {
+				m.Sync()
+			}
+		}
 	}
 }
 
@@ -76,10 +103,14 @@ func (m *Manager) Sync() {
 	}
 	m.hub.SetServers(hubServers)
 
+	m.keyErr = false
 	for id, r := range m.running {
-		key, bound, _ := m.st.ServerKey(id)
 		w, ok := want[id]
-		if !ok || colChanged || w.URL != r.conf.URL || key != r.keyRev || !config.SameEndpoint(bound, w.URL) {
+		key, bound, err := m.st.ServerKey(id)
+		// A key that can't be read now hasn't changed as far as anyone
+		// knows; the running collector keeps the one it started with.
+		keyChanged := err == nil && (key != r.keyRev || !config.SameEndpoint(bound, w.URL))
+		if !ok || colChanged || w.URL != r.conf.URL || keyChanged {
 			r.cancel()
 			<-r.done
 			delete(m.running, id)
@@ -91,7 +122,12 @@ func (m *Manager) Sync() {
 		}
 		key, bound, err := m.st.ServerKey(id)
 		if err != nil {
-			m.log.Error("reading API key", "server", s.Name, "err", err)
+			m.log.Error("cannot read the API key; trying again in "+keyRetry.String(), "server", s.Name, "err", err)
+			m.keyErr = true
+			m.hub.Update(id, func(sv *model.Server) {
+				sv.Status = model.StatusDown
+				sv.LastError = "cannot read the API key (check the secret key)"
+			})
 			continue
 		}
 		if key == "" {
@@ -104,16 +140,16 @@ func (m *Manager) Sync() {
 		// A key is only ever sent to the URL it was entered for, so changing
 		// a server's URL (in the settings or by an import) can't redirect it.
 		if !config.SameEndpoint(bound, s.URL) {
-			m.log.Warn("not connecting: the API key was entered for a different URL; enter it again", "server", s.Name, "url", s.URL)
+			m.log.Warn("cannot connect, the API key is for a different API URL: type the API key again", "server", s.Name, "url", s.URL)
 			m.hub.Update(id, func(sv *model.Server) {
 				sv.Status = model.StatusDown
-				sv.LastError = "the API URL changed after the API key was entered; enter the API key again in Settings"
+				sv.LastError = "the API URL changed: type the API key again in Settings → Servers"
 			})
 			continue
 		}
-		c, err := newCollector(s, key, m.hub, m.st, m.cfg, m.log)
+		c, err := newCollector(s, key, m.hub, m.st, m.cfg, m.log, m.OnPin)
 		if err != nil {
-			m.log.Error("starting collector", "server", s.Name, "err", err)
+			m.log.Error("cannot start the collector", "server", s.Name, "err", err)
 			m.hub.Update(id, func(sv *model.Server) {
 				sv.Status = model.StatusDown
 				sv.LastError = err.Error()
@@ -142,10 +178,10 @@ func (m *Manager) AcceptCert(serverID, fp string) error {
 		}
 	})
 	if current == nil {
-		return errors.New("this server has no changed certificate to accept")
+		return errors.New("This server has no new certificate to accept.")
 	}
 	if current.New != fp {
-		return errors.New("the certificate changed again; reload the page and check the new fingerprint")
+		return errors.New("The certificate changed again. Reload the page. Then check the new fingerprint.")
 	}
 	if err := m.st.SetPin(serverID, fp); err != nil {
 		return err
@@ -174,7 +210,7 @@ func (m *Manager) ResetPin(serverID string) error {
 		r.c.client.SetPin("")
 		r.c.Wake()
 	}
-	m.log.Info("pinned certificate forgotten", "server", serverID)
+	m.log.Info("pinned certificate removed", "server", serverID)
 	return nil
 }
 

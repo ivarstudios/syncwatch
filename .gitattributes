@@ -1,0 +1,7 @@
+# Every checkout keeps LF, also on Windows with core.autocrlf=true: gofmt,
+# the embedded templates and assets, and the shell snippets in the Compose
+# files all depend on it. Binary files are never converted.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.db binary

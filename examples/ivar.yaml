@@ -1,53 +1,69 @@
-# IVAR Studios example configuration for syncwatch.
+# Example configuration of IVAR Studios for syncwatch.
 #
-# Place it at /data/syncwatch.yaml before the first start (it is imported once),
-# or import it later under Settings → Export and import. API keys may be added
-# here for the first import; they are then stored encrypted and never exported.
+# Put this file at /data/syncwatch.yaml before the first start. syncwatch
+# imports it one time. Or import it later under Settings → Export and import.
+# You can add the API keys here for the first import. syncwatch then encrypts
+# them in the database and never exports them.
 
 public_url: https://192.168.1.10:8080
 timezone: Europe/Stockholm
+site: IVAR Office         # the site where syncwatch runs. The messages and the Overview name the sites
 
 servers:
   - name: AKKA
     url: https://192.168.1.10:8384
+    site: IVAR Office
     # api_key: …
   - name: SOL
     url: https://192.168.2.10:8384
+    site: Branch office
   - name: SIRIUS
     url: https://192.168.3.10:8384
 
+# The PCs that always connect through a relay, for example a PC that a person
+# uses outside the studio network. They get no H11. H12 opens when such a PC
+# has no connection for more than 30 minutes. Settings → Devices does the same.
+# devices:
+#   - { id: LAPTOPD-…, relay: true }    # the complete device ID
+
 collector:
-  mode: events            # switch to "polled" if the probe shows load on the NASes
-  event_timeout: 50s      # below the VPN's idle timeout
+  mode: events            # use "polled" if the probe shows a large load on the NAS hardware
+  event_timeout: 50s      # below the idle timeout of the VPN
   full_check_interval: 4h
   structure_interval: 1h
 
 notifications:
   # discord_webhook: https://discord.com/api/webhooks/…
-  discord_role_id: ""     # numeric ID of the role to mention in urgent messages
+  discord_role_id: ""     # the numeric ID (17 to 20 digits) of the role to mention in urgent messages
   quiet_hours: "22:00-07:00"
-  reminder_time: "08:00"
+  reminder_time: "08:00"  # must be outside the evening part of the quiet hours
   weekly_day: monday
   weekly_time: "08:00"
+  # Optional: syncwatch sends the urgent message again while an ERROR finding
+  # of a server stays open.
+  # repeat_urgent: 2h
 
-# IVAR naming rules.
+# The structure rules of IVAR.
 #   Shares:          <NAS>-LIVE-<n><TYPE> and <NAS>-ME-LIVE-<n><TYPE>
-#   Project folders: LIVE-<PROJECT>[-…] and ME-LIVE-<PROJECT>[-…] at the top of a share,
-#                    normally containing the share's type token.
+#   Project folders: LIVE-<PROJECT>[-…] and ME-LIVE-<PROJECT>[-…] at the top of a share.
+#                    A project folder name usually includes the type token of the share.
 structure:
   project_pattern: '^(ME-)?LIVE-[A-Za-z0-9]'
   share_type_from_path: '-(?P<me>ME-)?LIVE-(?P<type>[1-5][A-Z]+)$'
   type_tokens: [1SOURCE, 2PROJECTFILES, 3INTERMEDIATE, 4FINALS, 5COLLECT]
   placement:
     - when_name_matches: '^ME-LIVE-'
-      share_must_have: { me: true }
+      share_must_have: { me: true }       # me must be a named group of share_type_from_path
     - when_name_matches: '^LIVE-'
       share_must_have: { me: false }
   ignore_dirs: ['@Recycle', '@Recently-Snapshot', '.streams', '.@__thumb', '@eaDir', '.stversions', '.stfolder', '.*', '#recycle']
-  nested_scan_depth: 3
+  # syncwatch looks 6 folder levels down into each project folder. This
+  # includes 413 of the 417 folders of a real project of the studio.
+  nested_scan_depth: 6
 
 shares:
-  # Shares that have no Syncthing folder yet but should be checked.
+  # Shares that have no Syncthing folder until now, but that syncwatch must check.
+  # Behind a read-only gate, these directories also go into SYNCWATCH_GATE_BROWSE_ROOTS.
   add:
     SIRIUS: [/share/CACHEDEV2_DATA/SIRIUS-LIVE-5COLLECT]
   exclude: {}

@@ -4,7 +4,7 @@
   <label>Severity
     <select name="severity">
       <option value="">All</option>
-      {{range $s := (list "error" "warn" "info")}}<option value="{{$s}}" {{if eq $vm.Filter.Severity $s}}selected{{end}}>{{$s}}</option>{{end}}
+      {{range $vm.Severities}}<option value="{{.Value}}" {{if eq $vm.Filter.Severity .Value}}selected{{end}}>{{.Label}}</option>{{end}}
     </select>
   </label>
   <label>Category
@@ -25,7 +25,7 @@
       {{range $vm.Servers}}<option value="{{.ID}}" {{if eq $vm.Filter.Server .ID}}selected{{end}}>{{.Name}}</option>{{end}}
     </select>
   </label>
-  <label class="check"><input type="checkbox" name="snoozed" value="1" {{if $vm.Filter.ShowSnoozed}}checked{{end}}> Show snoozed and ignored</label>
+  <label class="check"><input type="checkbox" name="snoozed" value="1" {{if $vm.Filter.ShowSnoozed}}checked{{end}}> Show snoozed and ignored findings</label>
   <button type="submit">Filter</button>
 </form>
 {{template "problems-body" .}}
@@ -34,21 +34,23 @@
 {{define "problems-body"}}{{$vm := .Data.VM}}{{$admin := .Data.Admin}}{{$csrf := .CSRF}}
 <div id="problems-body" hx-get="/frag/problems?{{$vm.Query}}" hx-trigger="sse:update" hx-swap="outerHTML">
   <p class="summary">
-    <span class="sev sev-error">🔴 {{$vm.Errors}} errors</span>
-    <span class="sev sev-warn">🟠 {{$vm.Warns}} warnings</span>
-    <span class="sev sev-info">🔵 {{$vm.Infos}} suggestions</span>
-    {{if $vm.Hidden}}<span class="muted">· {{$vm.Hidden}} snoozed or ignored hidden</span>{{end}}
-    <span class="muted">· {{$vm.NewThisWeek}} new and {{len $vm.ResolvedThisWeek}} resolved this week</span>
+    <span class="sev sev-error">🔴 ERROR {{$vm.Errors}}</span>
+    <span class="sev sev-warn">🟠 WARNING {{$vm.Warns}}</span>
+    <span class="sev sev-info">🔵 INFO {{$vm.Infos}}</span>
+    {{if $vm.Hidden}}<span class="muted">· <a class="muted" href="#snoozed">{{$vm.Hidden}} hidden (snoozed or ignored)</a></span>{{end}}
+    <span class="muted">· {{$vm.NewThisWeek}} new and {{$vm.ResolvedCount}} resolved this week</span>
   </p>
-  {{if not $vm.Rows}}<p class="card c-ok">✔ Nothing to show.</p>{{end}}
+  {{if not $vm.Rows}}{{if or $vm.Filter.Severity $vm.Filter.Check $vm.Filter.Server $vm.Filter.Category}}<p class="card c-ok">✔ No findings match the filter.</p>
+  {{- else if $vm.Hidden}}<p class="card c-ok">✔ There are no open findings. <a href="#snoozed">{{plural $vm.Hidden "finding is" "findings are"}} hidden (snoozed or ignored).</a></p>
+  {{- else}}<p class="card c-ok">✔ There are no open findings.</p>{{end}}{{end}}
   <ul class="plist">
   {{range $vm.Rows}}
     <li id="f-{{.ID}}" class="sev-row-{{.Severity}}{{if .Snoozed}} snoozed{{end}}">
       <details data-key="f:{{.ID}}">
         <summary>
           {{template "sev" .}} <span class="chk" title="{{.Title}}">{{.Checks}}</span>
-          {{if .Urgent}}<span class="tag urgent" title="Sends urgent pings">urgent</span>{{end}}
-          {{if .Stale}}<span class="tag stale" title="A server it depends on is unreachable; this is the last known state">stale</span>{{end}}
+          {{if .Urgent}}<span class="tag urgent" title="Sends urgent messages">urgent</span>{{end}}
+          {{if .Stale}}<span class="tag stale" title="No current data: last known state">stale</span>{{end}}
           {{if .Snoozed}}<span class="tag snoozed">{{.SnoozeLabel}}</span>{{end}}
           <span class="msg">{{.Message}}</span>
           <span class="muted nowrap">· open {{.OpenFor}}</span>
@@ -58,28 +60,29 @@
             <tr><th>Check</th><td>{{.Checks}} — {{.Title}} ({{.Category}})</td></tr>
             <tr><th>Subject</th><td>{{.Subject}}</td></tr>
             {{if .ServerName}}<tr><th>Server</th><td>{{.ServerName}}</td></tr>{{end}}
-            <tr><th>Since</th><td>{{.Since}}</td></tr>
-            <tr><th>Opened</th><td>{{.OpenedAt}}{{if .Pinged}} · pinged {{.Pinged}}{{end}}</td></tr>
-            {{range .Details}}{{if .Value}}<tr><th>{{.Key}}</th><td class="mono">{{.Value}}</td></tr>{{end}}{{end}}
+            <tr><th title="The time when the condition started">Started</th><td>{{.Since}}</td></tr>
+            <tr><th title="The time when syncwatch opened the finding">Reported</th><td>{{.OpenedAt}}{{if .Pinged}} · urgent message sent at {{.Pinged}}{{end}}</td></tr>
+            {{range .Details}}<tr><th>{{.Label}}</th><td class="mono">{{.Value}}</td></tr>{{end}}
           </table>
-          {{if .Paths}}<p><strong>Failing files</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
+          {{if .Paths}}<p><strong>Failed items</strong></p><ul class="mono small">{{range .Paths}}<li>{{.}}</li>{{end}}</ul>{{end}}
           <p class="mono small muted">Finding ID {{.ID}}</p>
-          {{if .Link}}<p><a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a></p>{{end}}
+          {{if and .Link $admin}}<p><a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a></p>{{end}}
           {{if $admin}}
           <div class="actions">
             {{if .Snoozed}}
-            <form method="post" action="/problems/{{.ID}}/unsnooze"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Un-snooze</button></form>
+            <form method="post" action="/problems/{{.ID}}/unsnooze"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">{{if .Ignored}}Stop ignoring{{else}}Remove snooze{{end}}</button></form>
             {{else}}
             <form method="post" action="/problems/{{.ID}}/snooze" class="inline">
               <input type="hidden" name="csrf" value="{{$csrf}}">
+              <label>Reason <input name="reason" placeholder="optional"></label>
               <button type="submit" name="for" value="1d">Snooze 1 day</button>
               <button type="submit" name="for" value="1w">Snooze 1 week</button>
-              <label>until <input type="date" name="until"></label>
+              <label>until <input type="date" name="until" min="{{$vm.Today}}"></label>
               <button type="submit" name="for" value="date">Snooze until date</button>
             </form>
             <form method="post" action="/problems/{{.ID}}/ignore" class="inline">
               <input type="hidden" name="csrf" value="{{$csrf}}">
-              <label>Reason <input name="reason" required placeholder="why this is fine"></label>
+              <label>Reason <input name="reason" required placeholder="why this is acceptable"></label>
               <button type="submit">Ignore</button>
             </form>
             {{end}}
@@ -90,9 +93,25 @@
     </li>
   {{end}}
   </ul>
+  {{if $vm.Snoozed}}
+  <details class="card" id="snoozed" data-key="snoozed">
+    <summary><strong>Snoozed and ignored ({{len $vm.Snoozed}})</strong> <span class="muted small">· still open, hidden in the list above, no urgent messages</span></summary>
+    <ul class="plist compact">
+    {{range $vm.Snoozed}}
+      <li id="f-{{.ID}}" class="sev-row-{{.Severity}} snoozed">
+        {{template "sev" .}} <span class="chk" title="{{.Title}}">{{.Checks}}</span>
+        <span class="tag snoozed">{{.SnoozeLabel}}</span>
+        <span class="msg">{{.Message}}</span>
+        <span class="muted nowrap">· open {{.OpenFor}}</span>
+        {{if $admin}}<form method="post" action="/problems/{{.ID}}/unsnooze" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit" class="link">{{if .Ignored}}Stop ignoring{{else}}Remove snooze{{end}}</button></form>{{end}}
+      </li>
+    {{end}}
+    </ul>
+  </details>
+  {{end}}
   {{if $vm.ResolvedThisWeek}}
   <details class="card" data-key="resolved-week">
-    <summary><strong>Resolved this week ({{len $vm.ResolvedThisWeek}})</strong></summary>
+    <summary><strong>Resolved this week ({{$vm.ResolvedCount}})</strong>{{if gt $vm.ResolvedCount (len $vm.ResolvedThisWeek)}} <span class="muted small">· the most recent {{len $vm.ResolvedThisWeek}}</span>{{end}}</summary>
     <ul class="plist compact">{{range $vm.ResolvedThisWeek}}<li><span class="c-ok">{{.Icon}}</span> <span class="chk">{{.Check}}</span> {{.Message}} <span class="muted">· {{.When}}</span></li>{{end}}</ul>
   </details>
   {{end}}

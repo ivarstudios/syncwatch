@@ -4,6 +4,10 @@
 // processes: three servers and two PCs, a fake Discord webhook and syncwatch.
 //
 //	SYNCTHING_BIN=/path/to/syncthing go test -tags integration -v -timeout 30m ./test/integration
+//
+// SW_IT_BASEPORT (default 18600) is the first of the loopback ports a run
+// uses (GUI ports from there, sync ports 1000 above, syncwatch 90 above), so
+// two runs can coexist; SW_IT_DIR keeps the working directory and its logs.
 package integration
 
 import (
@@ -22,7 +26,7 @@ import (
 )
 
 const (
-	role     = "777000111"
+	role     = "777000111000000000"
 	token    = "swt_integration_token_abcdef0123"
 	password = "integration-admin-pw"
 )
@@ -99,8 +103,14 @@ func TestScenarios(t *testing.T) {
 		t.Skip("SYNCTHING_BIN not set")
 	}
 	base := 18600
-	if p, err := strconv.Atoi(os.Getenv("SW_IT_PORT")); err == nil {
-		base = p
+	for _, k := range []string{"SW_IT_BASEPORT", "SW_IT_PORT"} { // SW_IT_PORT is the old name
+		if p, err := strconv.Atoi(os.Getenv(k)); err == nil {
+			if p < 1024 || p+1004 > 65535 {
+				t.Fatalf("%s=%d: the base port must be between 1024 and %d", k, p, 65535-1004)
+			}
+			base = p
+			break
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
@@ -190,12 +200,12 @@ func (s *suite) baseline(t *testing.T) {
 	}
 	// IVAR acceptance cases.
 	checks := []struct{ check, part string }{
-		{"S7", "LIVE-NOTSYNCED-1SOURCE in AKKA-LIVE-1SOURCE"},
+		{"S7", "LIVE-NOTSYNCED-1SOURCE in share AKKA-LIVE-1SOURCE"},
 		{"S4", "random stuff"},
 		{"S5", "ME-LIVE-WORKSHOP"},
-		{"S5", "LIVE-KYRGYZ-2PROJECTFILES-BLENDER in AKKA-LIVE-1SOURCE"},
-		{"S6", "LIVE-KYRGYZ-2PROJECTFILES-BLENDER in AKKA-LIVE-1SOURCE"},
-		{"S6", "LIVE-KYRGYZ-2PROJECTFILES-BLENDER in AKKA-LIVE-2PROJECTFILES"},
+		{"S5", "LIVE-KYRGYZ-2PROJECTFILES-BLENDER in share AKKA-LIVE-1SOURCE"},
+		{"S6", "LIVE-KYRGYZ-2PROJECTFILES-BLENDER in share AKKA-LIVE-1SOURCE"},
+		{"S6", "LIVE-KYRGYZ-2PROJECTFILES-BLENDER in share AKKA-LIVE-2PROJECTFILES"},
 		{"S7", "LIVE-X[1]-1SOURCE"},
 	}
 	for _, c := range checks {
@@ -293,7 +303,19 @@ func (s *suite) shareRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.waitFinding(90*time.Second, "S2", "SIRIUS-LIVE-2PROJECTFILES on SIRIUS")
-	s.waitFinding(30*time.Second, "S1", "LIVE-EPSILON-2PROJECTFILES inside whole PROJECTFILES share")
+	// r2 (W-046): the Syncthing folders inside the share root are rows of
+	// S2, not S1 findings.
+	f := s.waitFinding(30*time.Second, "S2", "other Syncthing folder")
+	inside := false
+	for _, d := range f.Details {
+		inside = inside || (d.Key == "Syncthing folder inside" && strings.Contains(d.Value, "LIVE-EPSILON-2PROJECTFILES"))
+	}
+	if !inside {
+		t.Fatalf("S2 does not list LIVE-EPSILON-2PROJECTFILES: %+v", f.Details)
+	}
+	if st, err := s.sw.Status(); err != nil || st.Find("S1", "inside whole PROJECTFILES share") != nil {
+		t.Fatalf("no S1 for a folder inside the share-root folder (W-046): %v", err)
+	}
 	s.waitDiscord(since, 60*time.Second, "urgent S2 ping", mentionsCheck("Share root"))
 }
 

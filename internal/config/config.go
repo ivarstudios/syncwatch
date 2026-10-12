@@ -10,8 +10,12 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -20,7 +24,9 @@ import (
 type Config struct {
 	PublicURL  string           `yaml:"public_url" json:"public_url"`
 	Timezone   string           `yaml:"timezone" json:"timezone"`
+	Site       string           `yaml:"site,omitempty" json:"site,omitempty"` // where syncwatch runs, free text; "" when not set
 	Servers    []Server         `yaml:"servers" json:"servers"`
+	Devices    []Device         `yaml:"devices,omitempty" json:"devices,omitempty"`
 	Collector  Collector        `yaml:"collector" json:"collector"`
 	Checks     map[string]Check `yaml:"checks,omitempty" json:"checks"`
 	Thresholds Thresholds       `yaml:"thresholds" json:"thresholds"`
@@ -41,6 +47,56 @@ type Server struct {
 	Disabled bool   `yaml:"disabled,omitempty" json:"disabled,omitempty"`
 	// AllowHTTP permits a plain http:// URL, which sends the API key unencrypted.
 	AllowHTTP bool `yaml:"allow_http,omitempty" json:"allow_http,omitempty"`
+	// Site is where the server is, free text (the same spelling for each
+	// server of a site); "" when not set.
+	Site string `yaml:"site,omitempty" json:"site,omitempty"`
+}
+
+// Device is the configuration of one Syncthing device (a PC), by its device ID.
+type Device struct {
+	ID    string `yaml:"id" json:"id"`
+	Relay bool   `yaml:"relay,omitempty" json:"relay,omitempty"` // always connects through a relay: no H11; H12 after thresholds.relay_lost without a connection
+}
+
+// MaxSiteLen is the longest site name, in characters.
+const MaxSiteLen = 40
+
+// MaxDevices is the most entries that devices can have.
+const MaxDevices = 500
+
+var deviceIDRe = regexp.MustCompile(`^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$`)
+
+// ValidDeviceID reports whether s is a complete Syncthing device ID: 8
+// groups of 7 characters from A-Z and 2-7, joined by "-".
+func ValidDeviceID(s string) bool { return deviceIDRe.MatchString(s) }
+
+// RelayExpected reports whether the device always connects through a relay
+// (devices[].relay).
+func (c *Config) RelayExpected(deviceID string) bool {
+	for _, d := range c.Devices {
+		if strings.EqualFold(d.ID, deviceID) {
+			return d.Relay
+		}
+	}
+	return false
+}
+
+// SiteOf returns the site of a server, or "" when the server has no site or
+// is not in the configuration.
+func (c *Config) SiteOf(serverID string) string {
+	for _, s := range c.Servers {
+		if s.ID == serverID {
+			return s.Site
+		}
+	}
+	return ""
+}
+
+// siteOK reports whether a site name has at most MaxSiteLen characters and
+// no control or format characters.
+func siteOK(s string) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= MaxSiteLen &&
+		strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) < 0
 }
 
 // SameEndpoint reports whether two server URLs address the same scheme, host,
@@ -105,6 +161,7 @@ type Thresholds struct {
 	Paused          Duration `yaml:"paused" json:"paused"`                     // H6
 	PCOffline       Duration `yaml:"pc_offline" json:"pc_offline"`             // H7
 	ConflictWindow  Duration `yaml:"conflict_window" json:"conflict_window"`   // H10
+	RelayLost       Duration `yaml:"relay_lost" json:"relay_lost"`             // H12
 	InactiveProject Duration `yaml:"inactive_project" json:"inactive_project"` // C1
 	OldDevice       Duration `yaml:"old_device" json:"old_device"`             // C2
 	DeadShare       Duration `yaml:"dead_share" json:"dead_share"`             // C3
@@ -135,13 +192,15 @@ type Shares struct {
 
 // Notify settings.
 type Notify struct {
-	DiscordWebhook string `yaml:"discord_webhook,omitempty" json:"-"` // import only
-	DiscordRoleID  string `yaml:"discord_role_id" json:"discord_role_id"`
-	QuietHours     string `yaml:"quiet_hours" json:"quiet_hours"`     // "22:00-07:00", "" = off
-	ReminderTime   string `yaml:"reminder_time" json:"reminder_time"` // "08:00", "" = off
-	WeeklyDay      string `yaml:"weekly_day" json:"weekly_day"`       // monday … sunday, "" = off
-	WeeklyTime     string `yaml:"weekly_time" json:"weekly_time"`     // "08:00"
-	WeeklyTop      int    `yaml:"weekly_top" json:"weekly_top"`
+	DiscordWebhook        string   `yaml:"discord_webhook,omitempty" json:"-"`         // import only
+	DiscordNoticesWebhook string   `yaml:"discord_notices_webhook,omitempty" json:"-"` // import only: the webhook for settings notices
+	DiscordRoleID         string   `yaml:"discord_role_id" json:"discord_role_id"`
+	RepeatUrgent          Duration `yaml:"repeat_urgent,omitempty" json:"repeat_urgent,omitempty"` // 0 = off
+	QuietHours            string   `yaml:"quiet_hours" json:"quiet_hours"`                         // "22:00-07:00" or "off"; "" = default
+	ReminderTime          string   `yaml:"reminder_time" json:"reminder_time"`                     // "08:00" or "off"; "" = default
+	WeeklyDay             string   `yaml:"weekly_day" json:"weekly_day"`                           // monday … sunday or "off"; "" = default
+	WeeklyTime            string   `yaml:"weekly_time" json:"weekly_time"`                         // "08:00"
+	WeeklyTop             int      `yaml:"weekly_top" json:"weekly_top"`
 }
 
 // Access settings.
@@ -206,6 +265,7 @@ func (c *Config) ApplyDefaults() {
 	setDur(&t.Paused, 3*24*time.Hour)
 	setDur(&t.PCOffline, 7*24*time.Hour)
 	setDur(&t.ConflictWindow, 7*24*time.Hour)
+	setDur(&t.RelayLost, 30*time.Minute)
 	setDur(&t.InactiveProject, 180*24*time.Hour)
 	setDur(&t.OldDevice, 90*24*time.Hour)
 	setDur(&t.DeadShare, 30*24*time.Hour)
@@ -247,9 +307,43 @@ func (c *Config) ApplyDefaults() {
 	if c.Shares.Exclude == nil {
 		c.Shares.Exclude = map[string][]string{}
 	}
+	// "off" is accepted in any case; the notifier compares the lower-case form.
+	for _, f := range []*string{&n.QuietHours, &n.ReminderTime, &n.WeeklyDay} {
+		if strings.EqualFold(strings.TrimSpace(*f), "off") {
+			*f = "off"
+		}
+	}
+	if n.DiscordWebhook != "" {
+		if u, err := CanonicalDiscordWebhook(n.DiscordWebhook); err == nil {
+			n.DiscordWebhook = u
+		}
+	}
+	if n.DiscordNoticesWebhook != "" {
+		if u, err := CanonicalNoticesWebhook(n.DiscordNoticesWebhook); err == nil {
+			n.DiscordNoticesWebhook = u
+		}
+	}
+	// notifications.repeat_urgent has no default: 0 is off.
+	c.Site = strings.TrimSpace(c.Site)
+	for i := range c.Servers {
+		c.Servers[i].Site = strings.TrimSpace(c.Servers[i].Site)
+	}
+	// Syncthing writes device IDs in upper case; a pasted ID can have spaces
+	// around it.
+	for i := range c.Devices {
+		c.Devices[i].ID = strings.ToUpper(strings.TrimSpace(c.Devices[i].ID))
+	}
+	// Explicit ids are reserved first, so a generated id never collides with one.
+	taken := map[string]bool{}
+	for _, s := range c.Servers {
+		if s.ID != "" {
+			taken[strings.ToLower(s.ID)] = true
+		}
+	}
 	for i := range c.Servers {
 		if c.Servers[i].ID == "" {
-			c.Servers[i].ID = Slug(c.Servers[i].Name)
+			c.Servers[i].ID = uniqueSlug(c.Servers[i].Name, taken)
+			taken[c.Servers[i].ID] = true
 		}
 		if c.Servers[i].Name == "" {
 			c.Servers[i].Name = c.Servers[i].ID
@@ -257,127 +351,249 @@ func (c *Config) ApplyDefaults() {
 	}
 }
 
+// setDur fills a zero duration with its default. Negative values are left
+// for Validate to reject.
 func setDur(d *Duration, def time.Duration) {
-	if *d <= 0 {
+	if *d == 0 {
 		*d = Duration(def)
 	}
 }
 
-var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
+// maxIDLen is the longest server id.
+const maxIDLen = 40
 
-// Slug turns a name into a lowercase ID.
+var (
+	slugRe     = regexp.MustCompile(`[^a-z0-9]+`)
+	serverIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+)
+
+// Slug turns a name into a lowercase ID of at most maxIDLen characters.
 func Slug(name string) string {
 	s := strings.Trim(slugRe.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	if len(s) > maxIDLen {
+		s = strings.TrimRight(s[:maxIDLen], "-")
+	}
 	if s == "" {
 		s = "server"
 	}
 	return s
 }
 
+// uniqueSlug returns Slug(name), or "<slug>-2", "<slug>-3", … when that id is taken.
+func uniqueSlug(name string, taken map[string]bool) string {
+	base := Slug(name)
+	id := base
+	for n := 2; taken[id]; n++ {
+		suffix := "-" + strconv.Itoa(n)
+		id = strings.TrimRight(base[:min(len(base), maxIDLen-len(suffix))], "-") + suffix
+	}
+	return id
+}
+
 // Validate checks the configuration for errors.
 func (c *Config) Validate() error {
 	var errs []error
-	ids := map[string]bool{}
-	for _, s := range c.Servers {
+	add := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// Lookups by id or name ignore case, so ids and names must be unique
+	// ignoring case, and a name must not be another server's id.
+	seen := map[string]int{}
+	for i, s := range c.Servers {
 		if s.ID == "" {
-			errs = append(errs, errors.New("a server has no id or name"))
+			errs = append(errs, errors.New("Servers: a server has no name or ID. Give each server a name."))
 			continue
 		}
-		if ids[s.ID] {
-			errs = append(errs, fmt.Errorf("duplicate server id %q", s.ID))
+		if !serverIDRe.MatchString(s.ID) {
+			errs = append(errs, fmt.Errorf("Servers: the server ID %q is not valid. Use 1 to 40 characters from a-z, 0-9 and the hyphen, and start with a letter or a digit.", s.ID))
 		}
-		ids[s.ID] = true
+		for _, key := range []string{s.ID, s.Name} {
+			k := strings.ToLower(key)
+			if key == "" {
+				continue
+			}
+			if j, ok := seen[k]; ok && j != i {
+				errs = append(errs, fmt.Errorf("Server %s: the ID or name %q is already in use by the server %s. syncwatch compares IDs and names without case.", s.ID, key, c.Servers[j].ID))
+			}
+			seen[k] = i
+		}
 		// The URL isn't a secret: it's shown, exported and sent in notices.
 		u, err := url.Parse(s.URL)
 		switch {
-		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "":
-			errs = append(errs, fmt.Errorf("server %s: url must be http(s)://host:port", s.ID))
+		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || !hostOK(u):
+			errs = append(errs, fmt.Errorf("Server %s: the API URL (url) must be https://address:port or http://address:port.", s.ID))
 		case u.User != nil:
-			errs = append(errs, fmt.Errorf("server %s: url must not contain a user name or password; syncwatch authenticates with the API key only", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the API URL (url) must not contain a user name or a password. syncwatch uses the API key only.", s.ID))
 		case strings.ContainsAny(s.URL, "?#"):
-			errs = append(errs, fmt.Errorf("server %s: url must not contain a query (?) or fragment (#)", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the API URL (url) must not contain a question mark (?) or a number sign (#).", s.ID))
 		case u.Scheme == "http" && !s.AllowHTTP:
-			errs = append(errs, fmt.Errorf("server %s: an http:// URL sends the API key unencrypted; use https:// or set allow_http", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: a plain http:// API URL sends the API key unencrypted. Use https://, or permit the plain URL with the checkbox (allow_http).", s.ID))
 		}
 		if s.GUIURL != "" && !webURL(s.GUIURL) {
-			errs = append(errs, fmt.Errorf("server %s: gui_url must be an http(s) URL without a user name or password", s.ID))
+			errs = append(errs, fmt.Errorf("Server %s: the GUI URL (gui_url) must be an https:// or http:// URL without a user name or a password.", s.ID))
+		}
+		if !siteOK(s.Site) {
+			errs = append(errs, fmt.Errorf("Server %s: the site (servers[].site) must have at most %d characters and no control characters.", s.ID, MaxSiteLen))
+		}
+	}
+	if !siteOK(c.Site) {
+		errs = append(errs, fmt.Errorf("%s: the value must have at most %d characters and no control characters.", FieldLabel("site"), MaxSiteLen))
+	}
+	if len(c.Devices) > MaxDevices {
+		errs = append(errs, fmt.Errorf("Devices (devices): the list has %d entries. The maximum is %d.", len(c.Devices), MaxDevices))
+	}
+	devices := map[string]int{}
+	var order []string
+	for _, d := range c.Devices {
+		id := strings.ToUpper(strings.TrimSpace(d.ID))
+		if !ValidDeviceID(id) {
+			errs = append(errs, fmt.Errorf("Devices (devices): %q is not a Syncthing device ID. Use the complete device ID, 8 groups of 7 characters.", d.ID))
+			continue
+		}
+		if devices[id] == 0 {
+			order = append(order, id)
+		}
+		devices[id]++
+	}
+	for _, id := range order {
+		if n := devices[id]; n > 1 {
+			errs = append(errs, fmt.Errorf("Devices (devices): the device ID %s is in the list %d times.", id, n))
 		}
 	}
 	if c.Collector.Mode != ModeEvents && c.Collector.Mode != ModePolled {
-		errs = append(errs, fmt.Errorf("collector.mode must be %q or %q", ModeEvents, ModePolled))
+		errs = append(errs, fmt.Errorf("Collector mode (collector.mode): the value must be %q or %q.", ModeEvents, ModePolled))
 	}
-	if c.Collector.EventTimeout.D() < 5*time.Second || c.Collector.EventTimeout.D() > 10*time.Minute {
-		errs = append(errs, errors.New("collector.event_timeout must be between 5s and 10m"))
-	}
-	if c.Collector.PollInterval.D() < time.Minute {
-		errs = append(errs, errors.New("collector.poll_interval must be at least 1m"))
-	}
-	if c.Collector.FullCheckInterval.D() < 5*time.Minute {
-		errs = append(errs, errors.New("collector.full_check_interval must be at least 5m"))
-	}
-	if c.Collector.StructureInterval.D() < time.Minute {
-		errs = append(errs, errors.New("collector.structure_interval must be at least 1m"))
-	}
-	if c.Collector.Concurrency > 16 {
-		errs = append(errs, errors.New("collector.concurrency must be at most 16"))
-	}
-	for id := range c.Checks {
+	col := &c.Collector
+	add(durRange("collector.event_timeout", col.EventTimeout, 5*time.Second, 10*time.Minute))
+	add(durRange("collector.full_check_interval", col.FullCheckInterval, time.Minute, 7*24*time.Hour))
+	add(durRange("collector.poll_interval", col.PollInterval, time.Minute, 24*time.Hour))
+	add(durRange("collector.structure_interval", col.StructureInterval, time.Minute, 7*24*time.Hour))
+	add(durRange("collector.baseline_interval", col.BaselineInterval, time.Hour, 90*24*time.Hour))
+	add(durRange("collector.request_timeout", col.RequestTimeout, time.Second, 10*time.Minute))
+	add(intRange("collector.concurrency", col.Concurrency, 1, 16))
+	add(intRange("collector.down_after_failures", col.DownAfter, 1, 20))
+	for id, ch := range c.Checks {
 		if _, ok := CatalogByID[id]; !ok {
-			errs = append(errs, fmt.Errorf("checks: unknown check %q", id))
+			errs = append(errs, fmt.Errorf("Checks: %q is not a check ID. Use an ID from the Checks table.", id))
+		}
+		if ch.Debounce != nil {
+			add(durRange("checks."+id+".debounce", *ch.Debounce, 0, 30*24*time.Hour))
 		}
 	}
+	th := &c.Thresholds
+	for _, t := range []struct {
+		name string
+		d    Duration
+	}{
+		{"failing_files", th.FailingFiles}, {"stuck_sync", th.StuckSync}, {"paused", th.Paused}, {"pc_offline", th.PCOffline},
+		{"conflict_window", th.ConflictWindow}, {"relay_lost", th.RelayLost}, {"inactive_project", th.InactiveProject}, {"old_device", th.OldDevice},
+		{"dead_share", th.DeadShare},
+	} {
+		add(durRange("thresholds."+t.name, t.d, minThreshold, MaxDuration))
+	}
+	add(intRange("structure.nested_scan_depth", c.Structure.NestedScanDepth, 1, 10))
+	add(intRange("notifications.weekly_top", c.Notify.WeeklyTop, 1, 50))
+	// 0 is off; ApplyDefaults keeps it.
+	add(durRange("notifications.repeat_urgent", c.Notify.RepeatUrgent, 30*time.Minute, 24*time.Hour))
+	add(durRange("access.session_ttl", c.Access.SessionTTL, time.Hour, 365*24*time.Hour))
 	if _, err := c.Structure.Compile(); err != nil {
 		errs = append(errs, err)
 	}
 	if _, err := time.LoadLocation(c.Timezone); err != nil {
-		errs = append(errs, fmt.Errorf("timezone: %v", err))
+		errs = append(errs, fmt.Errorf("Time zone (timezone): the value is not a time zone name (%v). Use a name such as Europe/Stockholm.", err))
 	}
 	if c.Notify.QuietHours != "" && c.Notify.QuietHours != "off" {
 		if _, _, err := ParseRange(c.Notify.QuietHours); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.quiet_hours: %v", err))
+			errs = append(errs, fmt.Errorf("Quiet hours (notifications.quiet_hours): %v", err))
 		}
 	}
 	if c.Notify.ReminderTime != "" && c.Notify.ReminderTime != "off" {
-		if _, err := ParseClock(c.Notify.ReminderTime); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.reminder_time: %v", err))
+		t, err := ParseClock(c.Notify.ReminderTime)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("Daily reminder (notifications.reminder_time): %v", err))
+		} else if qs, qe, qerr := ParseRange(c.Notify.QuietHours); qerr == nil && qs != qe {
+			// The reminder goes out at the first tick after its time that
+			// isn't quiet, up to 12 hours later: a time inside quiet hours
+			// only works when the window ends later the same day.
+			quiet := (qs < qe && t >= qs && t < qe) || (qs > qe && (t >= qs || t < qe))
+			if quiet && (t >= qe || qe-t > 12*60) {
+				errs = append(errs, fmt.Errorf("Daily reminder (notifications.reminder_time): the time %s is inside the quiet hours %s, thus syncwatch can never send the reminder. Use a time outside the quiet hours.", c.Notify.ReminderTime, c.Notify.QuietHours))
+			}
 		}
 	}
 	if c.Notify.WeeklyDay != "" && c.Notify.WeeklyDay != "off" {
 		if _, err := ParseWeekday(c.Notify.WeeklyDay); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.weekly_day: %v", err))
+			errs = append(errs, fmt.Errorf("Weekly report day (notifications.weekly_day): %v", err))
 		}
 		if _, err := ParseClock(c.Notify.WeeklyTime); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.weekly_time: %v", err))
+			errs = append(errs, fmt.Errorf("Weekly report time (notifications.weekly_time): %v", err))
 		}
 	}
 	if c.Notify.DiscordWebhook != "" {
 		if err := CheckDiscordWebhook(c.Notify.DiscordWebhook); err != nil {
-			errs = append(errs, fmt.Errorf("notifications.discord_webhook: %v", err))
+			errs = append(errs, err)
 		}
 	}
-	if c.Notify.DiscordRoleID != "" && !regexp.MustCompile(`^\d+$`).MatchString(c.Notify.DiscordRoleID) {
-		errs = append(errs, errors.New("notifications.discord_role_id must be the numeric role ID"))
+	if c.Notify.DiscordNoticesWebhook != "" {
+		if _, err := CanonicalNoticesWebhook(c.Notify.DiscordNoticesWebhook); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.Notify.DiscordRoleID != "" && !roleIDRe.MatchString(c.Notify.DiscordRoleID) {
+		errs = append(errs, errors.New("Role ID (notifications.discord_role_id): the value must be the ID of the Discord role (17 to 20 digits)."))
 	}
 	switch c.Access.Mode {
 	case AccessBuiltin, AccessProxy:
 	default:
-		errs = append(errs, fmt.Errorf("access.mode must be %q or %q", AccessBuiltin, AccessProxy))
+		errs = append(errs, fmt.Errorf("Login (access.mode): the value must be %q or %q.", AccessBuiltin, AccessProxy))
 	}
 	switch c.Access.Viewer {
 	case ViewerNone, ViewerPassword, ViewerOpen:
 	default:
-		errs = append(errs, fmt.Errorf("access.viewer must be none, password or open"))
+		errs = append(errs, fmt.Errorf("Viewer access (access.viewer): the value must be none, password or open."))
 	}
 	if c.PublicURL != "" && !webURL(c.PublicURL) {
-		errs = append(errs, errors.New("public_url must be an http(s) URL without a user name or password"))
+		errs = append(errs, errors.New("Dashboard URL (public_url): the value must be an https:// or http:// URL without a user name or a password."))
 	}
 	return errors.Join(errs...)
+}
+
+// minThreshold is the shortest threshold. The engine evaluates every 30 s,
+// so anything shorter means "at once" anyway.
+const minThreshold = 10 * time.Second
+
+var roleIDRe = regexp.MustCompile(`^\d{17,20}$`)
+
+// durRange reports a duration outside [lo, hi] as an error naming the field.
+// Zero means "use the default" (ApplyDefaults fills it), so it passes.
+func durRange(name string, d Duration, lo, hi time.Duration) error {
+	if d != 0 && (d.D() < lo || d.D() > hi) {
+		return fmt.Errorf("%s: the value must be between %s and %s.", FieldLabel(name), Duration(lo).Words(), Duration(hi).Words())
+	}
+	return nil
+}
+
+// intRange reports an integer outside [lo, hi] as an error naming the field.
+// Zero means "use the default", so it passes.
+func intRange(name string, n, lo, hi int) error {
+	if n != 0 && (n < lo || n > hi) {
+		return fmt.Errorf("%s: the value must be between %d and %d.", FieldLabel(name), lo, hi)
+	}
+	return nil
+}
+
+// hostOK reports whether a parsed URL has a host name without whitespace.
+// url.Parse accepts "https://:8384" and non-ASCII spaces in the host.
+func hostOK(u *url.URL) bool {
+	return u.Hostname() != "" && strings.IndexFunc(u.Host, unicode.IsSpace) < 0
 }
 
 // webURL reports whether s is an absolute http(s) URL without credentials.
 func webURL(s string) bool {
 	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.User == nil
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && hostOK(u) && u.User == nil
 }
 
 // AllowAnyWebhook lifts the restriction of the Discord webhook to Discord's
@@ -388,23 +604,47 @@ var AllowAnyWebhook bool
 var (
 	discordHosts = map[string]bool{"discord.com": true, "discordapp.com": true, "ptb.discord.com": true,
 		"canary.discord.com": true, "ptb.discordapp.com": true, "canary.discordapp.com": true}
-	webhookPath = regexp.MustCompile(`^/api/(v\d+/)?webhooks/[^/]+/[^/]+/?$`)
+	webhookPath = regexp.MustCompile(`^/api/(v\d+/)?webhooks/\d+/[A-Za-z0-9_-]+/?$`)
 )
 
 // CheckDiscordWebhook validates a Discord webhook URL. Only Discord's own
 // hosts are accepted, so a webhook can't be pointed at an internal address.
 func CheckDiscordWebhook(raw string) error {
+	_, err := CanonicalDiscordWebhook(raw)
+	return err
+}
+
+// CanonicalDiscordWebhook validates a Discord webhook URL and returns the
+// form to store: trimmed of whitespace and invisible format characters that
+// come with a paste, lower-case host, no trailing slash and no fragment.
+func CanonicalDiscordWebhook(raw string) (string, error) {
+	return canonicalWebhook(raw, "Discord webhook URL (notifications.discord_webhook)")
+}
+
+// CanonicalNoticesWebhook is CanonicalDiscordWebhook for the webhook of the
+// settings notices. Its error names that webhook.
+func CanonicalNoticesWebhook(raw string) (string, error) {
+	return canonicalWebhook(raw, "Discord webhook for settings notices (notifications.discord_notices_webhook)")
+}
+
+// canonicalWebhook validates a Discord webhook URL; label names the setting
+// in the error.
+func canonicalWebhook(raw, label string) (string, error) {
+	raw = strings.TrimFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) })
 	u, err := url.Parse(raw)
 	if AllowAnyWebhook {
 		if err != nil || !webURL(raw) {
-			return errors.New("the Discord webhook must be an http(s) URL")
+			return "", errors.New(label + ": the value must be an https:// or http:// URL.")
 		}
-		return nil
+		return raw, nil
 	}
 	if err != nil || u.Scheme != "https" || u.User != nil || !DiscordHost(raw) || !webhookPath.MatchString(u.Path) {
-		return errors.New("the Discord webhook must be a Discord webhook URL, https://discord.com/api/webhooks/…")
+		return "", errors.New(label + ": the value must be a webhook URL from Discord (https://discord.com/api/webhooks/…).")
 	}
-	return nil
+	u.Host = strings.ToLower(u.Host)
+	u.Path, u.RawPath = strings.TrimSuffix(u.Path, "/"), ""
+	u.Fragment, u.RawFragment = "", ""
+	return u.String(), nil
 }
 
 // DiscordHost reports whether a URL points at one of Discord's own hosts.
@@ -471,14 +711,67 @@ func (c *Config) Debounce(id string) time.Duration {
 	return CatalogByID[id].Debounce
 }
 
-// Clone returns a deep copy (including secrets).
+// Clone returns a deep copy (including secrets). It copies field by field
+// rather than through YAML, so it can't fail or drop sections.
 func (c *Config) Clone() *Config {
-	b, _ := yaml.Marshal(c)
-	var out Config
-	_ = yaml.Unmarshal(b, &out)
-	// yaml round-trip keeps import-only secrets because they are yaml-visible.
+	out := *c
+	out.Servers = append([]Server(nil), c.Servers...)
+	out.Devices = slices.Clone(c.Devices)
+	if c.Checks != nil {
+		out.Checks = make(map[string]Check, len(c.Checks))
+		for id, ch := range c.Checks {
+			if ch.Enabled != nil {
+				v := *ch.Enabled
+				ch.Enabled = &v
+			}
+			if ch.Urgent != nil {
+				v := *ch.Urgent
+				ch.Urgent = &v
+			}
+			if ch.Debounce != nil {
+				v := *ch.Debounce
+				ch.Debounce = &v
+			}
+			out.Checks[id] = ch
+		}
+	}
+	out.Structure.TypeTokens = cloneStrings(c.Structure.TypeTokens)
+	out.Structure.IgnoreDirs = cloneStrings(c.Structure.IgnoreDirs)
+	if c.Structure.Placement != nil {
+		out.Structure.Placement = make([]PlacementRule, len(c.Structure.Placement))
+		for i, p := range c.Structure.Placement {
+			if p.ShareMustHave != nil {
+				m := make(map[string]string, len(p.ShareMustHave))
+				for k, v := range p.ShareMustHave {
+					m[k] = v
+				}
+				p.ShareMustHave = m
+			}
+			out.Structure.Placement[i] = p
+		}
+	}
+	out.Shares.Add = cloneLists(c.Shares.Add)
+	out.Shares.Exclude = cloneLists(c.Shares.Exclude)
 	out.ApplyDefaults()
 	return &out
+}
+
+func cloneStrings(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string{}, s...)
+}
+
+func cloneLists(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = cloneStrings(v)
+	}
+	return out
 }
 
 // Redacted returns a copy with every secret removed.
@@ -488,6 +781,7 @@ func (c *Config) Redacted() *Config {
 		out.Servers[i].APIKey = ""
 	}
 	out.Notify.DiscordWebhook = ""
+	out.Notify.DiscordNoticesWebhook = ""
 	out.API.Token = ""
 	return out
 }
@@ -515,7 +809,7 @@ func ParseYAML(b []byte) (*Config, error) {
 func (c *Config) ExportYAML() ([]byte, error) {
 	r := c.Redacted()
 	var buf bytes.Buffer
-	buf.WriteString("# syncwatch configuration export. Secrets (API keys, webhook URLs, tokens) are not included.\n")
+	buf.WriteString("# syncwatch configuration export. The file does not contain the API keys, the webhook URLs or the API token.\n")
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(r); err != nil {
@@ -524,25 +818,36 @@ func (c *Config) ExportYAML() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ParseClock parses "HH:MM" into minutes after midnight.
+var clockRe = regexp.MustCompile(`^([01]?[0-9]|2[0-3]):([0-5][0-9])$`)
+
+// ParseClock parses "HH:MM" (24-hour clock, leading zero optional) into
+// minutes after midnight.
 func ParseClock(s string) (int, error) {
-	var h, m int
-	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d:%d", &h, &m); err != nil || h < 0 || h > 23 || m < 0 || m > 59 {
-		return 0, fmt.Errorf("invalid time %q, want HH:MM", s)
+	m := clockRe.FindStringSubmatch(strings.TrimSpace(s))
+	if m == nil {
+		return 0, fmt.Errorf("the value %q is not a time. Use the form HH:MM, for example 07:30.", s)
 	}
-	return h*60 + m, nil
+	h, _ := strconv.Atoi(m[1])
+	min, _ := strconv.Atoi(m[2])
+	return h*60 + min, nil
 }
 
-// ParseRange parses "HH:MM-HH:MM".
+// ParseRange parses "HH:MM-HH:MM". The ends must differ: a range with equal
+// ends has no meaning (use "off" to disable).
 func ParseRange(s string) (start, end int, err error) {
 	parts := strings.Split(s, "-")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid range %q, want HH:MM-HH:MM", s)
+		return 0, 0, fmt.Errorf("the value %q is not a time range. Use the form HH:MM-HH:MM, for example 22:00-07:00.", s)
 	}
 	if start, err = ParseClock(parts[0]); err != nil {
 		return
 	}
-	end, err = ParseClock(parts[1])
+	if end, err = ParseClock(parts[1]); err != nil {
+		return
+	}
+	if start == end {
+		return 0, 0, fmt.Errorf("the value %q is not a time range: the start and the end are the same. Use off to set the quiet hours to off.", s)
+	}
 	return
 }
 
@@ -553,7 +858,7 @@ func ParseWeekday(s string) (time.Weekday, error) {
 			return d, nil
 		}
 	}
-	return 0, fmt.Errorf("invalid weekday %q", s)
+	return 0, fmt.Errorf("the value %q is not a weekday. Use a weekday name such as monday, or off.", s)
 }
 
 // SortedCheckIDs returns the catalog order of check IDs.
@@ -563,4 +868,42 @@ func SortedCheckIDs() []string {
 		ids[i] = c.ID
 	}
 	return ids
+}
+
+// fieldLabels maps YAML keys to the labels of the Settings page, so a
+// validation message names a field as the dashboard shows it. Keys without
+// a label (YAML-only settings) are named by the key.
+var fieldLabels = map[string]string{
+	"collector.event_timeout":       "Event long-poll timeout",
+	"collector.full_check_interval": "Full check every",
+	"collector.poll_interval":       "Poll interval (polled mode)",
+	"collector.structure_interval":  "Structure scan every",
+	"collector.baseline_interval":   "Baseline scan every",
+	"collector.request_timeout":     "Request timeout",
+	"collector.concurrency":         "Parallel requests for each server",
+	"collector.down_after_failures": "Mark unreachable after failures",
+	"notifications.weekly_top":      "Findings listed in the weekly report",
+	"notifications.repeat_urgent":   "Repeat urgent messages every",
+	"site":                          "Site where syncwatch runs",
+	"thresholds.failing_files":      "H4 with only failed items after",
+	"thresholds.stuck_sync":         "H5 stuck sync after",
+	"thresholds.paused":             "H6 paused for more than",
+	"thresholds.pc_offline":         "H7 PC offline for more than",
+	"thresholds.conflict_window":    "H10 conflicts in the last",
+	"thresholds.relay_lost":         "H12 no relay connection for more than",
+	"thresholds.inactive_project":   "C1 no file change for",
+	"thresholds.old_device":         "C2 device not seen for",
+	"thresholds.dead_share":         "C3 folder not used by device after",
+}
+
+// FieldLabel returns "Label (key)" for a YAML key that has a label on the
+// Settings page, "ID debounce (key)" for a check debounce, else the key.
+func FieldLabel(key string) string {
+	if l, ok := fieldLabels[key]; ok {
+		return l + " (" + key + ")"
+	}
+	if strings.HasPrefix(key, "checks.") && strings.HasSuffix(key, ".debounce") {
+		return strings.TrimSuffix(strings.TrimPrefix(key, "checks."), ".debounce") + " debounce (" + key + ")"
+	}
+	return key
 }

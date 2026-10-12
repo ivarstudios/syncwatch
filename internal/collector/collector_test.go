@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +42,13 @@ type fakeST struct {
 	startTime  string // overrides the fixture's startTime (a "restart")
 	inBytes    int64  // traffic totals since "start"
 	outBytes   int64
+	conflicts  map[string]int // overrides the fixture's conflict counters
+
+	listeners  map[string]stclient.ListenerStatus // connectionServiceStatus in system/status; nil: none
+	need       map[string]int64                   // need items by "folder/device"; overrides the fixture's completion
+	needNames  []string                           // what /rest/db/remoteneed lists
+	needStatus int                                // when not 0, /rest/db/remoteneed answers this status with needBody
+	needBody   string
 }
 
 func newFakeST(t *testing.T) *fakeST {
@@ -66,6 +75,20 @@ func (f *fakeST) push(typ string, data any) {
 	}
 }
 
+// pushAll adds several events at once, so one long-poll returns them as a batch.
+func (f *fakeST) pushAll(types ...string) {
+	f.mu.Lock()
+	for _, typ := range types {
+		f.nextID++
+		f.events = append(f.events, stclient.Event{ID: f.nextID, Type: typ, Time: time.Now(), Data: []byte(`{}`)})
+	}
+	f.mu.Unlock()
+	select {
+	case f.notify <- struct{}{}:
+	default:
+	}
+}
+
 func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		f.t.Errorf("non-GET request: %s %s", r.Method, r.URL.Path)
@@ -82,6 +105,9 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		if f.startTime != "" {
 			st["startTime"] = f.startTime
+		}
+		if f.listeners != nil {
+			st["connectionServiceStatus"] = f.listeners
 		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(st)
@@ -128,18 +154,48 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			stclient.Completion
 		}
 		_ = json.Unmarshal(f.fixture("completion"), &all)
+		f.mu.Lock()
+		need, needed := f.need[q.Get("folder")+"/"+q.Get("device")]
+		f.mu.Unlock()
 		for _, c := range all {
 			if c.Folder == q.Get("folder") && c.Device == q.Get("device") {
+				if needed {
+					c.NeedItems, c.NeedBytes, c.Completion.Completion = need, need*1000, 50
+				}
 				_ = json.NewEncoder(w).Encode(c.Completion)
 				return
 			}
 		}
 		_, _ = w.Write([]byte(`{"completion":100,"remoteState":"unknown"}`))
+	case "/rest/db/remoteneed":
+		f.mu.Lock()
+		names, status, body := f.needNames, f.needStatus, f.needBody
+		f.mu.Unlock()
+		if status != 0 {
+			http.Error(w, body, status)
+			return
+		}
+		if q.Get("page") != "1" || q.Get("perpage") != "20" || q.Get("folder") == "" || q.Get("device") == "" {
+			f.t.Errorf("remoteneed query %q", r.URL.RawQuery)
+		}
+		rn := stclient.RemoteNeed{Page: 1, PerPage: 20, Files: []stclient.NeedFile{}}
+		for i, n := range names {
+			if i == 20 {
+				break
+			}
+			rn.Files = append(rn.Files, stclient.NeedFile{Name: n, Size: 10})
+		}
+		_ = json.NewEncoder(w).Encode(rn)
 	case "/rest/folder/errors":
 		_, _ = w.Write([]byte(`{"errors":[{"path":"bad.txt","error":"permission denied"}]}`))
 	case "/metrics":
 		var c map[string]int
 		_ = json.Unmarshal(f.fixture("conflicts"), &c)
+		f.mu.Lock()
+		for k, v := range f.conflicts {
+			c[k] = v
+		}
+		f.mu.Unlock()
 		for k, v := range c {
 			fmt.Fprintf(w, "syncthing_model_folder_conflicts_total{folder=%q} %d\n", k, v)
 		}
@@ -219,9 +275,21 @@ func setup(t *testing.T) (*fakeST, *model.Hub, *config.Holder, *Manager, func())
 	hub := model.NewHub(nil)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	m := NewManager(hub, st, h, log)
+	stop := runManager(m)
+	return fake, hub, h, m, func() { stop(); srv.Close() }
+}
+
+// runManager runs m until the returned stop function is called, which waits
+// for Run (and so for every collector goroutine) to return: a test's cleanup
+// must not restore the backoff variables under a collector still using them.
+func runManager(m *Manager) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
-	go m.Run(ctx)
-	return fake, hub, h, m, func() { cancel(); srv.Close() }
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Run(ctx)
+	}()
+	return func() { cancel(); <-done }
 }
 
 // slow scales a test timeout by SYNCWATCH_TEST_SLOW (default 1), for runs
@@ -510,8 +578,10 @@ func dropAndReconnect(t *testing.T, fake *fakeST, m *Manager, between func()) {
 	m.mu.Lock()
 	r := m.running["akka"]
 	m.mu.Unlock()
-	r.c.Wake()
+	// A wake-up that arrives while the failed session is still winding down
+	// is drained as stale (see Run), so keep waking until the reconnect.
 	waitUntil(t, "the collector to reconnect", func() bool {
+		r.c.Wake()
 		return fake.count("/rest/system/status") > status && fake.count("/rest/events") >= events+2
 	})
 }
@@ -585,7 +655,7 @@ func TestKeyOnlySentToItsURL(t *testing.T) {
 	defer cancel()
 	go m.Run(ctx)
 	sv := waitFor(t, hub, "refusal", func(s *model.Server) bool { return s.LastError != "" })
-	if sv.Status != model.StatusDown || !strings.Contains(sv.LastError, "enter the API key again") {
+	if sv.Status != model.StatusDown || !strings.Contains(sv.LastError, "type the API key again") {
 		t.Fatalf("%+v", sv)
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -626,4 +696,578 @@ func TestResetPinTakesEffectImmediately(t *testing.T) {
 	if pin, _ := st.Pin("akka"); pin == "" || pin == strings.Repeat("ab", 32) {
 		t.Fatalf("new certificate not pinned: %q", pin)
 	}
+}
+
+// startManager runs a manager for one server, AKKA at srv, with extra YAML
+// (e.g. a collector section) and returns its hub and store. prep, if set,
+// prepares the store before the collector starts. stop ends the manager;
+// call it before closing srv.
+func startManager(t *testing.T, srv *httptest.Server, extra string, log *slog.Logger, prep func(*store.Store)) (hub *model.Hub, m *Manager, st *store.Store, stop func()) {
+	t.Helper()
+	cfg, err := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL) + extra + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := config.NewHolder(cfg)
+	st, _ = store.OpenMemory(make([]byte, 32))
+	_ = st.SetServerKey("akka", "k", srv.URL)
+	if prep != nil {
+		prep(st)
+	}
+	hub = model.NewHub(nil)
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	m = NewManager(hub, st, h, log)
+	return hub, m, st, runManager(m)
+}
+
+// An HTTP error on one folder's db/status or db/completion is that folder's
+// problem: the folder shows it, the other folders are read and the server
+// stays up. Only 401/403 (a bad key) and transport errors concern the server.
+func TestPerFolderErrorStaysWithTheFolder(t *testing.T) {
+	fake := newFakeST(t)
+	var mu sync.Mutex
+	keyErr := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		mu.Lock()
+		ke := keyErr
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/rest/db/status" && q.Get("folder") == "p-beta":
+			if ke {
+				http.Error(w, "Not Authorized", http.StatusUnauthorized)
+			} else {
+				http.Error(w, "database is broken", http.StatusInternalServerError)
+			}
+			return
+		case r.URL.Path == "/rest/db/completion" && q.Get("folder") == "p-alpha" && strings.HasPrefix(q.Get("device"), "SXOSWHO"):
+			http.Error(w, "bad device", http.StatusBadRequest)
+			return
+		case r.URL.Path == "/rest/db/completion" && q.Get("folder") == "p-gamma":
+			// Paused after the config was read: the normal 404, not a problem.
+			http.Error(w, "folder is paused", http.StatusNotFound)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	hub, m, _, stop := startManager(t, srv, "collector: {event_timeout: 5s, down_after_failures: 1}", nil, nil)
+	defer stop()
+	sv := waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	if sv.Status != model.StatusUp || sv.LastError != "" {
+		t.Fatalf("server: %s %q", sv.Status, sv.LastError)
+	}
+	beta := sv.Folders["p-beta"]
+	if beta.State != "unknown" || !strings.Contains(beta.Error, "500") || beta.FolderSync() != model.SyncError {
+		t.Fatalf("p-beta: state %q, error %q", beta.State, beta.Error)
+	}
+	alpha := sv.Folders["p-alpha"]
+	if alpha.State != "idle" || !strings.Contains(alpha.Error, "400") || !strings.Contains(alpha.Error, "SXOSWHO") || len(alpha.Completion) != 1 {
+		t.Fatalf("p-alpha: state %q, error %q, %d completions", alpha.State, alpha.Error, len(alpha.Completion))
+	}
+	gamma := sv.Folders["p-gamma"]
+	if gamma.State != "idle" || gamma.Error != "" || len(gamma.Completion) != 0 {
+		t.Fatalf("p-gamma: state %q, error %q, %d completions", gamma.State, gamma.Error, len(gamma.Completion))
+	}
+
+	// 401 on a per-folder request is about the key, so about the server.
+	mu.Lock()
+	keyErr = true
+	mu.Unlock()
+	m.RescanNow()
+	sv = waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	if !strings.Contains(sv.LastError, "401") {
+		t.Fatalf("LastError %q", sv.LastError)
+	}
+}
+
+// An API key that can't be decrypted (the secret key changed, secret.key
+// was lost) marks the server down with a message, so H1 says why, and is
+// tried again regularly: once it can be read, monitoring resumes.
+func TestUnreadableAPIKeyMarksServerDownAndRetries(t *testing.T) {
+	old := keyRetry
+	keyRetry = 200 * time.Millisecond
+	defer func() { keyRetry = old }()
+	fake := newFakeST(t)
+	srv := httptest.NewTLSServer(fake)
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "syncwatch.db")
+	first, err := store.Open(path, []byte(strings.Repeat("1", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = first.SetServerKey("akka", "k", srv.URL)
+	first.Close()
+	st, err := store.Open(path, []byte(strings.Repeat("2", 32))) // another secret key
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL)))
+	h, _ := config.NewHolder(cfg)
+	hub := model.NewHub(nil)
+	m := NewManager(hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx)
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		<-done
+		st.Close()
+	}()
+	sv := waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	if !strings.Contains(sv.LastError, "cannot read the API key") {
+		t.Fatalf("LastError %q", sv.LastError)
+	}
+	// The key is entered again (now encrypted with the new secret key): the
+	// next retry picks it up without a settings save.
+	_ = st.SetServerKey("akka", "k", srv.URL)
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Status == model.StatusUp })
+}
+
+// In polled mode the loop sleeps until the next poll or scan is due, never
+// less than a second, and a scan that is still running when the next one
+// is due is left to the next poll rather than re-checked in a busy loop.
+func TestPollWait(t *testing.T) {
+	cfg, err := config.ParseYAML([]byte("collector: {mode: polled, poll_interval: 15m, structure_interval: 1h}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := config.NewHolder(cfg)
+	c := &Collector{cfg: h}
+	c.lastFull, c.lastScan = time.Now(), time.Now()
+	if w := c.pollWait(h.Get().Collector); w < 14*time.Minute || w > 15*time.Minute {
+		t.Fatalf("nothing due: wait %v, want about 15 m", w)
+	}
+	c.lastScan = time.Now().Add(-50 * time.Minute)
+	if w := c.pollWait(h.Get().Collector); w < 9*time.Minute || w > 10*time.Minute {
+		t.Fatalf("scan due in 10 m: wait %v", w)
+	}
+	c.lastScan = time.Now().Add(-2 * time.Hour) // a scan is overdue
+	if w := c.pollWait(h.Get().Collector); w != time.Second {
+		t.Fatalf("scan overdue: wait %v, want 1 s", w)
+	}
+	c.scanning = true // the overdue scan is the one still running
+	if w := c.pollWait(h.Get().Collector); w < 14*time.Minute || w > 15*time.Minute {
+		t.Fatalf("scan running: wait %v, want the next poll", w)
+	}
+	c.lastFull = time.Now().Add(-time.Hour)
+	if w := c.pollWait(h.Get().Collector); w != time.Second {
+		t.Fatalf("poll overdue: wait %v, want 1 s", w)
+	}
+
+	// The loop itself: with the running scan 2 h old (interval 1 h) it used
+	// to spin at full speed; now it sleeps.
+	c.lastFull = time.Now()
+	c.hub, c.log = model.NewHub(nil), slog.New(slog.NewTextHandler(io.Discard, nil))
+	c.wake, c.fullNow = make(chan struct{}, 1), make(chan struct{}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_ = c.pollLoop(ctx)
+	runtime.ReadMemStats(&after)
+	if n := after.Mallocs - before.Mallocs; n > 1000 {
+		t.Fatalf("%d allocations in 300 ms of pollLoop: it is spinning", n)
+	}
+}
+
+// lockedBuf collects log output from the collector goroutines.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) count(s string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Count(l.b.String(), s)
+}
+
+// shrinkBackoff makes the session backoff fast for a test: step, then up
+// to 6 steps for ordinary failures and 20 steps after a certificate change.
+func shrinkBackoff(t *testing.T, step time.Duration) {
+	t.Helper()
+	oldStep, oldMax, oldCert := backoffStep, backoffMax, certBackoffMax
+	backoffStep, backoffMax, certBackoffMax = step, 6*step, 20*step
+	t.Cleanup(func() { backoffStep, backoffMax, certBackoffMax = oldStep, oldMax, oldCert })
+}
+
+func TestBackoff(t *testing.T) {
+	c := &Collector{}
+	for i, want := range []time.Duration{10, 10, 20, 30, 40, 50, 60, 60, 60} {
+		c.failures = i
+		if got := c.backoff(errors.New("x")); got != want*time.Second {
+			t.Errorf("failures %d: backoff %v, want %v", i, got, want*time.Second)
+		}
+	}
+	certErr := &stclient.CertChangedError{Server: "AKKA", Old: "aa", New: "bb"}
+	for i, want := range map[int]time.Duration{0: 10, 1: 10, 2: 20, 6: 60, 7: 70, 29: 290, 30: 300, 31: 300, 100: 300} {
+		c.certFails = i
+		if got := c.backoff(certErr); got != want*time.Second {
+			t.Errorf("certificate failures %d: backoff %v, want %v", i, got, want*time.Second)
+		}
+	}
+}
+
+// A server whose certificate changed used to be retried every 10 s
+// forever, with a WARN line each time (about 8,600 a day). The retries now
+// back off like other failures, further, and the warning is repeated at
+// most once an hour; the attempts in between log at DEBUG.
+func TestCertChangedBacksOffAndWarnsOnce(t *testing.T) {
+	shrinkBackoff(t, 50*time.Millisecond)
+	fake := newFakeST(t)
+	srv := httptest.NewTLSServer(fake)
+	defer srv.Close()
+	var logs lockedBuf
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	hub, _, _, stop := startManager(t, srv, "", log, func(st *store.Store) {
+		_ = st.SetPin("akka", strings.Repeat("ab", 32)) // a pin that doesn't match
+	})
+	defer stop()
+	sv := waitFor(t, hub, "cert-changed", func(s *model.Server) bool { return s.Status == model.StatusCertChanged })
+	if sv.CertChange == nil {
+		t.Fatal("no CertChange recorded")
+	}
+	time.Sleep(time.Second)
+	const line = "certificate changed, syncwatch does not connect until an administrator accepts it"
+	n, warns := logs.count(line), logs.count("level=WARN msg=\""+line)
+	t.Logf("%d attempts in about 1 s, %d at WARN", n, warns)
+	// Attempts at 0, 50, 150, 300, 500, 750 ms with the growing backoff;
+	// every 50 ms (about 20) with the old fixed one.
+	if n < 3 || n > 10 {
+		t.Fatalf("%d attempts in 1 s; want about 6", n)
+	}
+	if warns != 1 {
+		t.Fatalf("%d WARN lines; want 1", warns)
+	}
+	if fake.count("/rest/system/status") != 0 {
+		t.Fatal("a request reached the server despite the changed certificate")
+	}
+}
+
+// A wake-up left over from while the session was running (FullCheckNow is
+// called from inside the event loop) must not skip the backoff after the
+// next failure: two quick failures would mark the server down at once.
+func TestStaleWakeDoesNotSkipBackoff(t *testing.T) {
+	shrinkBackoff(t, 300*time.Millisecond)
+	var mu sync.Mutex
+	requests := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		http.Error(w, "Not Authorized", http.StatusUnauthorized) // fails without retries
+	}))
+	defer srv.Close()
+	cfg, _ := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL)))
+	h, _ := config.NewHolder(cfg)
+	st, _ := store.OpenMemory(make([]byte, 32))
+	hub := model.NewHub(nil)
+	hub.SetServers([]*model.Server{{ID: "akka", Name: "AKKA"}})
+	c, err := newCollector(h.Get().Servers[0], "k", hub, st, h, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Wake() // left over from before the session
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	defer func() { cancel(); <-done }() // before the cleanup restores the backoff
+	go func() {
+		defer close(done)
+		c.Run(ctx)
+	}()
+	time.Sleep(150 * time.Millisecond) // the first session has failed; the backoff is 300 ms
+	mu.Lock()
+	n := requests
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("%d requests within 150 ms of a failure; want 1 (the stale wake-up skipped the backoff)", n)
+	}
+	waitUntil(t, "the retry after the backoff", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return requests >= 2
+	})
+}
+
+// A structure scan runs in the background with the session's context: when
+// the session fails (the server went away) the scan's listings are
+// cancelled instead of running on, each to its own timeout.
+func TestScanStopsWhenSessionEnds(t *testing.T) {
+	fake := newFakeST(t)
+	var mu sync.Mutex
+	hung, finished := 0, 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/system/browse" {
+			mu.Lock()
+			hung++
+			mu.Unlock()
+			<-r.Context().Done() // the listing never answers
+			mu.Lock()
+			finished++
+			mu.Unlock()
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	hub, _, _, stop := startManager(t, srv, rulesYAML+"collector: {event_timeout: 5s, down_after_failures: 1}", nil, nil)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	waitUntil(t, "the scan to start listing", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return hung > 0
+	})
+	// Cut the event long-poll: the session fails and the server is marked down.
+	fake.mu.Lock()
+	fake.dropEvents = 1
+	fake.mu.Unlock()
+	waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	deadline := time.Now().Add(slow(3 * time.Second))
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := finished == hung
+		mu.Unlock()
+		if done {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("%d of %d hung listings still running 3 s after the session ended", hung-finished, hung)
+}
+
+// Error texts reach the dashboard, the API and H1 messages: HTTP errors as
+// they are, the usual network failures as a phrase, nothing like ": EOF".
+func TestShortErr(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&stclient.StatusError{Endpoint: "/rest/system/status", Code: 500, Body: "boom"}, "/rest/system/status: HTTP 500 boom"},
+		{fmt.Errorf("db/status x: %w", &stclient.StatusError{Endpoint: "/rest/db/status", Code: 401}), "/rest/db/status: HTTP 401 (check the API key)"},
+		{fmt.Errorf("wrapped: %w", context.DeadlineExceeded), "timeout"},
+		{errors.New(": EOF"), "connection closed early"},
+		{errors.New("/rest/events: reading response: unexpected EOF"), "connection closed early"},
+		{errors.New(": dial tcp 127.0.0.1:1: connect: connection refused"), "connection refused"},
+		{errors.New(": dial tcp 127.0.0.1:1: connectex: No connection could be made because the target machine actively refused it."), "connection refused"},
+		{errors.New(": dial tcp 10.0.0.9:8384: connect: no route to host"), "no route to host"},
+		{errors.New(": dial tcp 10.0.0.9:8384: i/o timeout"), "timeout"},
+		{errors.New(": net/http: TLS handshake timeout"), "timeout"},
+		{errors.New(": read tcp 10.0.0.1:5->10.0.0.9:8384: read: connection reset by peer"), "connection reset"},
+		{errors.New(": read tcp 10.0.0.1:5->10.0.0.9:8384: wsarecv: An existing connection was forcibly closed by the remote host."), "connection reset"},
+		{errors.New(": dial tcp: lookup nas.invalid on 127.0.0.11:53: no such host"), "host name not found"},
+		{errors.New(": something else entirely"), "something else entirely"},
+		{errors.New(strings.Repeat("x", 300)), strings.Repeat("x", 200)},
+	} {
+		if got := shortErr(tc.err); got != tc.want {
+			t.Errorf("shortErr(%q) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+// A server that closes the connection without an answer used to show the
+// error ": EOF" on the tile and in the H1 message.
+func TestLastErrorIsReadable(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+			}
+		}
+	}))
+	defer srv.Close()
+	hub, _, _, stop := startManager(t, srv, "collector: {down_after_failures: 1}", nil, nil)
+	defer stop()
+	sv := waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	if sv.LastError != "connection closed early" {
+		t.Fatalf("LastError %q", sv.LastError)
+	}
+}
+
+// Bytes moved while there were no readings (the server unreachable, or
+// syncwatch down) used to be booked at the first reading afterwards, so the
+// day and week sums included older traffic. After more than three missed
+// samples the counters are only re-baselined.
+func TestTrafficGapIsNotBooked(t *testing.T) {
+	old := trafficEvery
+	trafficEvery = 200 * time.Millisecond
+	defer func() { trafficEvery = old }()
+	shrinkBackoff(t, 100*time.Millisecond)
+	fake := newFakeST(t)
+	fake.inBytes, fake.outBytes = 5_000_000, 1_000_000
+	var mu sync.Mutex
+	away := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		a := away
+		mu.Unlock()
+		if a {
+			http.Error(w, "Not Authorized", http.StatusUnauthorized)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	hub, _, st, stop := startManager(t, srv, "collector: {event_timeout: 5s, down_after_failures: 1}", nil, nil)
+	defer stop()
+	waitFor(t, hub, "loaded", func(s *model.Server) bool { return s.Loaded })
+	time.Sleep(500 * time.Millisecond) // a baseline reading
+	mu.Lock()
+	away = true
+	mu.Unlock()
+	fake.push("StateChanged", map[string]string{"folder": "p-alpha", "to": "idle"}) // ends the open long-poll
+	waitFor(t, hub, "down", func(s *model.Server) bool { return s.Status == model.StatusDown })
+	fake.mu.Lock()
+	fake.inBytes += 30_000_000
+	fake.outBytes += 3_000_000
+	fake.mu.Unlock()
+	time.Sleep(time.Second) // more than three sampling intervals without a reading
+	mu.Lock()
+	away = false
+	mu.Unlock()
+	waitFor(t, hub, "up again", func(s *model.Server) bool { return s.Status == model.StatusUp })
+	time.Sleep(500 * time.Millisecond) // the reading that re-baselines
+	fake.mu.Lock()
+	fake.inBytes += 1_000_000
+	fake.outBytes += 100_000
+	fake.mu.Unlock()
+	waitFor(t, hub, "a transfer rate", func(s *model.Server) bool { return s.Rate.In > 0 })
+	tr, err := st.TrafficSince(time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tr["akka"]; got.In != 1_000_000 || got.Out != 100_000 {
+		t.Fatalf("recorded traffic: %+v; the bytes moved while away must not count", got)
+	}
+}
+
+// Several ConfigSaved or Pending*Changed events in one batch are one config
+// re-read and one pending re-read, after the batch, not one per event
+// (while no long-poll is open). A failing pending re-read is logged, once
+// per session.
+func TestEventBatchRefreshesOnce(t *testing.T) {
+	fake := newFakeST(t)
+	var mu sync.Mutex
+	pendingFail := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		pf := pendingFail
+		mu.Unlock()
+		if pf && r.URL.Path == "/rest/cluster/pending/devices" {
+			fake.mu.Lock()
+			fake.requests[r.URL.Path]++
+			fake.mu.Unlock()
+			http.Error(w, "nope", http.StatusBadRequest)
+			return
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	var logs lockedBuf
+	log := slog.New(slog.NewTextHandler(&logs, nil))
+	hub, _, _, stop := startManager(t, srv, "collector: {event_timeout: 5s}", log, nil)
+	defer stop()
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	waitUntil(t, "the event loop", func() bool { return fake.count("/rest/events") >= 2 })
+	folders, pending := fake.count("/rest/config/folders"), fake.count("/rest/cluster/pending/devices")
+	fake.pushAll("ConfigSaved", "PendingDevicesChanged", "ConfigSaved", "PendingFoldersChanged", "ConfigSaved")
+	waitUntil(t, "the re-reads", func() bool {
+		return fake.count("/rest/config/folders") > folders && fake.count("/rest/cluster/pending/devices") > pending
+	})
+	time.Sleep(300 * time.Millisecond)
+	if n := fake.count("/rest/config/folders") - folders; n != 1 {
+		t.Fatalf("%d config re-reads for a batch of 3 ConfigSaved; want 1", n)
+	}
+	if n := fake.count("/rest/cluster/pending/devices") - pending; n != 1 {
+		t.Fatalf("%d pending re-reads for a batch of 2 pending events; want 1", n)
+	}
+
+	mu.Lock()
+	pendingFail = true
+	mu.Unlock()
+	const line = "cannot read the pending devices and folders again"
+	for i := 0; i < 2; i++ {
+		n := fake.count("/rest/cluster/pending/devices")
+		fake.push("PendingDevicesChanged", map[string]any{})
+		waitUntil(t, "the pending re-read", func() bool { return fake.count("/rest/cluster/pending/devices") > n })
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := logs.count("level=WARN msg=\"" + line); n != 1 {
+		t.Fatalf("%d WARN lines for two failed pending re-reads in one session; want 1", n)
+	}
+}
+
+// Conflict counters (H10) are read at every session start, not only at
+// full checks, and a counter that restarted with Syncthing counts in
+// full. A restart that breaks no request is noticed by the next full check,
+// which also follows the restarted event IDs from 0.
+func TestConflictsAcrossReconnectsAndRestarts(t *testing.T) {
+	fake, hub, _, m, stop := setup(t)
+	defer stop()
+	st := m.st
+	waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded && s.Structure != nil })
+	full := fake.count("/rest/db/status")
+	since := func() int64 {
+		t.Helper()
+		c, err := st.ConflictsSince(time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c["akka"]["p-alpha"]
+	}
+	if n := since(); n != 0 {
+		t.Fatalf("baseline reading counted %d conflicts", n)
+	}
+	// Some events first, so the collector's event ID is well above the
+	// ones Syncthing hands out after a restart.
+	for i := 0; i < 3; i++ {
+		fake.push("StateChanged", map[string]string{"folder": "p-alpha", "to": "scanning"})
+	}
+	waitFor(t, hub, "events applied", func(s *model.Server) bool { return s.Folders["p-alpha"].State == "scanning" })
+
+	// Two conflicts since the full check: read when the collector reconnects
+	// (a resume, no full check).
+	fake.mu.Lock()
+	fake.conflicts = map[string]int{"p-alpha": 2}
+	fake.mu.Unlock()
+	dropAndReconnect(t, fake, m, nil)
+	waitUntil(t, "the conflicts to be counted at session start", func() bool { return since() == 2 })
+	if got := fake.count("/rest/db/status"); got != full {
+		t.Fatalf("the reconnect ran a full re-check (db/status %d -> %d)", full, got)
+	}
+
+	// Syncthing restarts: the counter starts over, and its new value is new.
+	dropAndReconnect(t, fake, m, func() {
+		fake.mu.Lock()
+		fake.startTime = "2026-10-02T09:00:00+02:00"
+		fake.conflicts = map[string]int{"p-alpha": 1}
+		fake.mu.Unlock()
+	})
+	waitUntil(t, "the conflicts after the restart to be counted", func() bool { return since() == 3 })
+
+	// A restart that breaks no request: the next full check notices the new
+	// startTime and follows the event IDs, which start over, from 0.
+	fake.mu.Lock()
+	fake.startTime = "2026-10-03T09:00:00+02:00"
+	fake.conflicts = map[string]int{"p-alpha": 1}
+	fake.events, fake.nextID = nil, 0
+	fake.mu.Unlock()
+	m.RescanNow()
+	waitUntil(t, "the restart to be counted", func() bool { return since() == 4 })
+	fake.push("FolderPaused", map[string]string{"id": "p-beta", "label": "LIVE-BETA-1SOURCE"}) // event ID 1
+	waitFor(t, hub, "the event after the restart", func(s *model.Server) bool { return s.Folders["p-beta"] != nil && s.Folders["p-beta"].Paused })
 }

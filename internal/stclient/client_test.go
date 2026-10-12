@@ -5,9 +5,12 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -63,6 +66,7 @@ func callAll(t *testing.T, c *Client) {
 		"DBStatus":         func() error { _, err := c.DBStatus(ctx, "f"); return err },
 		"FolderErrors":     func() error { _, err := c.FolderErrors(ctx, "f", 5); return err },
 		"Completion":       func() error { _, err := c.Completion(ctx, "f", "D"); return err },
+		"RemoteNeed":       func() error { _, err := c.RemoteNeed(ctx, "f", "D", 20); return err },
 		"PendingDevices":   func() error { _, err := c.PendingDevices(ctx); return err },
 		"PendingFolders":   func() error { _, err := c.PendingFolders(ctx); return err },
 		"Browse":           func() error { _, err := c.Browse(ctx, "/a", "/"); return err },
@@ -110,10 +114,9 @@ func TestOnlyAllowlistedGETs(t *testing.T) {
 		if r.path == "/rest/config" || strings.HasPrefix(r.path, "/rest/config/gui") || strings.HasPrefix(r.path, "/rest/config/options") {
 			t.Errorf("forbidden config endpoint requested: %s", r.path)
 		}
-		if r.path == "/rest/noauth/health" && r.apiKey != "" {
-			t.Errorf("API key sent to noauth endpoint")
-		}
-		if r.path != "/rest/noauth/health" && r.apiKey != "k" {
+		// Also on /rest/noauth/health: a gate may require its token on every
+		// /rest path, and Syncthing ignores the key there.
+		if r.apiKey != "k" {
 			t.Errorf("%s: missing API key", r.path)
 		}
 		seen[r.path] = true
@@ -133,7 +136,7 @@ func TestOnlyAllowlistedGETs(t *testing.T) {
 func TestAllowlistIsExactly(t *testing.T) {
 	want := []string{
 		"/metrics", "/rest/cluster/pending/devices", "/rest/cluster/pending/folders",
-		"/rest/config/devices", "/rest/config/folders", "/rest/db/completion", "/rest/db/status",
+		"/rest/config/devices", "/rest/config/folders", "/rest/db/completion", "/rest/db/remoteneed", "/rest/db/status",
 		"/rest/events", "/rest/folder/errors", "/rest/noauth/health", "/rest/stats/device",
 		"/rest/stats/folder", "/rest/system/browse", "/rest/system/connections",
 		"/rest/system/status", "/rest/system/version",
@@ -178,7 +181,8 @@ func TestFolderDevicesDropEncryptionPassword(t *testing.T) {
 func TestTOFUAndCertChange(t *testing.T) {
 	srv, reqs, mu := fakeSyncthing(t)
 	var pinned string
-	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", OnPin: func(fp string) { pinned = fp }})
+	var logs pinLog
+	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", Log: slog.New(slog.NewTextHandler(&logs, nil)), OnPin: func(fp string) { pinned = fp }})
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +191,9 @@ func TestTOFUAndCertChange(t *testing.T) {
 	}
 	if c.LastCert().CASigned {
 		t.Fatal("test cert should not be CA-signed")
+	}
+	if !strings.Contains(logs.String(), "self-signed certificate accepted and pinned on first use") || !strings.Contains(logs.String(), "server=t") {
+		t.Fatalf("first use not logged: %s", logs.String())
 	}
 
 	// A client with a different pin must fail during the handshake, before any
@@ -220,16 +227,20 @@ func TestTOFUAndCertChange(t *testing.T) {
 func TestCASignedCertificateAccepted(t *testing.T) {
 	srv, _, _ := fakeSyncthing(t)
 	pool := srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-	// The httptest certificate is valid for 127.0.0.1 and "example.com".
-	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", RootCAs: pool, Pin: "deadbeef"})
+	// The httptest certificate is valid for 127.0.0.1 and "example.com". A
+	// CA-signed certificate is accepted even when another one is pinned, and
+	// then takes over the pin.
+	var pinned string
+	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k", RootCAs: pool, Pin: strings.Repeat("de", 32),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), OnPin: func(fp string) { pinned = fp }})
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatalf("CA-signed certificate rejected: %v", err)
 	}
 	if !c.LastCert().CASigned {
 		t.Fatal("expected CASigned")
 	}
-	if c.Pin() != "deadbeef" {
-		t.Fatal("CA-signed certificate must not change the pin")
+	if want := Fingerprint(srv.Certificate()); c.Pin() != want || pinned != want {
+		t.Fatalf("CA-signed certificate must be pinned: pin %q, OnPin %q, want %q", c.Pin(), pinned, want)
 	}
 }
 
@@ -243,6 +254,39 @@ func TestUnauthorized(t *testing.T) {
 	var se *StatusError
 	if !errors.As(err, &se) || se.Code != 403 {
 		t.Fatalf("expected 403 StatusError, got %v", err)
+	}
+}
+
+// A 401 or 403 from Syncthing itself keeps the API key hint. A gate says
+// what it refused, so its own text replaces the hint: a wrong gate token
+// is not the same fault as a directory outside the browse roots of the
+// gate. The text always has "HTTP 401" or "HTTP 403" for H1.
+func TestStatusErrorTexts(t *testing.T) {
+	long := "syncwatch gate: " + strings.Repeat("x", 300)
+	for _, c := range []struct {
+		code       int
+		body, want string
+	}{
+		{401, "", "/rest/system/status: HTTP 401 (check the API key)"},
+		{403, "Forbidden", "/rest/system/status: HTTP 403 (check the API key)"},
+		{403, "syncwatch gate: gate token missing or not correct",
+			"/rest/system/status: HTTP 403: syncwatch gate: gate token missing or not correct"},
+		{403, "syncwatch gate: directory not in a permitted browse root",
+			"/rest/system/status: HTTP 403: syncwatch gate: directory not in a permitted browse root (add the directory to SYNCWATCH_GATE_BROWSE_ROOTS on the gate)"},
+		{502, "syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key",
+			"/rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the API key of the gate. Restart the gate with the current API key"},
+		{400, "syncwatch gate: query not permitted\nsecond line", "/rest/system/status: HTTP 400: syncwatch gate: query not permitted"},
+		{502, long, "/rest/system/status: HTTP 502: " + long[:200]},
+		{500, "boom", "/rest/system/status: HTTP 500 boom"},
+	} {
+		got := (&StatusError{Endpoint: "/rest/system/status", Code: c.code, Body: c.body}).Error()
+		if got != c.want {
+			t.Errorf("%d %q:\n got %q\nwant %q", c.code, c.body, got, c.want)
+		}
+		// H1 finds a refused API key or gate token with this expression.
+		if refused := regexp.MustCompile(`HTTP 40[13]\b`).MatchString(got); refused != (c.code == 401 || c.code == 403) {
+			t.Errorf("%d %q: refused key %v in %q", c.code, c.body, refused, got)
+		}
 	}
 }
 

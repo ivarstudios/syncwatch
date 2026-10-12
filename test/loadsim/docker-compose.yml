@@ -25,6 +25,35 @@ services:
       STNODEFAULTFOLDER: "1"
       STGUIAPIKEY: key-load-0123456789
     ports: ["${SW_E2E_BIND:-127.0.0.1}:18711:8384"]
+    # Same init step as test/compose/docker-compose.yml: everything that
+    # reaches outside the test network is off before the first start, and
+    # Syncthing refuses to start if any of it is on.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        C="$${STHOMEDIR:-/var/syncthing/config}"
+        if [ ! -f "$$C/config.xml" ]; then
+          chown "$$PUID:$$PGID" "$$HOME" || true
+          su-exec "$$PUID:$$PGID" env HOME="$$HOME" /bin/syncthing generate --home="$$C" --no-port-probing
+        fi
+        su-exec "$$PUID:$$PGID" sed -i \
+          -e 's|<globalAnnounceEnabled>true<|<globalAnnounceEnabled>false<|' \
+          -e 's|<localAnnounceEnabled>true<|<localAnnounceEnabled>false<|' \
+          -e 's|<relaysEnabled>true<|<relaysEnabled>false<|' \
+          -e 's|<natEnabled>true<|<natEnabled>false<|' \
+          -e 's|<urAccepted>0<|<urAccepted>-1<|' \
+          -e 's|<autoUpgradeIntervalH>[0-9]*<|<autoUpgradeIntervalH>0<|' \
+          -e 's|<crashReportingEnabled>true<|<crashReportingEnabled>false<|' \
+          "$$C/config.xml"
+        for k in globalAnnounceEnabled localAnnounceEnabled relaysEnabled natEnabled crashReportingEnabled; do
+          grep -q "<$$k>false</$$k>" "$$C/config.xml" || { echo "syncthing-init: $$k is not off; refusing to start" >&2; exit 1; }
+        done
+        grep -q '<urAccepted>-1</urAccepted>' "$$C/config.xml" || { echo "syncthing-init: usage reporting is not off; refusing to start" >&2; exit 1; }
+        grep -q '<autoUpgradeIntervalH>0</autoUpgradeIntervalH>' "$$C/config.xml" || { echo "syncthing-init: auto-upgrade is not off; refusing to start" >&2; exit 1; }
+        echo "syncthing-init: discovery, relays, NAT traversal, usage and crash reporting and auto-upgrade are off" >&2
+        exec /bin/entrypoint.sh /bin/syncthing
 
   init:
     image: alpine:3

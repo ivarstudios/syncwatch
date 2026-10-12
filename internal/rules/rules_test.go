@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -181,12 +182,48 @@ func TestOverlapAndShareRoot(t *testing.T) {
 	akka.Folders["p"] = folder("p", "LIVE-P", sh+"/LIVE-P")
 	akka.Folders["sub"] = folder("sub", "LIVE-P sub", sh+"/LIVE-P/sub")
 	fs := run(t, c, akka)
-	mustFind(t, fs, "S2", "AKKA-LIVE-2PROJECTFILES on AKKA")
+	s2 := mustFind(t, fs, "S2", "AKKA-LIVE-2PROJECTFILES on AKKA")
 	mustFind(t, fs, "S1", "LIVE-P sub inside LIVE-P")
-	mustFind(t, fs, "S1", "LIVE-P inside whole share")
+	// r2 (W-046): the folders inside the share-root folder are rows of S2.
+	mustNot(t, fs, "S1", "inside whole share")
+	if !strings.Contains(s2.Message, "It contains 2 other Syncthing folders") {
+		t.Fatalf("S2: %s", s2.Message)
+	}
 	if f := find(fs, "S2", ""); !f.Urgent {
 		t.Fatal("S2 urgent by default")
 	}
+}
+
+// Two Syncthing folders at exactly the same path are the worst overlap of
+// all, and must give one S1 (not one per direction).
+func TestOverlapSamePath(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("a", "A", akkaID)
+	a.Folders["x"] = folder("x", "LIVE-X", "/s/A-LIVE-1SOURCE/LIVE-X")
+	a.Folders["y"] = folder("y", "LIVE-X copy", "/s/A-LIVE-1SOURCE//LIVE-X/")
+	fs := run(t, c, a)
+	s1 := mustFind(t, fs, "S1", "same path")
+	if !s1.Urgent || s1.Severity != model.Error || !strings.Contains(s1.Message, "LIVE-X copy") {
+		t.Fatalf("S1: %+v", s1)
+	}
+	n := 0
+	for _, f := range fs {
+		if f.Check == "S1" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want exactly one S1, got %d:\n%s", n, dump(fs))
+	}
+	// Case-insensitive, either separator, on a Windows server.
+	w := server("w", "WIN", solID)
+	w.PathSep = `\`
+	w.Folders["x"] = folder("x", "LIVE-X", `D:\data\WIN-LIVE-1SOURCE\LIVE-X`)
+	w.Folders["y"] = folder("y", "LIVE-X copy", `d:/Data/win-live-1source/live-x/`)
+	mustFind(t, run(t, c, w), "S1", "same path")
+	// A different path with the same prefix is not an overlap.
+	a.Folders["y"].Path = "/s/A-LIVE-1SOURCE/LIVE-XY"
+	mustNot(t, run(t, c, a), "S1", "")
 }
 
 func TestShareRootWithoutRules(t *testing.T) {
@@ -195,8 +232,11 @@ func TestShareRootWithoutRules(t *testing.T) {
 	a.Folders["root"] = folder("root", "root", "/data/share")
 	a.Folders["p"] = folder("p", "p", "/data/share/proj")
 	fs := run(t, c, a)
-	mustFind(t, fs, "S2", "share on A")
-	mustFind(t, fs, "S1", "p inside root")
+	s2 := mustFind(t, fs, "S2", "share on A")
+	mustNot(t, fs, "S1", "p inside root")
+	if got := s2.DetailValue("Syncthing folder inside"); got != "p — /data/share/proj" {
+		t.Fatalf("S2 row %q", got)
+	}
 }
 
 func TestServerHealth(t *testing.T) {
@@ -267,9 +307,11 @@ func TestFolderHealth(t *testing.T) {
 	if h4.MinDuration != time.Hour {
 		t.Fatalf("H4 for failing files only: min duration %v, want 1h", h4.MinDuration)
 	}
-	if h4 := mustFind(t, fs, "H4", "file watcher error"); h4.MinDuration != 0 {
-		t.Fatalf("a watcher error must open H4 at once, not after %v", h4.MinDuration)
+	w := mustFind(t, fs, "H4", "The file watcher of folder LIVE-WATCH")
+	if w.MinDuration != time.Hour || w.Severity != model.Warn || w.Urgent {
+		t.Fatalf("a watcher error alone must be a non-urgent warning after 1 h: %+v", w)
 	}
+	mustNot(t, fs, "H4", "Folder LIVE-WATCH on AKKA cannot sync")
 	h5 := mustFind(t, fs, "H5", "LIVE-STUCK on AKKA")
 	if h5.MinDuration != 24*time.Hour {
 		t.Fatal("H5 min duration")
@@ -279,8 +321,83 @@ func TestFolderHealth(t *testing.T) {
 	if h6.MinDuration != 72*time.Hour {
 		t.Fatal("H6 min duration")
 	}
-	mustFind(t, fs, "H6", "MORTIS has paused folder LIVE-REMOTE")
+	mustFind(t, fs, "H6", "Device MORTIS paused folder LIVE-REMOTE")
 	mustFind(t, fs, "H10", "2 new sync conflict")
+}
+
+// Syncthing keeps syncing with periodic scans when the file watcher fails,
+// which inotify limits make common on big shares: that is a warning after an
+// hour, never urgent, and it doesn't change how real sync problems are raised.
+func TestWatcherErrorIsNotUrgent(t *testing.T) {
+	c := ivarConfig(t)
+	tr := true
+	c.Checks["H4"] = config.Check{Urgent: &tr}
+	a := server("a", "A", akkaID)
+	f := folder("w", "LIVE-W", "/s/A-LIVE-1SOURCE/LIVE-W")
+	f.WatchError = "failed to set up inotify handler. Please increase inotify limits"
+	a.Folders["w"] = f
+	fs := run(t, c, a)
+	w := mustFind(t, fs, "H4", "LIVE-W")
+	if w.Urgent || w.Severity != model.Warn || w.MinDuration != time.Hour || !strings.Contains(w.Message, "periodic scans") {
+		t.Fatalf("watcher error alone: %+v", w)
+	}
+	n := 0
+	for _, x := range fs {
+		if x.Check == "H4" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want one H4, got:\n%s", dump(fs))
+	}
+	// A folder error next to it is still urgent at once, as its own finding.
+	f.State, f.Error = "error", "folder marker missing"
+	fs = run(t, c, a)
+	stop := mustFind(t, fs, "H4", "Folder LIVE-W on A cannot sync")
+	if !stop.Urgent || stop.Severity != model.Error || stop.MinDuration != 0 || strings.Contains(stop.Message, "watcher") {
+		t.Fatalf("folder error with a watcher error: %+v", stop)
+	}
+	if again := mustFind(t, fs, "H4", "The file watcher of folder"); again.ID == stop.ID || again.Urgent {
+		t.Fatal("the watcher warning must stay separate and non-urgent")
+	}
+	// Failing files keep their own threshold.
+	f.State, f.Error, f.PullErrors = "idle", "", 2
+	stop = mustFind(t, run(t, c, a), "H4", "Folder LIVE-W on A cannot sync")
+	if stop.MinDuration != time.Hour || stop.Severity != model.Error || !stop.Urgent {
+		t.Fatalf("failing files with a watcher error: %+v", stop)
+	}
+	// A watcher that fails for lack of disk space is a sync problem.
+	f.PullErrors, f.WatchError = 0, "no space left on device"
+	stop = mustFind(t, run(t, c, a), "H4", "out of space")
+	if !stop.Urgent || stop.MinDuration != 0 {
+		t.Fatalf("out of space: %+v", stop)
+	}
+}
+
+// H6 (remote paused) and C3 (doesn't share it back) keep holding from the
+// last known remote state while the PC is disconnected and Syncthing reports
+// "unknown"; a new report while connected wins.
+func TestRemoteStateSurvivesDisconnect(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now.Add(-time.Hour)}
+	r := folder("r", "LIVE-REMOTE", "/s/AKKA-LIVE-1SOURCE/LIVE-REMOTE", pcID)
+	r.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "unknown"}
+	akka.Folders["r"] = r
+	d := folder("d", "LIVE-DEAD", "/s/AKKA-LIVE-1SOURCE/LIVE-DEAD", pcID)
+	d.Completion[pcID] = &model.Completion{RemoteState: "unknown"}
+	akka.Folders["d"] = d
+	fs := run(t, c, akka)
+	mustNot(t, fs, "H6", "MORTIS")
+	mustNot(t, fs, "C3", "")
+	akka.RemoteStates = map[string]map[string]string{"r": {pcID: "paused"}, "d": {pcID: "notSharing"}}
+	fs = run(t, c, akka)
+	mustFind(t, fs, "H6", "Device MORTIS paused folder LIVE-REMOTE")
+	mustFind(t, fs, "C3", "Folder LIVE-DEAD is shared with MORTIS, which does not share it back")
+	r.Completion[pcID].RemoteState, d.Completion[pcID].RemoteState = "valid", "valid"
+	fs = run(t, c, akka)
+	mustNot(t, fs, "H6", "MORTIS")
+	mustNot(t, fs, "C3", "")
 }
 
 func TestDevicesAndVersions(t *testing.T) {
@@ -312,6 +429,37 @@ func TestDevicesAndVersions(t *testing.T) {
 	mustFind(t, fs, "H9", "LIVE-OFFER")
 }
 
+// With one server per version the reference is the newest one, compared
+// numerically: 2.1.10 is newer than 2.1.9.
+func TestVersionTieBreakIsNumeric(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	akka.Version, sol.Version = "v2.1.10", "v2.1.9"
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true, ClientVersion: "v2.1.10", Type: "tcp-server"}
+	akka.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS", LastSeen: now}
+	akka.Connections[pc2ID] = &model.Connection{Connected: true, ClientVersion: "v2.1.9", Type: "tcp-server"}
+	fs := run(t, c, akka, sol)
+	mustNot(t, fs, "H8", "MORTIS runs")
+	mustFind(t, fs, "H8", "VENUS runs Syncthing v2.1.9. The servers run v2.1.10")
+	for _, c := range []struct {
+		a, b string
+		less bool
+	}{
+		{"2.1.9", "2.1.10", true},
+		{"2.1.10", "2.1.9", false},
+		{"2.1.10", "2.1.10", false},
+		{"1.29.7", "2.0.0", true},
+		{"2.1", "2.1.0", true},
+		{"2.1.x", "2.1.9", false},
+	} {
+		if got := versionLess(c.a, c.b); got != c.less {
+			t.Errorf("versionLess(%q, %q) = %v, want %v", c.a, c.b, got, c.less)
+		}
+	}
+}
+
 func TestCrossServer(t *testing.T) {
 	c := ivarConfig(t)
 	akka := server("akka", "AKKA", akkaID)
@@ -328,6 +476,47 @@ func TestCrossServer(t *testing.T) {
 	mustNot(t, fs, "X2", "LIVE-FINE")
 }
 
+// A server that hasn't been reached since startup is still a server, not a
+// PC, when its device ID is known from the last run.
+func TestKnownServerDeviceIDIsNotAPC(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	sol.Loaded, sol.Status, sol.Version = false, model.StatusDown, ""
+	a.Devices[solID] = &model.Device{ID: solID, Name: "SOL-NAS", LastSeen: now.Add(-8 * 24 * time.Hour)}
+	a.Folders["f"] = folder("f", "LIVE-F", "/s/AKKA-LIVE-1SOURCE/LIVE-F", solID)
+	fs := run(t, c, a, sol)
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, fs, check, "SOL")
+	}
+	a.Devices[solID].LastSeen = time.Time{}
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, run(t, c, a, sol), check, "SOL")
+	}
+	// Without the ID (the state after a restart, before it was persisted) it
+	// would be a PC.
+	sol.MyID = ""
+	mustFind(t, run(t, c, a, sol), "C2", "SOL-NAS")
+}
+
+// X1's subject must not depend on map iteration order, or the record is
+// rewritten on every evaluation.
+func TestX1SubjectStable(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("a", "A", akkaID)
+	b := server("b", "B", solID)
+	a.Folders["x1"] = folder("x1", "Proj", "/s/A-LIVE-1SOURCE/Proj")
+	a.Folders["x2"] = folder("x2", "PROJ", "/s/A-LIVE-1SOURCE/PROJ")
+	b.Folders["x3"] = folder("x3", "proj", "/s/B-LIVE-1SOURCE/proj")
+	subjects := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		subjects[mustFind(t, run(t, c, a, b), "X1", "").Subject] = true
+	}
+	if len(subjects) != 1 || !subjects["PROJ"] {
+		t.Fatalf("X1 subject changes between runs or isn't the first folder by name: %v", subjects)
+	}
+}
+
 func TestCleanup(t *testing.T) {
 	c := ivarConfig(t)
 	akka := server("akka", "AKKA", akkaID)
@@ -340,21 +529,66 @@ func TestCleanup(t *testing.T) {
 	f.Completion[pcID] = &model.Completion{Percent: 0, RemoteState: "notSharing"}
 	akka.Folders["old"] = f
 	akka.Folders["new"] = folder("new", "LIVE-NEW", "/s/AKKA-LIVE-1SOURCE/LIVE-NEW")
-	fs := run(t, c, akka)
+	// VENUS has connected to SOL but never to AKKA, which shares a folder with it.
+	sol := server("sol", "SOL", solID)
+	sol.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS", LastSeen: now.Add(-time.Hour)}
+	akka.Devices[pc2ID] = &model.Device{ID: pc2ID, Name: "VENUS"}
+	akka.Folders["old"].SharedWith = append(akka.Folders["old"].SharedWith, pc2ID)
+	fs := run(t, c, akka, sol)
 	mustFind(t, fs, "C1", "LIVE-OLD")
 	mustNot(t, fs, "C1", "LIVE-NEW")
-	c3 := mustFind(t, fs, "C3", "never connected")
+	c3 := mustFind(t, fs, "C3", "VENUS, which never connected to AKKA")
 	if c3.MinDuration != 30*24*time.Hour {
 		t.Fatal("C3 min duration")
 	}
-	mustFind(t, fs, "C3", "doesn't share it back")
+	mustFind(t, fs, "C3", "does not share it back")
+	// A device no server has ever seen gets C2 alone: not H7 (it was never
+	// online) and not one C3 per folder on top.
 	c2 := mustFind(t, fs, "C2", "NEWPC")
-	if c2.MinDuration != 90*24*time.Hour {
-		t.Fatal("C2 never-seen uses min duration")
+	if c2.MinDuration != 90*24*time.Hour || !strings.Contains(c2.Message, "never connected after syncwatch started to monitor it more than 90 days ago") {
+		t.Fatalf("C2 never-seen: %v %s", c2.MinDuration, c2.Message)
 	}
-	h7 := mustFind(t, fs, "H7", "NEWPC")
-	if h7.MinDuration != 7*24*time.Hour {
-		t.Fatal("H7 never-seen uses min duration")
+	mustNot(t, fs, "H7", "NEWPC")
+	mustNot(t, fs, "C3", "NEWPC")
+	// Without C2, C3 says it per folder again.
+	off := false
+	c.Checks["C2"] = config.Check{Enabled: &off}
+	fs = run(t, c, akka, sol)
+	mustFind(t, fs, "C3", "NEWPC, which never connected to AKKA")
+	mustNot(t, fs, "H7", "NEWPC")
+}
+
+// C1 uses the newest of lastFile.at (pulled files only) and the local changes
+// the collector saw, and says which one the age is based on.
+func TestInactiveProjectBasis(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	edited := folder("edited", "LIVE-EDITED", "/s/AKKA-LIVE-1SOURCE/LIVE-EDITED")
+	edited.LastFileAt, edited.LastFileName = now.Add(-200*24*time.Hour), "old.blend"
+	edited.LastLocalChange = now.Add(-10 * 24 * time.Hour)
+	akka.Folders["edited"] = edited
+	local := folder("local", "LIVE-LOCAL", "/s/AKKA-LIVE-1SOURCE/LIVE-LOCAL")
+	local.LastLocalChange = now.Add(-200 * 24 * time.Hour)
+	akka.Folders["local"] = local
+	pulled := folder("pulled", "LIVE-PULLED", "/s/AKKA-LIVE-1SOURCE/LIVE-PULLED")
+	pulled.LastFileAt, pulled.LastFileName = now.Add(-300*24*time.Hour), "old.blend"
+	pulled.LastLocalChange = now.Add(-200 * 24 * time.Hour)
+	akka.Folders["pulled"] = pulled
+	fs := run(t, c, akka)
+	mustNot(t, fs, "C1", "LIVE-EDITED")
+	l := mustFind(t, fs, "C1", "LIVE-LOCAL")
+	// r2 (W-021, W-038): Since is zero; the time without a change is in the message.
+	if !strings.Contains(l.Message, "200 days") || !strings.Contains(l.Message, "local change") || !l.Since.IsZero() {
+		t.Fatalf("local: %s", l.Message)
+	}
+	p := mustFind(t, fs, "C1", "LIVE-PULLED")
+	if !strings.Contains(p.Message, "200 days") || !strings.Contains(p.Message, "local change") || !p.Since.IsZero() {
+		t.Fatalf("pulled, then edited: %s", p.Message)
+	}
+	pulled.LastLocalChange = time.Time{}
+	p = mustFind(t, run(t, c, akka), "C1", "LIVE-PULLED")
+	if !strings.Contains(p.Message, "300 days") || !strings.Contains(p.Message, "pulled") || p.DetailValue("Last file") != "old.blend" {
+		t.Fatalf("pulled only: %s %v", p.Message, p.Details)
 	}
 }
 
@@ -377,6 +611,46 @@ func TestDisabledCheckAndUrgentOverride(t *testing.T) {
 	d := mustFind(t, fs, "S5", "AKKA-LIVE-2PROJECTFILES/LIVE-DUP")
 	if strings.Join(d.Checks, ",") != "S5,S7" {
 		t.Fatal(d.Checks)
+	}
+}
+
+// On a case-sensitive server LIVE-Dup and LIVE-DUP are two directories and
+// need two finding IDs; on a Windows server they are one.
+func TestDirIDsKeepCaseOnCaseSensitiveServers(t *testing.T) {
+	c := ivarConfig(t)
+	cs, _ := c.Structure.Compile()
+	a := server("a", "A", akkaID)
+	addShare(a, cs, "/s/A-LIVE-1SOURCE", "LIVE-Dup-1SOURCE", "LIVE-DUP-1SOURCE")
+	a.Structure.Nested["1"] = &model.NestedDir{Path: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE/LIVE-Nest", Parent: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE", Share: "/s/A-LIVE-1SOURCE", Source: "scan", FoundAt: now}
+	a.Structure.Nested["2"] = &model.NestedDir{Path: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE/LIVE-NEST", Parent: "/s/A-LIVE-1SOURCE/LIVE-GOOD-1SOURCE", Share: "/s/A-LIVE-1SOURCE", Source: "scan", FoundAt: now}
+	fs := run(t, c, a)
+	ids := map[string]int{}
+	dirs, nested := 0, 0
+	for _, f := range fs {
+		ids[f.ID]++
+		switch {
+		case find([]model.Finding{f}, "S7", "") != nil:
+			dirs++
+		case f.Check == "S3":
+			nested++
+		}
+	}
+	for id, n := range ids {
+		if n > 1 {
+			t.Fatalf("finding ID %s produced %d times in one evaluation:\n%s", id, n, dump(fs))
+		}
+	}
+	if dirs != 2 || nested != 2 {
+		t.Fatalf("want 2 directory rows and 2 S3, got %d and %d:\n%s", dirs, nested, dump(fs))
+	}
+	// The same directory spelled differently on a Windows server is one finding.
+	w := server("w", "WIN", solID)
+	w.PathSep = `\`
+	addShare(w, cs, `D:/s/WIN-LIVE-1SOURCE`, "LIVE-Dup-1SOURCE")
+	w1 := mustFind(t, run(t, c, w), "S7", "LIVE-Dup")
+	w.Structure.Shares[0].Dirs[0].Path = `d:\S\win-live-1source\LIVE-DUP-1SOURCE\`
+	if w2 := mustFind(t, run(t, c, w), "S7", "LIVE-Dup"); w2.ID != w1.ID {
+		t.Fatalf("windows IDs differ: %s vs %s", w1.ID, w2.ID)
 	}
 }
 
@@ -407,5 +681,240 @@ func TestDetectShares(t *testing.T) {
 	got = DetectShares(a, nil, []string{"/s/A-LIVE-1SOURCE/"}, cs)
 	if len(got) != 0 {
 		t.Fatalf("exclude: %+v", got)
+	}
+}
+
+// H5 for a device that is away is made from the completion of its last
+// connection and marked held; the engine then keeps it as it is.
+func TestStuckDeviceHeldWhileAway(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: now}
+	f := folder("s", "LIVE-STUCK", "/s/AKKA-LIVE-1SOURCE/LIVE-STUCK", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 7, RemoteState: "unknown"}
+	akka.Folders["s"] = f
+	akka.RemoteStates = map[string]map[string]string{"s": {pcID: "valid"}}
+	akka.LastCompletions = map[string]map[string]model.Completion{"s": {pcID: {Percent: 99, NeedItems: 3, RemoteState: "valid"}}}
+	h5 := mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS")
+	if !h5.Held || !strings.Contains(h5.Message, "99%") || h5.DetailValue("Items left") != "3" {
+		t.Fatalf("away: %+v", h5)
+	}
+	// Connected and valid: judged from live data.
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f.Completion[pcID].RemoteState = "valid"
+	if h5 = mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS"); h5.Held || !strings.Contains(h5.Message, "40%") {
+		t.Fatalf("connected: %+v", h5)
+	}
+	// The connections of a server that is down are old data.
+	akka.Status = model.StatusDown
+	if h5 = mustFind(t, run(t, c, akka), "H5", "LIVE-STUCK on MORTIS"); !h5.Held {
+		t.Fatalf("server down: %+v", h5)
+	}
+	// Synced in its last connection: nothing to hold.
+	akka.Status = model.StatusUp
+	akka.Connections[pcID].Connected = false
+	akka.LastCompletions["s"][pcID] = model.Completion{Percent: 100, RemoteState: "valid"}
+	mustNot(t, run(t, c, akka), "H5", "MORTIS")
+	// Paused or not shared back in its last connection: H6 or C3, not H5.
+	akka.LastCompletions["s"][pcID] = model.Completion{Percent: 50, RemoteState: "valid"}
+	akka.RemoteStates["s"][pcID] = "notSharing"
+	f.Completion[pcID].RemoteState = "unknown"
+	mustNot(t, run(t, c, akka), "H5", "MORTIS")
+}
+
+// A server that is disabled in the configuration is not polled, but its
+// device is a server, not a PC: no H7, C2, C3 (never connected) or H8 for
+// it. H5, H6 and H11 report it as before, seen from the polled servers.
+func TestDisabledServerIsNotAPC(t *testing.T) {
+	c := ivarConfig(t)
+	a := server("akka", "AKKA", akkaID)
+	a.Devices[solID] = &model.Device{ID: solID, Name: "SOL-NAS", LastSeen: now.Add(-100 * 24 * time.Hour)}
+	a.Folders["f"] = folder("f", "LIVE-F", "/s/AKKA-LIVE-1SOURCE/LIVE-F", solID)
+	a.Folders["f"].Completion[solID] = &model.Completion{Percent: 100, RemoteState: "paused"}
+	never := folder("n", "LIVE-N", "/s/AKKA-LIVE-1SOURCE/LIVE-N", solID)
+	a.Folders["n"] = never
+	snap := &model.Snapshot{At: now, Servers: []*model.Server{a}}
+	in := Input{Snapshot: snap, Config: c, Now: now}
+	// As a PC (the device ID is not known): H7 or C2.
+	mustFind(t, Evaluate(in), "C2", "SOL-NAS")
+	snap.Disabled = []model.DisabledServer{{ID: "sol", Name: "SOL", MyID: solID}}
+	fs := Evaluate(in)
+	for _, check := range []string{"H7", "C2", "C3", "H8"} {
+		mustNot(t, fs, check, "SOL")
+	}
+	// The remote pause is still reported: SOL does not report it itself.
+	mustFind(t, fs, "H6", "Device SOL paused folder LIVE-F")
+	a.Devices[solID].LastSeen = now.Add(-10 * 24 * time.Hour)
+	a.Connections[solID] = &model.Connection{Connected: true, ClientVersion: "v2.0.9", Type: "relay-client"}
+	fs = Evaluate(in)
+	mustNot(t, fs, "H8", "SOL")
+	mustNot(t, fs, "H7", "SOL")
+	mustFind(t, fs, "H11", "Device SOL is connected to AKKA through a relay")
+	var dv *model.DeviceView
+	for _, d := range snap.Devices() {
+		if d.ID == solID {
+			dv = d
+		}
+	}
+	if dv == nil || !dv.IsServer || !dv.Disabled || dv.ServerID != "sol" || dv.Name != "SOL" || !dv.Connected || dv.Version != "v2.0.9" {
+		t.Fatalf("device view of the disabled server: %+v", dv)
+	}
+	if !snap.IsServerDevice(solID) || snap.ServerByDeviceID(solID) != nil || snap.DeviceName(solID) != "SOL" {
+		t.Fatal("the disabled server's device ID is a server, but not a polled one")
+	}
+	// Never connected, with C2 off: C3 says it for a PC, not for a server.
+	off := false
+	c.Checks["C2"] = config.Check{Enabled: &off}
+	a.Devices[solID].LastSeen = time.Time{}
+	delete(a.Connections, solID)
+	mustNot(t, Evaluate(in), "C3", "SOL")
+	snap.Disabled = nil
+	mustFind(t, Evaluate(in), "C3", "SOL-NAS, which never connected to AKKA")
+}
+
+// A server that refuses the API key or the gate token answers: H1 says so
+// and tells what to do, and keeps "unreachable" for the other reasons.
+func TestServerRefusesKey(t *testing.T) {
+	c := ivarConfig(t)
+	sol := server("sol", "SOL", solID)
+	sol.Status, sol.DownSince = model.StatusDown, now.Add(-10*time.Minute)
+	for _, tc := range []struct {
+		err, msg string
+		refused  bool
+	}{
+		{"/rest/system/status: HTTP 403 (check the API key)", "Server SOL refuses the API key or the gate token: /rest/system/status: HTTP 403 (check the API key)", true},
+		{"/rest/system/status: HTTP 401 (check the API key)", "Server SOL refuses the API key or the gate token: /rest/system/status: HTTP 401 (check the API key)", true},
+		{"timeout", "Server SOL is unreachable: timeout", false},
+		{"/rest/system/status: HTTP 4031 nonsense", "Server SOL is unreachable: /rest/system/status: HTTP 4031 nonsense", false},
+		{"/rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the gate's API key", "Server SOL is unreachable: /rest/system/status: HTTP 502: syncwatch gate: Syncthing refused the gate's API key", false},
+	} {
+		sol.LastError = tc.err
+		h1 := mustFind(t, run(t, c, sol), "H1", "SOL")
+		if h1.Message != tc.msg {
+			t.Errorf("%q: message %q, want %q", tc.err, h1.Message, tc.msg)
+		}
+		if got := h1.DetailValue("What to do") != ""; got != tc.refused {
+			t.Errorf("%q: 'What to do' row %v, want %v", tc.err, got, tc.refused)
+		}
+		if !h1.Urgent || h1.Check != "H1" {
+			t.Errorf("%q: H1 must stay the urgent check: %+v", tc.err, h1)
+		}
+	}
+}
+
+// A PC that cannot store 18 files (names that Windows does not permit) is
+// at 99.994 percent: H5 must not say 100 percent, and it names the count.
+// At exactly 100 percent with items left (only directories or empty files
+// missing) the device is stuck too.
+func TestStuckDevicePercentIsNeverRoundedUp(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-ANNA", LastSeen: now}
+	akka.Connections[pcID] = &model.Connection{Connected: true}
+	f := folder("f", "LIVE-FJORD-4FINALS", "/s/AKKA-LIVE-4FINALS/LIVE-FJORD-4FINALS", pcID)
+	f.Completion[pcID] = &model.Completion{Percent: 99.99389790763612, NeedItems: 18, NeedBytes: 28, RemoteState: "valid"}
+	akka.Folders["f"] = f
+	h5 := mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+	if strings.Contains(h5.Message, "100") || strings.Contains(h5.DetailValue("Completion"), "100") {
+		t.Fatalf("rounded up to 100 percent: %q, %q", h5.Message, h5.DetailValue("Completion"))
+	}
+	if want := "Device PC-SHARED-ANNA is stuck at 99.9% of folder LIVE-FJORD-4FINALS for more than 24 hours (18 remaining items, seen from AKKA)"; h5.Message != want {
+		t.Fatalf("message %q, want %q", h5.Message, want)
+	}
+	if h5.DetailValue("Completion") != "99.9%" || h5.DetailValue("Items left") != "18" {
+		t.Fatalf("details %v", h5.Details)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 40, NeedItems: 1, RemoteState: "valid"}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !strings.Contains(h5.Message, "stuck at 40% of folder") || !strings.Contains(h5.Message, "(1 remaining item,") || h5.DetailValue("Completion") != "40.0%" {
+		t.Fatalf("40 percent: %q %v", h5.Message, h5.Details)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 100, NeedItems: 3, RemoteState: "valid"}
+	if h5 = mustFind(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA"); !strings.Contains(h5.Message, "stuck at 100% of folder") || !strings.Contains(h5.Message, "3 remaining items") {
+		t.Fatalf("100 percent with items left: %q", h5.Message)
+	}
+	f.Completion[pcID] = &model.Completion{Percent: 100, RemoteState: "valid"}
+	mustNot(t, run(t, c, akka), "H5", "on PC-SHARED-ANNA")
+}
+
+// From one site, a server that is off and a VPN that is down look the
+// same: H1 for a network failure, and H2, name both in a detail row and
+// keep their messages.
+func TestTwoSiteFaultsNameTheNetwork(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	akka.Devices[solID] = &model.Device{ID: solID, Name: "SOL", LastSeen: now.Add(-time.Hour)}
+	sol.Devices[akkaID] = &model.Device{ID: akkaID, Name: "AKKA", LastSeen: now.Add(-time.Hour)}
+	h2 := mustFind(t, run(t, c, akka, sol), "H2", "AKKA ↔ SOL")
+	if h2.Message != "Servers AKKA and SOL are not connected to each other" || !strings.Contains(h2.DetailValue("What to check"), "VPN") {
+		t.Fatalf("H2: %q %v", h2.Message, h2.Details)
+	}
+	sol.Status, sol.DownSince = model.StatusDown, now.Add(-10*time.Minute)
+	for _, tc := range []struct {
+		err     string
+		network bool
+	}{
+		{"timeout", true},
+		{"no route to host", true},
+		{"connection refused", true},
+		{"host name not found", true},
+		{"/rest/system/status: HTTP 403 (check the API key)", false},
+		{"/rest/db/status: HTTP 500 timeout waiting for the folder", false},
+		{"no API key configured", false},
+		{"the API URL changed: type the API key again in Settings → Servers", false},
+		{"tls: failed to verify certificate: x509: certificate signed by unknown authority", false},
+	} {
+		sol.LastError = tc.err
+		h1 := mustFind(t, run(t, c, akka, sol), "H1", "SOL")
+		if got := h1.DetailValue("Possible causes") != ""; got != tc.network {
+			t.Errorf("%q: 'Possible causes' row %v, want %v", tc.err, got, tc.network)
+		}
+		if tc.network && h1.Message != "Server SOL is unreachable: "+tc.err {
+			t.Errorf("%q: message %q", tc.err, h1.Message)
+		}
+	}
+}
+
+// A pending device that another server knows is not an unknown device: H9
+// uses the name that the servers know, and quotes the name it sends.
+func TestPendingDeviceKnownOnAnotherServer(t *testing.T) {
+	c := ivarConfig(t)
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	sol.Devices[pcID] = &model.Device{ID: pcID, Name: "PC-SHARED-BJORN"}
+	hostile := "BJÖRN @everyone\nlevel=ERROR msg=\"forged\" \u202egnp.exe"
+	stranger := "PENDING-6666666-6666666-6666666-6666666-6666666-6666666-6666666"
+	akka.PendingDevices = []model.PendingDevice{
+		{DeviceID: pcID, Name: hostile, Time: now},
+		{DeviceID: stranger, Name: "stranger", Time: now},
+		{DeviceID: solID, Name: "sol", Time: now},
+	}
+	fs := run(t, c, akka, sol)
+	h9 := mustFind(t, fs, "H9", "PC-SHARED-BJORN on AKKA")
+	want := "Device PC-SHARED-BJORN (known on SOL) requests a connection to AKKA as " + strconv.Quote(hostile)
+	if h9.Message != want {
+		t.Fatalf("known device:\n got %s\nwant %s", h9.Message, want)
+	}
+	if strings.ContainsAny(h9.Message, "\n\u202e") {
+		t.Fatal("the name that the device sends must not put control characters into the message")
+	}
+	mustFind(t, fs, "H9", "Unknown device stranger requests a connection to AKKA")
+	mustFind(t, fs, "H9", `Server SOL requests a connection to AKKA as "sol"`)
+}
+
+// H7 gives the last contact as a date and a time in the configured time
+// zone; the detail value stays UTC (RFC 3339) for the API.
+func TestPCOfflineLastSeenInConfiguredZone(t *testing.T) {
+	c := ivarConfig(t)
+	c.Timezone = "Europe/Stockholm"
+	akka := server("akka", "AKKA", akkaID)
+	last := time.Date(2026, 9, 26, 15, 30, 38, 0, time.UTC)
+	akka.Devices[pcID] = &model.Device{ID: pcID, Name: "MORTIS", LastSeen: last}
+	h7 := mustFind(t, run(t, c, akka), "H7", "MORTIS")
+	if want := "PC MORTIS is offline for 8 days (last seen 2026-09-26 17:30)"; h7.Message != want {
+		t.Fatalf("message %q, want %q", h7.Message, want)
+	}
+	if v := h7.DetailValue("Last seen"); v != "2026-09-26T15:30:38Z" {
+		t.Fatalf("detail value %q", v)
 	}
 }

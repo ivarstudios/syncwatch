@@ -11,6 +11,7 @@ type Hub struct {
 	mu      sync.RWMutex
 	order   []string
 	servers map[string]*Server
+	ready   bool // SetServers has published the configured servers
 	changed chan struct{}
 	now     func() time.Time
 }
@@ -43,7 +44,16 @@ func (h *Hub) SetServers(list []*Server) {
 		h.order = append(h.order, s.ID)
 	}
 	h.servers = next
+	h.ready = true
 	h.signal()
+}
+
+// Ready reports whether the server set has been published at least once.
+// Until then the hub is empty, which says nothing about the servers.
+func (h *Hub) Ready() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.ready
 }
 
 func ensureMaps(s *Server) {
@@ -67,8 +77,13 @@ func (h *Hub) Update(id string, fn func(*Server)) bool {
 	h.mu.Lock()
 	s, ok := h.servers[id]
 	if ok {
+		was := s.Status
 		fn(s)
 		ensureMaps(s)
+		if s.Status == StatusUp && was != StatusUp {
+			s.UpSince = h.now()
+		}
+		s.RememberRemoteStates()
 		h.signal()
 	}
 	h.mu.Unlock()

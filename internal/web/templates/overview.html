@@ -1,63 +1,85 @@
 {{define "overview"}}{{template "head" .}}
+{{with .Data.VM.Sites}}<div class="toolbar">
+  {{template "site-filter" .}}
+</div>{{end}}
 {{template "overview-body" .}}
 {{template "foot" .}}{{end}}
 
 {{define "overview-body"}}{{$vm := .Data.VM}}
-<div id="overview-body" hx-get="/frag/overview" hx-trigger="sse:update" hx-swap="outerHTML">
+<div id="overview-body" hx-get="/frag/overview" hx-trigger="sse:update" hx-swap="outerHTML" data-day="{{$vm.Day}}">
   <p class="health" aria-label="Health summary">{{$vm.Health}}</p>
   <section class="tiles" aria-label="Servers">
     {{range $vm.Servers}}
-    <article class="tile st-{{.Status}}">
+    <article class="tile st-{{.Status}}"{{if $vm.Sites}} data-site="{{.Site}}"{{end}}>
       <header>
         <h2>{{.Name}}</h2>
         <span class="badge st-{{.Status}}">{{.StatusIcon}} {{.StatusLabel}}</span>
       </header>
+      {{with .Site}}<p class="tile-site">{{.}}</p>{{end}}
+      {{if .Disabled}}
+      <p class="muted">syncwatch does not poll this server.{{if eq $.Role "admin"}} <a class="nowrap" href="/settings#servers">Settings → Servers</a>{{end}}</p>
+      {{else}}
       {{if .LastError}}{{if ne .Status "ok"}}<p class="err-text">{{.LastError}}</p>{{end}}{{end}}
       <dl class="facts">
         <dt>Version</dt><dd>{{if .Version}}{{.Version}}{{else}}—{{end}}</dd>
         <dt>Uptime</dt><dd>{{if .Uptime}}{{.Uptime}}{{else}}—{{end}}</dd>
-        <dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{.Errors}} error</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>
-        <dt>Problems</dt><dd>{{if .Problems}}<a href="/problems?server={{.ID}}">{{.Problems}} open</a>{{else}}none{{end}}</dd>
-        <dt>Certificate</dt><dd>{{if .CertExpires}}<span {{if .CertWarn}}class="c-warn"{{end}}>expires {{.CertExpires}}</span>{{else}}—{{end}}</dd>
-        <dt>Shares</dt><dd>{{.Shares}}{{if .LastScan}} · scanned {{.LastScan}}{{with .ScanCost}} <span class="muted small">({{.}})</span>{{end}}{{end}}</dd>
+        {{if .NoContact}}<dt>Folders</dt><dd>—</dd>
+        {{else if .FoldersStale}}<dt>Folders</dt><dd class="muted" title="The server is not up: this is the last known state">{{plural .Folders "folder" "folders"}} · last known <span class="nowrap">{{.LastContact}}</span>: {{.Idle}} idle{{if .Syncing}} · {{.Syncing}} syncing{{end}}{{if .Scanning}} · {{.Scanning}} scanning{{end}}{{if .Errors}} · {{plural .Errors "error" "errors"}}{{end}}{{if .WatchErrors}} · {{plural .WatchErrors "file watcher error" "file watcher errors"}}{{end}}{{if .Paused}} · {{.Paused}} paused{{end}}</dd>
+        {{else}}<dt>Folders</dt><dd>{{.Folders}}: <span class="c-ok">✔ {{.Idle}} idle</span>{{if .Syncing}} · <span class="c-sync">⟳ {{.Syncing}} syncing</span>{{end}}{{if .Scanning}} · <span class="c-sync">⟳ {{.Scanning}} scanning</span>{{end}}{{if .Errors}} · <span class="c-err">✖ {{plural .Errors "error" "errors"}}</span>{{end}}{{if .WatchErrors}} · <span class="c-warn">⚠ {{plural .WatchErrors "file watcher error" "file watcher errors"}}</span>{{end}}{{if .Paused}} · <span class="c-paused">⏸ {{.Paused}} paused</span>{{end}}</dd>{{end}}
+        <dt>Findings</dt><dd>{{if .Problems}}<a href="/problems?server={{.ID}}">{{.Problems}} open</a>{{else}}none{{end}}</dd>
+        <dt>Certificate</dt><dd>{{if .CertExpires}}<span {{if .CertWarn}}class="c-warn"{{end}}>valid until {{.CertExpires}}</span>{{else}}—{{end}}</dd>
+        <dt>Shares</dt><dd>{{.Shares}}{{if .LastScan}} · last scan {{.LastScan}}{{with .ScanCost}} <span class="muted small">({{.}})</span>{{end}}{{end}}</dd>
         <dt>Last contact</dt><dd>{{.LastContact}}{{if .Mode}} · {{.Mode}}{{end}}</dd>
       </dl>
       {{range .ShareErrors}}<p class="c-warn small">⚠ {{.}}</p>{{end}}
-      {{if .Link}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
+      {{if and .Link (eq $.Role "admin")}}<a class="ext" href="{{.Link}}" target="_blank" rel="noopener noreferrer">Open in Syncthing ↗</a>{{end}}
+      {{end}}
     </article>
     {{else}}
-    <article class="tile"><p>No servers yet. {{if eq $.Role "admin"}}<a href="/settings#servers">Add one in Settings</a>.{{else}}Ask an admin to add one.{{end}}</p></article>
+    <article class="tile"><p>There are no servers. {{if eq $.Role "admin"}}<a href="/settings#servers">Add one in Settings</a>.{{else}}Ask an administrator to add one.{{end}}</p></article>
     {{end}}
     <article class="tile">
       <header><h2>PCs</h2></header>
       <dl class="facts">
         <dt>Total</dt><dd>{{$vm.PCTotal}}</dd>
         <dt>Online</dt><dd class="c-ok">✔ {{$vm.PCOnline}}</dd>
-        <dt>Offline &gt; {{$vm.PCOffLabel}}</dt><dd>{{if $vm.PCOff}}<span class="c-warn">○ {{$vm.PCOff}}</span>{{else}}0{{end}}</dd>
+        <dt>Offline more than {{$vm.PCOffLabel}}</dt><dd>{{if $vm.PCOff}}<span class="c-warn">○ {{$vm.PCOff}}</span>{{else}}0{{end}}</dd>
+        {{if $vm.PCUnknown}}<dt>Unknown</dt><dd class="muted" title="A server that knows these PCs is not up: their state is not known">? {{$vm.PCUnknown}}</dd>{{end}}
       </dl>
-      <a href="/grid">Folder grid →</a>
+      <a href="/grid">Folders →</a>
     </article>
   </section>
 
+  {{with $vm.Links}}
+  <section class="card" aria-label="Connections">
+    <h2>Connections</h2>
+    <ul class="links">
+      {{range .}}<li class="lk-{{.Class}}"{{if $vm.Sites}}{{template "site-attr" .Sites}}{{end}}><span class="lk-state" aria-hidden="true">{{.Icon}}</span> <span class="lk-name">{{.A}}</span> ↔ <span class="lk-name">{{.B}}</span>: <span class="lk-state">{{.State}}</span></li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
   <section class="card">
     <header class="row">
-      <h2>Top problems</h2>
-      <a href="/problems">All {{$vm.OpenCount}} open →</a>
+      <h2>Most important open findings</h2>
+      <span><a href="/problems">All {{$vm.OpenCount}} open →</a>{{if $vm.SnoozedCount}} <a class="muted small" href="/problems#snoozed">· {{$vm.SnoozedCount}} snoozed or ignored</a>{{end}}</span>
     </header>
     {{if $vm.Top}}
-    <ul class="plist compact">
+    <ul class="plist compact"{{if $vm.Sites}} data-limit="{{$vm.TopLimit}}"{{end}}>
       {{range $vm.Top}}
-      <li class="sev-row-{{.Severity}}">
+      <li class="sev-row-{{.Severity}}{{if .Over}} over-limit{{end}}"{{if $vm.Sites}}{{template "site-attr" .Sites}}{{end}}>
         {{template "sev" .}} <span class="chk">{{.Checks}}</span>
-        {{if .Urgent}}<span class="tag urgent" title="Sends urgent pings">urgent</span>{{end}}
-        {{if .Stale}}<span class="tag stale" title="Server unreachable: last known state">stale</span>{{end}}
+        {{if .Urgent}}<span class="tag urgent" title="Sends urgent messages">urgent</span>{{end}}
+        {{if .Stale}}<span class="tag stale" title="No current data: last known state">stale</span>{{end}}
         <a class="plain" href="/problems#f-{{.ID}}">{{.Message}}</a>
         <span class="muted">· open {{.OpenFor}}</span>
       </li>
       {{end}}
     </ul>
-    {{else}}<p class="c-ok">✔ No open problems.</p>{{end}}
+    {{if $vm.Sites}}<p class="c-ok site-empty" hidden>✔ There are no open findings for this site.</p>{{end}}
+    {{else}}<p class="c-ok">✔ There are no open findings.</p>{{end}}
   </section>
-  <p class="muted small">Live view · last change {{$vm.Evaluated}}</p>
+  <p class="muted small"><span class="live-on">Real-time view</span><span class="live-off">No connection to syncwatch</span> · last change {{$vm.Evaluated}}</p>
 </div>
 {{end}}

@@ -1,3 +1,4 @@
+# Files that the image build does not need. The docs and the test fixtures remain on the host.
 .git
 .github
 data

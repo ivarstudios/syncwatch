@@ -9,9 +9,12 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -35,10 +38,11 @@ type Hooks struct {
 	AcceptCert      func(serverID, fingerprint string) error
 	ResetPin        func(serverID string) error
 	SendTest        func(ctx context.Context) error
-	Notice          func(title, summary string)        // announce a security-relevant settings change
-	NoticeLater     func() func(title, summary string) // capture today's channels, announce to them later
-	ChannelsChanged func()                             // notification channels were replaced; retry now
-	Delivery        func() notify.Delivery             // whether notifications reach their channels
+	SendNoticesTest func(ctx context.Context) error // send a test notice to the webhook for settings notices
+	Notice          func(notify.Notice)             // announce a security-relevant settings change
+	NoticeLater     func() func(notify.Notice)      // capture today's channels, announce to them later
+	ChannelsChanged func()                          // notification channels were replaced; retry now
+	Delivery        func() notify.Delivery          // whether notifications reach their channels
 }
 
 // Server is the HTTP handler.
@@ -53,7 +57,12 @@ type Server struct {
 
 	tmpl    *template.Template
 	limiter *limiter
+	logs    *logLimiter // once-a-minute log lines about refused requests
 	mux     *http.ServeMux
+	hosts   []string       // names answered besides addresses, localhost and public_url's host
+	trusted []netip.Prefix // the reverse proxies whose X-Forwarded-Proto counts (TrustProxies)
+	health  HealthOptions  // the rules of /healthz (SetHealth)
+	imports pendingImports // the files of the import previews (importpreview.go)
 
 	setupMu    sync.Mutex
 	setupToken string
@@ -64,7 +73,7 @@ func New(cfg *config.Holder, st *store.Store, eng *engine.Engine, hooks Hooks, v
 	if log == nil {
 		log = slog.Default()
 	}
-	s := &Server{cfg: cfg, st: st, eng: eng, hooks: hooks, log: log, version: version, now: time.Now, limiter: newLimiter()}
+	s := &Server{cfg: cfg, st: st, eng: eng, hooks: hooks, log: log, version: version, now: time.Now, limiter: newLimiter(), logs: newLogLimiter()}
 	t, err := template.New("").Funcs(s.funcs()).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -89,9 +98,64 @@ func (s *Server) SetupToken() string {
 	return s.setupToken
 }
 
+// LogSetupToken logs the setup token while no admin password is set in
+// built-in mode. When the log level hides warnings the line goes to stderr
+// as well: the first start can't be finished without it.
+func (s *Server) LogSetupToken(stderr io.Writer) {
+	tok := s.SetupToken()
+	if tok == "" || s.cfg.Get().Access.Mode != config.AccessBuiltin {
+		return
+	}
+	const msg = "no administrator password is set: open the dashboard and type the setup token"
+	s.log.Warn(msg, "setup_token", tok)
+	if !s.log.Enabled(context.Background(), slog.LevelWarn) {
+		fmt.Fprintf(stderr, "syncwatch: %s: %s\n", msg, tok)
+	}
+}
+
 func (s *Server) adminConfigured() bool {
 	h, _ := s.st.Setting(KeyAdminHash)
 	return h != ""
+}
+
+// AllowHosts adds names the dashboard answers to: the host of the listen
+// address and extra names (SYNCWATCH_TLS_HOSTS). Addresses, localhost and
+// the host of public_url are always answered. Call it before serving.
+func (s *Server) AllowHosts(listen string, extra ...string) {
+	if h, _, err := net.SplitHostPort(listen); err == nil && h != "" {
+		s.hosts = append(s.hosts, h)
+	}
+	for _, h := range extra {
+		if h = strings.TrimSpace(h); h != "" {
+			s.hosts = append(s.hosts, h)
+		}
+	}
+}
+
+// hostAllowed reports whether the Host header names this server. A page on
+// any other name (DNS rebinding) is refused: it would be same-origin with
+// its own name, so the Origin check alone can't keep it out.
+func (s *Server) hostAllowed(r *http.Request) bool {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	if host == "" {
+		return false
+	}
+	if _, err := netip.ParseAddr(host); err == nil || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if u, err := url.Parse(s.cfg.Get().PublicURL); err == nil && strings.EqualFold(u.Hostname(), host) {
+		return true
+	}
+	for _, h := range s.hosts {
+		if strings.EqualFold(strings.TrimSuffix(h, "."), host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) routes() {
@@ -103,13 +167,7 @@ func (s *Server) routes() {
 	m.Handle("GET /favicon.ico", cacheFor(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, sub, "syncwatch-icon.ico")
 	}), 24*time.Hour))
-	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if err := s.st.Ping(r.Context()); err != nil {
-			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	m.HandleFunc("GET /healthz", s.handleHealthz)
 
 	m.HandleFunc("GET /login", s.page(RoleNone, s.handleLoginPage))
 	m.HandleFunc("POST /login", s.page(RoleNone, s.handleLogin))
@@ -125,6 +183,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /frag/problems", s.page(RoleViewer, s.fragProblems))
 	m.HandleFunc("GET /events", s.page(RoleViewer, s.handleSSE))
 	m.HandleFunc("GET /frag/alert", s.page(RoleViewer, s.fragAlert))
+	m.HandleFunc("GET /lobby", s.page(RoleViewer, s.handleLobby))
+	m.HandleFunc("GET /frag/lobby", s.page(RoleViewer, s.fragLobby))
 
 	m.HandleFunc("POST /problems/{id}/snooze", s.action(RoleAdmin, s.handleSnooze))
 	m.HandleFunc("POST /problems/{id}/ignore", s.action(RoleAdmin, s.handleIgnore))
@@ -134,14 +194,17 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /settings/servers", s.action(RoleAdmin, s.handleServerSave))
 	m.HandleFunc("POST /settings/servers/{id}/delete", s.action(RoleAdmin, s.handleServerDelete))
 	m.HandleFunc("POST /settings/servers/{id}/accept-cert", s.action(RoleAdmin, s.handleAcceptCert))
+	m.HandleFunc("POST /settings/devices", s.action(RoleAdmin, s.handleDevicesSave))
 	m.HandleFunc("POST /settings/notifications", s.action(RoleAdmin, s.handleNotifySave))
 	m.HandleFunc("POST /settings/notifications/test", s.action(RoleAdmin, s.handleNotifyTest))
+	m.HandleFunc("POST /settings/notifications/test-notices", s.action(RoleAdmin, s.handleNoticesTest))
 	m.HandleFunc("POST /settings/checks", s.action(RoleAdmin, s.handleChecksSave))
 	m.HandleFunc("POST /settings/structure", s.action(RoleAdmin, s.handleStructureSave))
 	m.HandleFunc("POST /settings/collector", s.action(RoleAdmin, s.handleCollectorSave))
 	m.HandleFunc("POST /settings/access", s.action(RoleAdmin, s.handleAccessSave))
 	m.HandleFunc("POST /settings/password", s.action(RoleAdmin, s.handlePasswordSave))
-	m.HandleFunc("POST /settings/api-token", s.action(RoleAdmin, s.handleAPIToken))
+	m.HandleFunc("POST /settings/api-tokens", s.action(RoleAdmin, s.handleAPITokens))
+	m.HandleFunc("POST /settings/api-token", s.action(RoleAdmin, s.handleAPITokens))
 	m.HandleFunc("GET /settings/export", s.page(RoleAdmin, s.handleExport))
 	m.HandleFunc("POST /settings/import", s.action(RoleAdmin, s.handleImport))
 
@@ -158,6 +221,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "same-origin")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	if !s.hostAllowed(r) {
+		// Anyone can send any Host: log a count once a minute per client,
+		// and only the start of a long name.
+		ip, host := clientIP(r), cutText(r.Host, 100)
+		if n := s.logs.count("host "+ip, s.now()); n > 0 {
+			s.log.Info("request for an unknown host name refused", "host", host, "ip", ip, "count", n)
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			apiError(w, http.StatusMisdirectedRequest, fmt.Sprintf("unknown host name %q: add the name to SYNCWATCH_TLS_HOSTS, or use the name in the dashboard URL (public_url)", host))
+			return
+		}
+		http.Error(w, fmt.Sprintf("syncwatch does not answer to the host name %q. Open the dashboard by IP address. Then use the name in the dashboard URL (public_url) in Settings → Notifications, or add the name to SYNCWATCH_TLS_HOSTS.", host), http.StatusMisdirectedRequest)
+		return
+	}
 	s.mux.ServeHTTP(w, r)
 }
 
@@ -173,6 +250,8 @@ type handler func(w http.ResponseWriter, r *http.Request, info requestInfo)
 // page wraps a GET (or login/setup POST) handler with role checks.
 func (s *Server) page(need string, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Login and setup parse a form before anyone is logged in.
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 		info := s.resolve(r)
 		s.ensureCSRF(w, r, &info)
 		if !roleAtLeast(info.Role, need) {
@@ -205,18 +284,23 @@ func (s *Server) action(need string, h handler) http.HandlerFunc {
 func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	if r.Header.Get("HX-Request") == "true" || strings.HasPrefix(r.URL.Path, "/frag/") || r.URL.Path == "/events" {
 		w.Header().Set("HX-Redirect", "/login")
-		http.Error(w, "login required", http.StatusUnauthorized)
+		http.Error(w, "login necessary", http.StatusUnauthorized)
 		return
 	}
 	if info.Role != RoleNone {
-		s.render(w, r, http.StatusForbidden, "error", info, map[string]any{"Title": "Not allowed", "Message": "This page needs the admin password."})
+		s.render(w, r, http.StatusForbidden, "error", info, map[string]any{"Title": "Not permitted", "Message": "This page needs the administrator password."})
 		return
 	}
 	if !s.adminConfigured() && s.cfg.Get().Access.Mode == config.AccessBuiltin {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/login?next="+urlQueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+	to := "/login"
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		// Only a page can be returned to; a form has to be sent again.
+		to += "?next=" + urlQueryEscape(r.URL.RequestURI())
+	}
+	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
 func urlQueryEscape(s string) string {
@@ -235,13 +319,15 @@ type pageData struct {
 	Flash    string
 	FlashErr string
 	Alert    *deliveryAlert
+	TZOffset int // minutes east of UTC in the configured zone, for times that the browser writes
 	Data     any
 }
 
 // deliveryAlert is the banner shown while notifications are failing.
 type deliveryAlert struct {
-	Since string
-	Error string // only for admins
+	Since   string
+	Error   string // only for admins
+	NextTry string // the time of the next try (21:52); "" when it is not known or not in the future
 }
 
 func (s *Server) alert(info requestInfo) *deliveryAlert {
@@ -253,6 +339,11 @@ func (s *Server) alert(info requestInfo) *deliveryAlert {
 		return nil
 	}
 	a := &deliveryAlert{Since: s.fmtTime(d.Since)}
+	// A try time that passed is the next tick of the notifier: the banner
+	// then says "automatically" (it refreshes every minute).
+	if d.NextTry.After(s.now()) {
+		a.NextTry = s.fmtClock(d.NextTry)
+	}
 	if info.Role == RoleAdmin {
 		a.Error = d.Error
 	}
@@ -261,6 +352,8 @@ func (s *Server) alert(info requestInfo) *deliveryAlert {
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, info requestInfo, data any) {
 	pd := pageData{Role: info.Role, LoggedIn: info.Session != nil, CSRF: info.CSRF, Version: s.version, Proxy: s.cfg.Get().Access.Mode == config.AccessProxy, Alert: s.alert(info), Data: data}
+	_, off := s.now().In(s.cfg.Get().Location()).Zone()
+	pd.TZOffset = off / 60
 	if m, ok := data.(map[string]any); ok {
 		if t, ok := m["Title"].(string); ok {
 			pd.Title = t
@@ -277,7 +370,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	pd.Nav = name
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, name, pd); err != nil {
-		s.log.Error("rendering template", "template", name, "err", err)
+		s.log.Error("cannot render the template", "template", name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -289,7 +382,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 func (s *Server) fragment(w http.ResponseWriter, name string, info requestInfo, data any) {
 	var buf bytes.Buffer
 	if err := s.tmpl.ExecuteTemplate(&buf, name, pageData{Role: info.Role, CSRF: info.CSRF, Alert: s.alert(info), Data: data}); err != nil {
-		s.log.Error("rendering fragment", "template", name, "err", err)
+		s.log.Error("cannot render the fragment", "template", name, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -354,9 +447,11 @@ func (s *Server) funcs() template.FuncMap {
 			}
 			return t.In(s.cfg.Get().Location()).Format("2006-01-02")
 		},
+		"timefmt":      s.fmtTime,
 		"severityName": func(sev any) string { return fmt.Sprint(sev) },
 		"plus1":        func(i int) int { return i + 1 },
 		"list":         func(s ...string) []string { return s },
+		"plural":       plural,
 	}
 }
 
@@ -369,6 +464,13 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request, info re
 	}
 	if !s.adminConfigured() {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+	if info.Session != nil && info.Role != RoleNone {
+		// Already logged in, for example through a link from Discord. A
+		// viewer session from before viewing was switched off gives no
+		// role; it gets the form rather than a page that sends it back.
+		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}
 	s.render(w, r, http.StatusOK, "login", info, map[string]any{"Title": "Log in", "Next": safeNext(r.URL.Query().Get("next"))})
@@ -402,32 +504,36 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request, info reques
 	next := safeNext(r.FormValue("next"))
 	ok, delay := s.limiter.check(ip, now)
 	if !ok {
-		s.log.Warn("login rate limit reached", "ip", ip)
-		s.render(w, r, http.StatusTooManyRequests, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "Too many failed attempts. Try again in a few minutes."})
+		if n := s.logs.count("login "+ip, now); n > 0 {
+			s.log.Warn("login rate limit reached", "ip", ip, "count", n)
+		}
+		s.render(w, r, http.StatusTooManyRequests, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": errTooManyLogins})
 		return
 	}
 	wait(r, delay)
 	pw := r.FormValue("password")
 	role := RoleNone
+	tried := []string{RoleAdmin} // a wrong password was a guess at each password it was checked against
 	if h, _ := s.st.Setting(KeyAdminHash); h != "" && CheckPassword(pw, h) {
 		role = RoleAdmin
 	} else if s.cfg.Get().Access.Viewer == config.ViewerPassword {
+		tried = append(tried, RoleViewer)
 		if h, _ := s.st.Setting(KeyViewerHash); h != "" && CheckPassword(pw, h) {
 			role = RoleViewer
 		}
 	}
 	if role == RoleNone {
-		if s.limiter.fail(ip, now) {
-			s.log.Warn("many failed logins from different addresses; logins are slowed down for a while")
+		if s.limiter.fail(ip, now, tried...) {
+			s.log.Warn("many failed logins from different addresses, syncwatch now slows all logins")
 		}
 		s.log.Warn("failed login", "ip", ip)
 		time.Sleep(300 * time.Millisecond)
-		s.render(w, r, http.StatusUnauthorized, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "Wrong password."})
+		s.render(w, r, http.StatusUnauthorized, "login", info, map[string]any{"Title": "Log in", "Next": next, "Error": "The password is not correct."})
 		return
 	}
-	s.limiter.success(ip)
+	s.limiter.success(ip, role)
 	if err := s.startSession(w, r, role); err != nil {
-		http.Error(w, "could not start session", http.StatusInternalServerError)
+		http.Error(w, "cannot start the session", http.StatusInternalServerError)
 		return
 	}
 	s.log.Info("login", "role", role, "ip", ip)
@@ -444,7 +550,7 @@ func (s *Server) handleSetupPage(w http.ResponseWriter, r *http.Request, info re
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, http.StatusOK, "setup", info, map[string]any{"Title": "Set up syncwatch"})
+	s.render(w, r, http.StatusOK, "setup", info, map[string]any{"Title": "First start"})
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -459,24 +565,25 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	ip := clientIP(r)
 	ok, delay := s.limiter.check(ip, s.now())
 	if !ok {
-		s.render(w, r, http.StatusTooManyRequests, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "Too many failed attempts. Try again later."})
+		s.render(w, r, http.StatusTooManyRequests, "setup", info, map[string]any{"Title": "First start", "Error": "Too many failed tries. Try again in 10 minutes."})
 		return
 	}
 	wait(r, delay)
 	want := s.SetupToken()
 	got := strings.TrimSpace(r.FormValue("token"))
 	if want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
-		s.limiter.fail(ip, s.now())
-		s.render(w, r, http.StatusUnauthorized, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "Wrong setup token. It is printed in the container log."})
+		s.limiter.fail(ip, s.now(), RoleAdmin)
+		s.render(w, r, http.StatusUnauthorized, "setup", info, map[string]any{"Title": "First start", "Error": "The setup token is not correct. Copy the setup token from the log."})
 		return
 	}
+	s.limiter.success(ip, RoleAdmin)
 	pw := r.FormValue("password")
 	if err := checkNewPassword(pw); err != nil {
-		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": err.Error(), "Token": got})
+		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": err.Error(), "Token": got})
 		return
 	}
 	if pw != r.FormValue("password2") {
-		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "Set up syncwatch", "Error": "The passwords don't match.", "Token": got})
+		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": "The passwords are not the same.", "Token": got})
 		return
 	}
 	hash, err := HashPassword(pw)
@@ -490,8 +597,8 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	}
 	s.SetupToken() // clears the token
 	_ = s.startSession(w, r, RoleAdmin)
-	s.log.Info("admin password set through first-run setup", "ip", ip)
-	s.redirect(w, r, "/settings", "Admin password set. Add your Syncthing servers below.", false)
+	s.log.Info("administrator password set with the setup token", "ip", ip)
+	s.redirect(w, r, "/settings", "The administrator password is set. Add your servers below.", false)
 }
 
 // Dashboard pages.
@@ -506,21 +613,21 @@ func (s *Server) fragOverview(w http.ResponseWriter, r *http.Request, info reque
 }
 
 func (s *Server) handleGrid(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	s.render(w, r, http.StatusOK, "grid", info, map[string]any{"Title": "Folders", "VM": s.grid(s.eng.View())})
+	s.render(w, r, http.StatusOK, "grid", info, map[string]any{"Title": "Folders", "VM": s.grid(s.eng.View(), info.Role)})
 }
 
 func (s *Server) fragGrid(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	s.fragment(w, "grid-body", info, map[string]any{"VM": s.grid(s.eng.View())})
+	s.fragment(w, "grid-body", info, map[string]any{"VM": s.grid(s.eng.View(), info.Role)})
 }
 
 func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	f := parseFilter(r.URL.Query())
-	s.render(w, r, http.StatusOK, "problems", info, map[string]any{"Title": "Problems", "VM": s.problems(s.eng.View(), f), "Admin": info.Role == RoleAdmin})
+	s.render(w, r, http.StatusOK, "problems", info, map[string]any{"Title": "Findings", "VM": s.problems(s.eng.View(), f, info.Role), "Admin": info.Role == RoleAdmin})
 }
 
 func (s *Server) fragProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	f := parseFilter(r.URL.Query())
-	s.fragment(w, "problems-body", info, map[string]any{"VM": s.problems(s.eng.View(), f), "Admin": info.Role == RoleAdmin})
+	s.fragment(w, "problems-body", info, map[string]any{"VM": s.problems(s.eng.View(), f, info.Role), "Admin": info.Role == RoleAdmin})
 }
 
 // fragAlert refreshes the notification banner on open pages.
@@ -528,11 +635,17 @@ func (s *Server) fragAlert(w http.ResponseWriter, r *http.Request, info requestI
 	s.fragment(w, "alert", info, nil)
 }
 
-// SSE: one "update" event whenever the visible state changes, at most every 3 s.
+// ssePing is how often the event stream sends a "ping" event. The page
+// marks its data as old when no event comes for a minute (app.js).
+var ssePing = 25 * time.Second
+
+// SSE: one "update" event whenever the visible state changes, at most every
+// 3 s, and a "ping" event every ssePing. A ping is an event, not a comment:
+// comments do not reach the page, and the page must see that the stream works.
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		http.Error(w, "server-sent events not supported", http.StatusInternalServerError)
 		return
 	}
 	ch, cancel := s.eng.Subscribe()
@@ -544,7 +657,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestI
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "retry: 5000\n\n")
 	fl.Flush()
-	ping := time.NewTicker(25 * time.Second)
+	ping := time.NewTicker(ssePing)
 	defer ping.Stop()
 	var last time.Time
 	pending := false
@@ -554,7 +667,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request, info requestI
 		case <-r.Context().Done():
 			return
 		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
+			fmt.Fprint(w, "event: ping\ndata: 1\n\n")
 			fl.Flush()
 		case <-ch:
 			if time.Since(last) < 3*time.Second {
@@ -588,34 +701,56 @@ func (s *Server) handleSnooze(w http.ResponseWriter, r *http.Request, info reque
 	case "1w":
 		until = now.Add(7 * 24 * time.Hour)
 	case "date":
+		// The snooze lasts to the end of the chosen day, so today is fine.
 		d, err := time.ParseInLocation("2006-01-02", r.FormValue("until"), s.cfg.Get().Location())
+		if err == nil {
+			d = d.AddDate(0, 0, 1)
+		}
 		if err != nil || !d.After(now) {
-			s.redirect(w, r, backTo(r), "Pick a date in the future.", true)
+			s.redirect(w, r, backTo(r), "Select today or a later date.", true)
 			return
 		}
 		until = d
 	default:
-		s.redirect(w, r, backTo(r), "Unknown snooze length.", true)
+		s.redirect(w, r, backTo(r), "The snooze length is not valid. Select 1 day, 1 week or a date.", true)
 		return
 	}
-	if err := s.eng.Snooze(id, until, strings.TrimSpace(r.FormValue("reason")), info.Role); err != nil {
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if err := s.eng.Snooze(id, until, reason, info.Role); err != nil {
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
-	s.redirect(w, r, backTo(r), "Snoozed until "+s.fmtTime(until)+".", false)
+	detail := "The finding is snoozed until " + s.fmtTime(until) + "."
+	if reason != "" {
+		detail += " Reason: " + reason
+	}
+	s.announceHidden(r, id, "snoozed", detail)
+	s.redirect(w, r, backTo(r), "The finding is snoozed until "+s.fmtTime(until)+".", false)
 }
 
 func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info requestInfo) {
 	reason := strings.TrimSpace(r.FormValue("reason"))
 	if reason == "" {
-		s.redirect(w, r, backTo(r), "Give a reason for ignoring the problem.", true)
+		s.redirect(w, r, backTo(r), "Type a reason before you ignore the finding.", true)
 		return
 	}
 	if err := s.eng.Ignore(r.PathValue("id"), reason, info.Role); err != nil {
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
-	s.redirect(w, r, backTo(r), "Problem ignored.", false)
+	s.announceHidden(r, r.PathValue("id"), "ignored", "The finding is ignored. Reason: "+reason)
+	s.redirect(w, r, backTo(r), "The finding is ignored.", false)
+}
+
+// announceHidden tells the channels when an urgent problem is snoozed or
+// ignored, since nobody is pinged about it from then on.
+func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
+	for _, f := range s.eng.View().Open {
+		if f.ID == id && f.Urgent {
+			s.announce(r, notify.Notice{Title: "Urgent finding " + what, Summary: f.Check + " " + f.Subject + ": " + f.Message + "\n" + detail, Security: false})
+			return
+		}
+	}
 }
 
 func (s *Server) handleUnsnooze(w http.ResponseWriter, r *http.Request, info requestInfo) {
@@ -623,7 +758,7 @@ func (s *Server) handleUnsnooze(w http.ResponseWriter, r *http.Request, info req
 		s.redirect(w, r, backTo(r), err.Error(), true)
 		return
 	}
-	s.redirect(w, r, backTo(r), "Snooze removed.", false)
+	s.redirect(w, r, backTo(r), "The snooze is removed.", false)
 }
 
 func backTo(r *http.Request) string {

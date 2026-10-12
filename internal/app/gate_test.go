@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net/http"
@@ -97,6 +98,15 @@ func TestRunGate(t *testing.T) {
 			t.Fatal("the gate answered over plain HTTP")
 		}
 	}
+	// Headers over 64 KiB are refused.
+	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // the gate's own self-signed certificate
+	req, _ := http.NewRequest(http.MethodGet, "https://"+addr+"/healthz", nil)
+	req.Header.Set("X-Padding", strings.Repeat("a", 70<<10))
+	if resp, err := hc.Do(req); err != nil || resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Fatalf("70 KiB header: %v %v", resp, err)
+	} else {
+		resp.Body.Close()
+	}
 	stop()
 
 	// A restart keeps the token and doesn't show it again.
@@ -108,6 +118,23 @@ func TestRunGate(t *testing.T) {
 	}
 	if fi, _ := os.Stat(filepath.Join(o.DataDir, "gate-token")); os.PathSeparator == '/' && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("token file mode %v", fi.Mode().Perm())
+	}
+}
+
+// A pin file that exists but can't be read stops the gate: starting
+// without the pin would trust whatever answers as Syncthing. Only a
+// missing file means first use.
+func TestGateRefusesUnreadablePin(t *testing.T) {
+	dir := t.TempDir()
+	kf := filepath.Join(dir, "key")
+	_ = os.WriteFile(kf, []byte("real-syncthing-key-0123456789\n"), 0o600)
+	data := filepath.Join(dir, "gate")
+	_ = os.MkdirAll(filepath.Join(data, "syncthing.pin"), 0o700) // exists, can't be read
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := RunGate(ctx, GateOptions{DataDir: data, Listen: "127.0.0.1:0", Syncthing: "https://syncthing.invalid:8384", KeyFile: kf, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err == nil || !strings.Contains(err.Error(), "pin") {
+		t.Fatalf("started with an unreadable pin file: %v", err)
 	}
 }
 

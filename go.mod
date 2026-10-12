@@ -1,6 +1,6 @@
 module github.com/ivarstudios/syncwatch
 
-go 1.27.1
+go 1.27.2
 
 require (
 	golang.org/x/crypto v0.57.0
