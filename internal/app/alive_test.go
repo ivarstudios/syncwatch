@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -71,6 +72,105 @@ func TestGapAfterStop(t *testing.T) {
 			t.Errorf("%s: log %q, want %q", c.name, logs.String(), want)
 		}
 		st.Close()
+	}
+}
+
+// aliveAndGaps returns the heartbeat and the gaps in the store of dir.
+func aliveAndGaps(t *testing.T, dir string) (time.Time, []store.Gap) {
+	t.Helper()
+	st, err := OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	alive, err := st.AliveAt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gaps, err := st.Gaps(time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return alive, gaps
+}
+
+// runUntilListening runs Run until it listens. stop ends the run and waits
+// for Run.
+func runUntilListening(t *testing.T, o Options) (addr string, stop func()) {
+	t.Helper()
+	ready := make(chan string, 1)
+	o.Listen, o.OnListen = "127.0.0.1:0", func(a string) { ready <- a }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, o) }()
+	select {
+	case addr = <-ready:
+	case err := <-done:
+		cancel()
+		t.Fatalf("Run returned: %v", err)
+	case <-time.After(30 * time.Second):
+		cancel()
+		t.Fatal("no listener")
+	}
+	return addr, func() {
+		t.Helper()
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run did not return")
+		}
+	}
+}
+
+// A start that fails before it listens (a TLS file that is missing, an
+// address in use, a SYNCWATCH_ADMIN_PASSWORD that is too short) did not run:
+// it records no gap and does not move the heartbeat. Docker starts such a
+// container again and again, at most 1 minute apart, thus a failed start that
+// moved the heartbeat cut the gap. The start that works records the gap from
+// the last heartbeat of the syncwatch that ran.
+func TestFailedStartKeepsTheHeartbeat(t *testing.T) {
+	dir := t.TempDir()
+	st, err := OpenStore(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastBeat := time.Now().Add(-3 * time.Hour).Truncate(time.Millisecond)
+	if err := st.SetAliveAt(lastBeat); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	missing := filepath.Join(dir, "certs", "nas.pem")
+	for _, c := range []struct {
+		name string
+		o    Options
+	}{
+		{"TLS file missing", Options{Listen: "127.0.0.1:0", TLSCert: missing, TLSKey: missing}},
+		{"address in use", Options{Listen: busy.Addr().String()}},
+		{"SYNCWATCH_ADMIN_PASSWORD too short", Options{Listen: "127.0.0.1:0", AdminPassword: "short"}},
+	} {
+		c.o.DataDir, c.o.Log = dir, slog.New(slog.NewTextHandler(io.Discard, nil))
+		if err := Run(context.Background(), c.o); err == nil {
+			t.Fatalf("%s: the start did not fail", c.name)
+		}
+		if alive, gaps := aliveAndGaps(t, dir); !alive.Equal(lastBeat) || len(gaps) != 0 {
+			t.Errorf("%s: heartbeat %v, want %v; gaps %+v", c.name, alive, lastBeat, gaps)
+		}
+	}
+
+	started := time.Now()
+	_, stop := runUntilListening(t, Options{DataDir: dir, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	stop()
+	if _, gaps := aliveAndGaps(t, dir); len(gaps) != 1 || !gaps[0].From.Equal(lastBeat) || gaps[0].To.Before(started.Truncate(time.Millisecond)) {
+		t.Fatalf("gaps %+v, want 1 from %v to the start that works (%v)", gaps, lastBeat, started)
 	}
 }
 

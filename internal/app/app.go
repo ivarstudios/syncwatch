@@ -533,14 +533,6 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return fmt.Errorf("the stored configuration is not valid: %w", err)
 	}
-	// The time when syncwatch did not run, before the first heartbeat of
-	// this start replaces the last one.
-	if err := noteGap(st, started, holder.Get().Location(), log); err != nil {
-		log.Warn("cannot record the time when syncwatch did not run", "err", err)
-	}
-	if err := st.SetAliveAt(started); err != nil {
-		log.Warn("cannot record the heartbeat", "err", err)
-	}
 	if o.AdminPassword != "" {
 		if h, _ := st.Setting(web.KeyAdminHash); h == "" {
 			if len([]rune(o.AdminPassword)) < web.MinPasswordLength {
@@ -644,6 +636,17 @@ func Run(ctx context.Context, o Options) error {
 	}
 	if tc != nil {
 		ln = tls.NewListener(ln, tc)
+	}
+	// The time when syncwatch did not run, before the first heartbeat of
+	// this start replaces the last one. Only a start that listens counts: a
+	// start that fails before this point (the TLS files, an address in use)
+	// did not run. Docker starts such a container again and again, and a
+	// heartbeat of each failed start would cut the gap.
+	if err := noteGap(st, started, holder.Get().Location(), log); err != nil {
+		log.Warn("cannot record the time when syncwatch did not run", "err", err)
+	}
+	if err := st.SetAliveAt(started); err != nil {
+		log.Warn("cannot record the heartbeat", "err", err)
 	}
 	// Requests, the dashboard's event streams among them, end with reqCtx:
 	// shutdown cancels it first, so open tabs don't hold Shutdown back.
