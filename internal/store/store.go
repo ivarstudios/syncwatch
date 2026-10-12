@@ -20,8 +20,9 @@ import (
 
 // Store is the SQLite database.
 type Store struct {
-	db  *sql.DB
-	key []byte // AES-256 key for secrets
+	db       *sql.DB
+	key      []byte       // AES-256 key for secrets
+	oldToken OldTokenMove // what Open did with the API token of an older version
 }
 
 const schemaVersion = 1
@@ -208,7 +209,7 @@ func (s *Store) migrateAPIToken() error {
 	if err != nil || token == "" {
 		return nil
 	}
-	moved, err := moveOldAPIToken(tx, token, updated)
+	moved, res, err := moveOldAPIToken(tx, token, updated)
 	if err != nil {
 		return err
 	}
@@ -217,8 +218,16 @@ func (s *Store) migrateAPIToken() error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.oldToken = res
+	return nil
 }
+
+// OldAPITokenMove is what Open did with the single API token of an older
+// version. The serve command writes it in the log.
+func (s *Store) OldAPITokenMove() OldTokenMove { return s.oldToken }
 
 func ms(t time.Time) int64 {
 	if t.IsZero() {

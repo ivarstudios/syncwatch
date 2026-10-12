@@ -124,6 +124,17 @@ func openServeStore(dataDir, secretKey string, log *slog.Logger) (*store.Store, 
 	case made:
 		log.Info("new secret key made", "file", keyFile)
 	}
+	// The API token of an older version (also after a downgrade and a new
+	// update) is moved when the store opens. The store has no logger.
+	switch st.OldAPITokenMove() {
+	case store.OldTokenReplaced:
+		log.Info(`the API token of an older version replaces the value of the API token "` + store.LegacyTokenName + `"`)
+	case store.OldTokenAdded:
+		log.Info(`the API token of an older version is now the API token "`+store.LegacyTokenName+`"`, "scope", store.ScopeFull)
+	case store.OldTokenRefused:
+		log.Warn(fmt.Sprintf(`cannot move the API token of an older version: there are %d API tokens and none has the name "%s". Settings shows the old API token as refused`,
+			store.MaxAPITokens, store.LegacyTokenName))
+	}
 	return st, nil
 }
 

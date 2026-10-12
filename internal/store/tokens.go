@@ -35,6 +35,25 @@ const LegacyTokenName = "API token"
 // older version has a different time.
 const keyOldTokenRefused = "api.token_refused"
 
+// OldTokenMove is what Open did with the single API token of an older
+// version (the secret api.token).
+type OldTokenMove int
+
+const (
+	// OldTokenNone: no change. There is no such secret, an API token has
+	// its value already, or Settings showed it as refused before.
+	OldTokenNone OldTokenMove = iota
+	// OldTokenReplaced: the value replaces the value of the API token
+	// "API token".
+	OldTokenReplaced
+	// OldTokenAdded: the value is the new API token "API token" with the
+	// scope full.
+	OldTokenAdded
+	// OldTokenRefused: there are MaxAPITokens and none of them is "API
+	// token". The value stays a secret, and Settings shows it as refused.
+	OldTokenRefused
+)
+
 // moveOldAPIToken moves the value token of the single API token of an older
 // version (the secret api.token, saved at created) into api_tokens in the
 // transaction tx. The rule is the rule of an imported api.token: the value
@@ -45,16 +64,17 @@ const keyOldTokenRefused = "api.token_refused"
 // value that an API token has already changes nothing. moved is false when
 // there are MaxAPITokens and none of them is "API token": then the value
 // stays a secret, and Settings shows it as refused. It stays refused also at
-// a later open with fewer API tokens (keyOldTokenRefused).
-func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err error) {
+// a later open with fewer API tokens (keyOldTokenRefused). res tells what
+// changed.
+func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, res OldTokenMove, err error) {
 	hash := HashAPIToken(token)
 	var refused int64
 	if err := tx.QueryRow(`SELECT CAST(value AS INTEGER) FROM settings WHERE key=?`, keyOldTokenRefused).Scan(&refused); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return false, err
+		return false, OldTokenNone, err
 	}
 	rows, err := tx.Query(`SELECT id, name, hash FROM api_tokens`)
 	if err != nil {
-		return false, err
+		return false, OldTokenNone, err
 	}
 	var legacy string
 	n, same := 0, false
@@ -62,7 +82,7 @@ func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err e
 		var id, name, h string
 		if err := rows.Scan(&id, &name, &h); err != nil {
 			rows.Close()
-			return false, err
+			return false, OldTokenNone, err
 		}
 		n, same = n+1, same || h == hash
 		if strings.EqualFold(name, LegacyTokenName) {
@@ -71,26 +91,31 @@ func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err e
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return false, err
+		return false, OldTokenNone, err
 	}
 	switch {
 	case same:
-		return true, nil
+		return true, OldTokenNone, nil
 	case refused == created:
-		return false, nil
+		return false, OldTokenNone, nil
 	case legacy != "":
 		_, err = tx.Exec(`UPDATE api_tokens SET hash=?, created_at=?, last_used=0 WHERE id=?`, hash, created, legacy)
+		res = OldTokenReplaced
 	case n < MaxAPITokens:
 		var id string
 		if id, err = newTokenID(tx); err == nil {
 			_, err = tx.Exec(`INSERT INTO api_tokens(id, name, scope, hash, created_at, last_used) VALUES(?,?,?,?,?,0)`,
 				id, LegacyTokenName, ScopeFull, hash, created)
 		}
+		res = OldTokenAdded
 	default:
 		_, err = tx.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, keyOldTokenRefused, created)
-		return false, err
+		return false, OldTokenRefused, err
 	}
-	return err == nil, err
+	if err != nil {
+		return false, OldTokenNone, err
+	}
+	return true, res, nil
 }
 
 // Errors of the API token functions, with the texts for the dashboard.
