@@ -57,8 +57,8 @@ structure:
     - when_name_matches: '^LIVE-'
       share_must_have: { me: false }
   ignore_dirs: ['@Recycle', '@Recently-Snapshot', '.streams', '.@__thumb', '@eaDir', '.stversions', '.stfolder', '.*', '#recycle']
-  # syncwatch looks 6 folder levels down into each project folder. This
-  # includes 413 of the 417 folders of a real project of the studio.
+  # syncwatch looks 6 folder levels down into each project folder. In a
+  # typical project, only a small number of folders are deeper.
   nested_scan_depth: 6
 
 shares:

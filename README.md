@@ -320,7 +320,7 @@ shares:
 
 ### Sites
 
-A site is the location of a server, usually an office, for example "IVAR Office" or "Branch office". The sites are optional.
+A site is the location of a server, usually an office. Examples are "IVAR Office", "Branch office" and "Home". The sites are optional.
 
 - Type the site of each server in Settings → Servers (**Site (optional)**), or set `servers[].site`. Type the same name for all servers of one site. The input offers the site names in use.
 - Type the site of syncwatch in Settings → Notifications (**Site where syncwatch runs (optional)**), or set `site`.
@@ -384,7 +384,7 @@ structure:
 - Then syncwatch makes a baseline scan every day, also when `baseline_interval` is longer.
 - When a baseline scan takes 10 seconds or more, syncwatch makes the next baseline scan after `baseline_interval` (7 days by default).
 - The log of syncwatch tells which interval it uses, for example "baseline scan every day: the last one took less than 10 seconds".
-- A baseline scan looks `nested_scan_depth` levels down into each project folder (default 3). The example of IVAR Studios uses 6 levels: this includes 413 of the 417 folders of a real project of the studio.
+- A baseline scan looks `nested_scan_depth` levels down into each project folder (default 3). The example of IVAR Studios uses 6 levels: in a typical project, only a small number of folders are deeper.
 
 When Syncthing reports a change in a Syncthing folder, syncwatch finds a nested project folder immediately. On some NAS storage, the file watcher of Syncthing can fail without an error. Then changes on the NAS wait for the next rescan of Syncthing, and syncwatch shows no finding for the file watcher. The daily baseline scan finds a nested project folder also in that case.
 
@@ -420,7 +420,13 @@ The severity is ERROR, WARNING or INFO. An *urgent* check sends an urgent messag
 | C2 | Inactive device | A device is offline for 90 days, or never connected, but is still configured. | INFO | |
 | C3 | Folder not used by device | A folder is shared with a device that never connected to the server, or that does not share it back, for 30 days. | INFO | |
 
-Structure findings have one row for each directory with all its reasons (for example `S5+S6`). Finding IDs are stable, with one exception. On a case-sensitive server, the IDs of S3 to S7 findings keep the case of the path from this version on. Such findings resolve and open again one time after the update.
+Structure findings have one row for each directory with all its reasons (for example `S5+S6`). Finding IDs are stable. After the update from an older version, some open findings resolve one time:
+
+- On a case-sensitive server, the IDs of S3 to S7 findings keep the case of the path from this version on. Such findings resolve and open again one time after the update.
+- An S1 finding for a Syncthing folder inside a share root resolves, with a resolved message. The S2 finding of the share root lists the folder.
+- When a full disk of the Syncthing database stopped the folders of a server, the H4 finding of each folder resolves, with a resolved message. Then 1 urgent H4 finding `Syncthing database on <server>` opens for the server.
+
+In the last 2 cases, the fault continues: the S2 finding or the H4 finding of the server shows it.
 
 **Stale findings.** While syncwatch cannot reach a server, the findings of the server become **stale**. They stay open, show the tag `stale` and send no new urgent messages. Findings are also stale in these cases:
 
@@ -590,7 +596,7 @@ syncwatch keeps the keys to your Syncthing servers. Report a vulnerability in pr
 curl -k -H "Authorization: Bearer $TOKEN" https://192.168.1.10:8080/api/v1/status   # -k: the self-signed certificate
 ```
 
-A request by a container name needs that name in `SYNCWATCH_TLS_HOSTS` (see the [Host check](#https)). Example: `http://syncwatch:8080` from Home Assistant on the same Docker network.
+A request by a container name needs that name in `SYNCWATCH_TLS_HOSTS` (see the [Host check](#https)). Example: `https://syncwatch:8080` from Home Assistant on the same Docker network, with `verify_ssl: false`.
 
 ### Stable values
 
@@ -669,7 +675,7 @@ The lists `servers`, `devices`, `findings`, `links` and `site_links` are `[]` wh
 | `servers.<id>.received_24h_gb`, `sent_24h_gb`, `moved_24h_gb`, `received_7d_gb`, `sent_7d_gb`, `moved_7d_gb` | GB |
 | `servers.<id>.download_mb_s`, `upload_mb_s` | MB each second |
 
-New detail keys of the third round (r2), added after the keys of 78ef2d8:
+New detail keys of version 0.9, added after the keys of 78ef2d8:
 
 | Check | Detail keys |
 |---|---|
@@ -757,10 +763,10 @@ go run ./test/simenv -syncthing /path/to/syncthing -demo   # a simulated install
 - With `SYNCTHING_BIN` set, `go test ./...` also runs 2 harness tests against a real Syncthing.
 - The integration test uses the loopback ports from `SW_IT_BASEPORT` (default 18600) and keeps its work directory in `SW_IT_DIR`.
 - The Compose and load suites start their Syncthing containers with discovery, relays, NAT traversal and reports off from the first start. They also build the image again (`--build`). `KEEP_COMPOSE=1` and `KEEP_LOADSIM=1` keep a stack after the test.
-- The fake Discord of the tests (`test/harness`, `test/fakediscord`) answers 204. To test failures, send `POST /mode` with `{"mode": "fail404:3"}`, or set `MODE` at the start. The modes are `ok`, `fail500`, `fail400` (a field error), `fail404` (Unknown Webhook) and `ratelimit` (HTTP 429 with `retry_after`), the same as in the simulation kit. `:N` limits a mode to the next N messages.
+- The fake Discord of the tests (`test/harness`, `test/fakediscord`) answers 204. To test failures, send `POST /mode` with `{"mode": "fail404:3"}`, or set `MODE` at the start. The modes are `ok`, `fail500`, `fail400` (a field error), `fail404` (Unknown Webhook) and `ratelimit` (HTTP 429 with `retry_after`). `:N` limits a mode to the next N messages.
 - `SYNCWATCH_ALLOW_ANY_WEBHOOK=true` permits a webhook on a different host for test installations. When you remove the variable, a saved webhook on a different host stops at the next send.
 - Windows: the repository keeps LF line endings (`.gitattributes`). After a pull of that file, run `git add --renormalize .` and then, on a clean tree, `git rm --cached -r . && git reset --hard`, or clone again.
-- CI runs `gofmt`, `go vet`, `go mod tidy -diff`, govulncheck and the unit tests with the race detector. This happens on each push and each pull request, then the integration and Compose suites run. The release workflow runs the unit tests before it makes the image and the binaries. CI also checks the Syncthing download against the checksum list of the release.
+- CI runs `gofmt`, `go vet`, `go mod tidy -diff`, govulncheck and the unit tests with the race detector. This happens on each push and each pull request, then the integration and Compose suites run. The release workflow runs the unit tests before it makes the image and the binaries. Before it makes the image available, it checks that the image of each platform contains the program for that platform. CI also checks the Syncthing download against the checksum list of the release.
 
 The integration test starts real Syncthing processes (3 servers, 2 PCs). It configures the scenarios through the APIs of the test servers, thus syncwatch stays read-only. It checks the findings, the dashboard, the JSON API and the Discord payloads. The scenarios are: nested project folders (found by events and by the scan), a Syncthing folder inside another, a share root as a Syncthing folder. Also a paused folder and a folder that stops the sync (a missing folder marker). Also a PC that goes offline, a server that stops and a replaced certificate.
 
