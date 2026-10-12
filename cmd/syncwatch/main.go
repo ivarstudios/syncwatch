@@ -389,6 +389,9 @@ func resetPassword(args []string) error {
 	if len([]rune(pw)) < web.MinPasswordLength {
 		return fmt.Errorf("the password must have at least %d characters", web.MinPasswordLength)
 	}
+	if vh, _ := st.Setting(web.KeyViewerHash); vh != "" && web.CheckPassword(pw, vh) {
+		return fmt.Errorf("the administrator password must be different from the viewer password")
+	}
 	h, err := web.HashPassword(pw)
 	if err != nil {
 		return err

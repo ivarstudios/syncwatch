@@ -1245,13 +1245,23 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 		s.redirect(w, r, "/settings#access", "Set an administrator password first. Then set built-in login to on.", true)
 		return
 	}
-	// A new viewer password lets someone else in, too.
+	// A new viewer password lets someone else in, too. It needs the
+	// administrator password also when it has no effect now: the check
+	// below must not tell a session without the administrator password
+	// whether a guess is the administrator password.
 	newViewerPW := viewerPW != "" && c.Access.Mode == config.AccessBuiltin && c.Access.Viewer == config.ViewerPassword
-	if weakensAccess(old, c) || newViewerPW {
+	if weakensAccess(old, c) || viewerPW != "" {
 		if msg := s.confirmAdmin(r, info, "access change refused"); msg != "" {
 			s.redirect(w, r, "/settings#access", msg, true)
 			return
 		}
+	}
+	// The login checks the administrator password first: with the same
+	// password, each viewer is an administrator (sessions-1). After the
+	// confirmation, "confirm" is the administrator password.
+	if viewerPW != "" && s.adminConfigured() && viewerPW == r.FormValue("confirm") {
+		s.redirect(w, r, "/settings#access", "The viewer password must be different from the administrator password.", true)
+		return
 	}
 	if viewerPW != "" {
 		h, err := HashPassword(viewerPW)
@@ -1343,6 +1353,10 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 		s.redirect(w, r, "/settings#access", "The new passwords are not the same.", true)
 		return
 	}
+	if s.sameAsViewer(pw) {
+		s.redirect(w, r, "/settings#access", errSameAsViewer, true)
+		return
+	}
 	nh, err := HashPassword(pw)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -1355,6 +1369,19 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 	}
 	s.announce(r, notify.Notice{Title: "Administrator password changed", Summary: "syncwatch logged out the other administrator sessions.", Security: true})
 	s.redirect(w, r, "/settings#access", "The administrator password is changed. syncwatch logged out the other administrator sessions.", false)
+}
+
+// errSameAsViewer refuses an administrator password that is the viewer
+// password.
+const errSameAsViewer = "The administrator password must be different from the viewer password."
+
+// sameAsViewer reports whether pw is the viewer password. The login checks
+// the administrator password first: an administrator password that is also
+// the viewer password makes each login with the viewer password an
+// administrator session (sessions-1).
+func (s *Server) sameAsViewer(pw string) bool {
+	h, ok := s.setting(KeyViewerHash)
+	return ok && CheckPassword(pw, h)
 }
 
 // handleDevicesSave saves the devices that always connect through a relay

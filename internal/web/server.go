@@ -586,6 +586,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": "The passwords are not the same.", "Token": got})
 		return
 	}
+	if s.sameAsViewer(pw) {
+		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": errSameAsViewer, "Token": got})
+		return
+	}
 	hash, err := HashPassword(pw)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

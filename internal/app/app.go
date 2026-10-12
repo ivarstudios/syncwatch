@@ -546,6 +546,9 @@ func Run(ctx context.Context, o Options) error {
 			if len([]rune(o.AdminPassword)) < web.MinPasswordLength {
 				return fmt.Errorf("SYNCWATCH_ADMIN_PASSWORD must have at least %d characters", web.MinPasswordLength)
 			}
+			if vh, _ := st.Setting(web.KeyViewerHash); vh != "" && web.CheckPassword(o.AdminPassword, vh) {
+				return errors.New("SYNCWATCH_ADMIN_PASSWORD must be different from the viewer password")
+			}
 			hash, err := web.HashPassword(o.AdminPassword)
 			if err != nil {
 				return err
