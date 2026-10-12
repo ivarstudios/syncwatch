@@ -1,11 +1,15 @@
 package harness
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/notify"
 )
 
 // post sends one webhook message to the fake and returns the answer.
@@ -148,5 +152,68 @@ func TestFakeDiscordModeEndpoint(t *testing.T) {
 	}
 	if !strings.HasPrefix(f.Mode(), "fail404:3") {
 		t.Errorf("a refused mode changed the mode to %q", f.Mode())
+	}
+}
+
+// TestFakeDiscordWebhookGet: a GET of the webhook URL gets the webhook
+// object, as from Discord, so syncwatch's check of a failing webhook works
+// with the fake. The modes of a missing webhook, an outage and a rate limit
+// apply to it without a count down; a GET records no message.
+func TestFakeDiscordWebhookGet(t *testing.T) {
+	f, err := StartFakeDiscord("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	get := func() (int, string) {
+		t.Helper()
+		resp, err := http.Get(f.URL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	code, body := get()
+	var hook struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &hook) != nil || hook.ID != "123" || hook.Token != "fake-token" {
+		t.Fatalf("GET of the webhook: HTTP %d %q", code, body)
+	}
+
+	config.AllowAnyWebhook = true
+	defer func() { config.AllowAnyWebhook = false }()
+	d := &notify.Discord{URL: f.URL()}
+	if err := d.Probe(context.Background()); err != nil {
+		t.Fatalf("the check of syncwatch: %v", err)
+	}
+	for _, c := range []struct {
+		mode string
+		code int
+	}{{"fail404:2", http.StatusNotFound}, {"fail500", http.StatusInternalServerError}, {"ratelimit:1", http.StatusTooManyRequests}, {"fail400", http.StatusOK}} {
+		if err := f.SetMode(c.mode); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			if code, body := get(); code != c.code {
+				t.Fatalf("%s, GET %d: HTTP %d %q, want %d", c.mode, i+1, code, body, c.code)
+			}
+		}
+		if err := d.Probe(context.Background()); (err == nil) != (c.code == http.StatusOK) {
+			t.Fatalf("%s: the check of syncwatch gives %v", c.mode, err)
+		}
+	}
+	if err := f.SetMode("fail404:2"); err != nil {
+		t.Fatal(err)
+	}
+	get()
+	if f.Mode() != "fail404:2 (2 left)" {
+		t.Fatalf("a GET counted the mode down: %q", f.Mode())
+	}
+	if n := len(f.Messages()); n != 0 || f.Refused() != 0 {
+		t.Fatalf("the GETs recorded %d messages and %d refused posts", n, f.Refused())
 	}
 }

@@ -80,6 +80,7 @@ func StartFakeDiscord(addr string) (*FakeDiscord, error) {
 	f := &FakeDiscord{ln: ln}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/webhooks/{id}/{token}", f.handle)
+	mux.HandleFunc("GET /api/webhooks/{id}/{token}", f.handleGet)
 	mux.HandleFunc("GET /messages", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(f.Messages())
@@ -277,6 +278,26 @@ func (f *FakeDiscord) handle(w http.ResponseWriter, r *http.Request) {
 	f.msgs = append(f.msgs, m)
 	f.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGet answers a GET of the webhook URL as Discord does: the webhook
+// object while the webhook exists. syncwatch checks a failing webhook this
+// way. The mode applies without a count down (N counts posts only): fail500,
+// fail404 and ratelimit give their error answer; fail400 (an error of a
+// posted message) and ok give 200. Fail counts posts only.
+func (f *FakeDiscord) handleGet(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	mode := f.mode
+	f.mu.Unlock()
+	if mode.status != 0 && mode.status != http.StatusBadRequest {
+		mode.answer(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type": 1, "id": r.PathValue("id"), "token": r.PathValue("token"),
+		"name": "syncwatch", "avatar": nil, "channel_id": "100", "guild_id": "200", "application_id": nil,
+	})
 }
 
 // Messages returns every message received so far.
