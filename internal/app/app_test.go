@@ -24,6 +24,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/notify"
 	"github.com/ivarstudios/syncwatch/internal/settings"
 	"github.com/ivarstudios/syncwatch/internal/store"
+	"github.com/ivarstudios/syncwatch/internal/web"
 )
 
 const bootstrapYAML = `# IVAR bootstrap
@@ -537,6 +538,93 @@ func TestCLINoticesAreSecurityNotices(t *testing.T) {
 	w.check()
 	if n := last(); n.Title != titleCLIReset || !n.Security {
 		t.Fatalf("reset notice: %+v", n)
+	}
+}
+
+// syncwatch import-config refuses a file that sets built-in login to on while
+// syncwatch runs in proxy mode without an administrator password, as the
+// import of the dashboard does. A server in proxy mode did not log a setup
+// token: after the reload, each page asks for a setup token that nobody has.
+// The refused import changes nothing. The import works with access: {mode:
+// proxy} in the file, with an administrator password, and at the first start
+// (built-in login, the start logged the setup token).
+func TestImportRefusesALockOut(t *testing.T) {
+	const want = "Not imported. The file sets built-in login to on, but no administrator password is set. " +
+		"First set an administrator password with syncwatch reset-admin-password. Or add access: {mode: proxy} to the file."
+	write := func(yaml string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "new.yaml")
+		if err := os.WriteFile(p, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// As almost every file in examples/: no access section, thus built-in login.
+	lock := write("servers:\n  - name: NAS\n    url: https://nas.invalid:8384\n    api_key: key-nas\n  - name: SOL\n    url: https://sol.invalid:8384\n")
+
+	st, err := OpenStore(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := ImportFile(st, write("access: {mode: proxy}\nservers:\n  - name: NAS\n    url: https://nas.invalid:8384\n")); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := st.ConfigRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	notices, err := st.SettingsWithPrefix(keyCLINotice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportFile(st, lock); err == nil || err.Error() != want {
+		t.Fatalf("the import that locks everyone out: %v", err)
+	}
+	c, err := settings.Load(st)
+	if err != nil || c.Access.Mode != config.AccessProxy || len(c.Servers) != 1 {
+		t.Fatalf("the refused import changed the configuration: %+v %v", c, err)
+	}
+	if r, _ := st.ConfigRevision(); r != rev {
+		t.Fatalf("the refused import changed the revision: %d, before %d", r, rev)
+	}
+	if n, _ := st.SettingsWithPrefix(keyCLINotice); len(n) != len(notices) {
+		t.Fatalf("the refused import recorded a settings notice: %v", n)
+	}
+	if st.HasSecret(store.ServerAPIKeySecret("nas")) {
+		t.Fatal("the refused import stored the API key of the file")
+	}
+
+	// The same servers with access: {mode: proxy}.
+	if _, err := ImportFile(st, write("access: {mode: proxy}\nservers:\n  - name: NAS\n    url: https://nas.invalid:8384\n  - name: SOL\n    url: https://sol.invalid:8384\n")); err != nil {
+		t.Fatal(err)
+	}
+	// An administrator password is set: the import sets built-in login to on.
+	h, err := web.HashPassword("correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(web.KeyAdminHash, h); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportFile(st, lock); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := settings.Load(st); err != nil || c.Access.Mode != config.AccessBuiltin {
+		t.Fatalf("after the import with an administrator password: %+v %v", c, err)
+	}
+
+	// The first start: built-in login, no administrator password yet.
+	first, err := OpenStore(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err := LoadConfig(first, "", slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportFile(first, lock); err != nil {
+		t.Fatalf("the import at the first start: %v", err)
 	}
 }
 

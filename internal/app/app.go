@@ -195,6 +195,17 @@ func saveConfig(st *store.Store, c *config.Config) (int64, error) {
 	return st.BumpConfigRevision()
 }
 
+// errLocksEveryoneOut refuses a file that sets built-in login to on while the
+// stored configuration is in proxy mode and no administrator password is set.
+// A server that runs in proxy mode did not log a setup token: after the
+// reload, each page asks for a setup token that nobody has. The dashboard
+// refuses the same file (web: locksEveryoneOut). In built-in mode without an
+// administrator password (the first start), the start logged the setup token
+// and the import is permitted. A file without an access section has built-in
+// login.
+var errLocksEveryoneOut = errors.New("Not imported. The file sets built-in login to on, but no administrator password is set. " +
+	"First set an administrator password with syncwatch reset-admin-password. Or add access: {mode: proxy} to the file.")
+
 // Imported is the result of ImportFile.
 type Imported struct {
 	Config  *config.Config
@@ -205,7 +216,8 @@ type Imported struct {
 // ImportFile replaces the stored configuration with a YAML file. A running
 // server applies it within configCheckInterval and sends a settings notice.
 // The command line asks for no confirmation: a person who can run it can
-// also change the database.
+// also change the database. A file that locks everyone out is refused
+// (errLocksEveryoneOut), as in the dashboard.
 func ImportFile(st *store.Store, path string) (*Imported, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -218,6 +230,15 @@ func ImportFile(st *store.Store, path string) (*Imported, error) {
 	old, err := settings.Load(st)
 	if err != nil {
 		return nil, err
+	}
+	if old != nil && old.Access.Mode == config.AccessProxy && c.Access.Mode == config.AccessBuiltin {
+		h, err := st.Setting(web.KeyAdminHash)
+		if err != nil {
+			return nil, err
+		}
+		if h == "" {
+			return nil, errLocksEveryoneOut
+		}
 	}
 	removed := removedServers(old, c)
 	changes := importChanges(st, old, c)
