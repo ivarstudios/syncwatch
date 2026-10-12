@@ -160,6 +160,7 @@ type freezer struct {
 	stale     map[string]bool // not up, or not loaded since the start
 	unknown   map[string]bool // not contacted since the start
 	unscanned map[string]bool // up, but no structure scan has finished since the start
+	unloaded  bool            // a server is not loaded since the start: its devices are not known
 	failed    map[string]failedShares
 }
 
@@ -175,6 +176,9 @@ func newFreezer(snap *model.Snapshot) *freezer {
 		z.present[sv.ID] = true
 		if sv.Status == model.StatusUnknown {
 			z.unknown[sv.ID] = true
+		}
+		if !sv.Loaded {
+			z.unloaded = true
 		}
 		if sv.Status != model.StatusUp || !sv.Loaded {
 			z.stale[sv.ID] = true
@@ -240,7 +244,8 @@ func (z *freezer) anyPresentStale(ids []string) bool {
 // connects through a relay (no server: the device has no connection). A
 // server that cannot be reached can still have the device connected, so
 // such a finding can only be judged while every server that has the device
-// configured is reachable.
+// configured is reachable. A server that is not loaded since the start can
+// have the device configured too: its device list is not known yet.
 func absenceCheck(f model.Finding) bool {
 	switch f.Check {
 	case "H7", "C2":
@@ -299,7 +304,7 @@ func (z *freezer) frozen(f model.Finding) bool {
 		return z.unknown[f.Server]
 	}
 	if f.Server == "" {
-		if absenceCheck(f) && z.anyPresentStale(f.Related) {
+		if absenceCheck(f) && (z.unloaded || z.anyPresentStale(f.Related)) {
 			return true
 		}
 		// Other cross-server findings are judged on whichever related

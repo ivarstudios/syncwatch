@@ -610,7 +610,8 @@ func (e *evaluator) relayListeners(sv *model.Server) {
 // it has no connection to a server that is up for more than relay_lost.
 // Like H7, the absence of a device is known only while every server that
 // has it configured can be reached (the engine keeps the finding stale
-// meanwhile).
+// meanwhile). A device that every server pauses cannot connect: H6 reports
+// the pause, as for H2.
 func (e *evaluator) relayDevices() {
 	if len(e.Config.Devices) == 0 {
 		return
@@ -619,6 +620,9 @@ func (e *evaluator) relayDevices() {
 	loc := e.Config.Location()
 	for _, dv := range e.Snapshot.Devices() {
 		if dv.IsServer || dv.Connected || dv.LastSeen.IsZero() || len(dv.SeenBy) == 0 || !e.anyLoaded(dv.SeenBy) || !e.Config.RelayExpected(dv.ID) {
+			continue
+		}
+		if e.pausedOnAll(dv) {
 			continue
 		}
 		e.add("H12", "", "relay-device:"+dv.ID, model.Finding{
@@ -796,6 +800,18 @@ func (e *evaluator) offlinePCs() {
 			ResolvedText: fmt.Sprintf("PC %s is online again.", dv.Name),
 		})
 	}
+}
+
+// pausedOnAll reports whether every server that has a device configured
+// pauses it.
+func (e *evaluator) pausedOnAll(dv *model.DeviceView) bool {
+	for _, id := range dv.SeenBy {
+		sv := e.Snapshot.Server(id)
+		if sv == nil || sv.Devices[dv.ID] == nil || !sv.Devices[dv.ID].Paused {
+			return false
+		}
+	}
+	return len(dv.SeenBy) > 0
 }
 
 func (e *evaluator) anyLoaded(ids []string) bool {

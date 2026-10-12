@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
 )
 
@@ -136,4 +137,24 @@ func TestPolledPeerViewNeedsNewerData(t *testing.T) {
 			}
 		})
 	}
+}
+
+// data-5 (a): a device that always uses a relay, and that an administrator
+// paused on every server that has it configured, has no connection because
+// of the pause: no H12 (H6 reports the pause after thresholds.paused). A
+// server that does not pause the device can have it connected: H12 as
+// before.
+func TestRelayDevicePausedOnEveryServer(t *testing.T) {
+	c := ivarConfig(t)
+	c.Devices = []config.Device{{ID: pcID, Relay: true}}
+	akka := server("akka", "AKKA", akkaID)
+	sol := server("sol", "SOL", solID)
+	for _, sv := range []*model.Server{akka, sol} {
+		sv.Devices[pcID] = &model.Device{ID: pcID, Name: "LAPTOP-DANI", Paused: true, LastSeen: now.Add(-2 * time.Hour)}
+		sv.Connections[pcID] = &model.Connection{Connected: false, Paused: true}
+	}
+	mustNot(t, run(t, c, akka, sol), "H12", "LAPTOP-DANI")
+	sol.Devices[pcID].Paused = false
+	sol.Connections[pcID].Paused = false
+	mustFind(t, run(t, c, akka, sol), "H12", "LAPTOP-DANI")
 }
