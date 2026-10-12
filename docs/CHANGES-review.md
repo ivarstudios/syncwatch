@@ -1,11 +1,12 @@
 # What the review of October 2026 changed
 
-This is the plain-language list of the changes from the review of October 2026. The review had 3 rounds, and the branch `review/sim-2026-10` has the changes of all rounds. This list tells what you will see and what you must do after the update. The technical reports are in [docs/changes/](changes/), with one file for each branch.
+This is the plain-language list of the changes from the review of October 2026. The review had 3 rounds and a check before the test release. This list tells what you will see and what you must do after the update.
 
 - [What you must do after the update](#what-you-must-do-after-the-update)
-- [First round (r0)](#first-round-r0): 13 branches, `sim/r0-a` to `sim/r0-s`, and the text rewrite (`ste/text`, `ste/docs`)
-- [Second round (r1)](#second-round-r1): 8 branches, `sim/r1-1` to `sim/r1-8`
-- [Third round (r2)](#third-round-r2): a foundation branch, 8 branches and a repair branch, `sim/r2-0` to `sim/r2-repair-2`
+- [First round (r0)](#first-round-r0): the corrections of the code review and the security checks, and the text rewrite
+- [Second round (r1)](#second-round-r1): the corrections after the tests in a simulated installation
+- [Third round (r2)](#third-round-r2): the decisions of the team
+- [Before the test release](#before-the-test-release)
 - [Integrations: changes to /api/v1 after 78ef2d8](#integrations-changes-to-apiv1-after-78ef2d8)
 
 ## What you must do after the update
@@ -22,15 +23,18 @@ These items apply to an update from the version `78ef2d8` (before the review).
 8. **Integrations:** read [Integrations: changes to /api/v1 after 78ef2d8](#integrations-changes-to-apiv1-after-78ef2d8) at the end of this file. Scripts must use the stable values (`check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`), not the health line or the finding messages.
 9. **Findings on Linux servers:** the IDs of S3 to S7 findings keep the case of the path now. After the update, such findings resolve and open again one time (one resolved message and one urgent message for S3). Snoozes and ignores on the old IDs do not apply to the new IDs.
 10. **Watcher errors:** an open H4 finding with only a file watcher error resolves at the update. It opens again as a WARNING after 1 hour.
-11. **Reverse proxy (r1):** if you use nginx, use `proxy_set_header Host $http_host;`. With `$host`, nginx removes the port, and the login and each save fail with "cross-origin request refused".
-12. **Gate and API key (r1):** the gate reads the Syncthing API key only at the start. After a change of the API key in Syncthing, restart the gate. Until then, the gate answers `502`, and H1 shows the instruction.
-13. **Gate image (r2):** update the gate on each NAS together with syncwatch, to the same version. The new gate permits the request for the files that a PC still needs (H5). An older gate refuses it: then H5 shows no file names, and the log of syncwatch tells it.
-14. **Login over HTTPS (r2):** log in again after the update. Over HTTPS, the cookies have new names, and syncwatch does not read the cookies of the older version. A lobby screen with the viewer password also needs one login.
-15. **Reverse proxy with HTTPS (r2):** set `SYNCWATCH_TRUSTED_PROXIES` to the address of the proxy, for example `172.18.0.2`. Without it, syncwatch ignores `X-Forwarded-Proto`. The login works, but the cookies have no `Secure` flag.
-16. **Scripts and open access (r2):** with open access, a request to `/api/v1/status` or `/api/v1/ha` without an API token gets `401` now. Make an API token in Settings → API for each script.
-17. **Home Assistant (r1 and r2):** compare your configuration with [examples/home-assistant.yaml](../examples/home-assistant.yaml). Change each template and automation that compares the status with `up to date`, `watch error` or `unknown`. The new values are `up_to_date`, `watch_error`, `unreachable`, `certificate_changed` and `not_contacted`. The status `error` now needs an open H4 finding, thus an automation on `error` starts later. Each entity has an `availability` template (r1). Thus a missing server or a refused API token shows as not available.
-18. **Imports from a script (r2):** `POST /settings/import` has 2 steps now: a preview, then the import of the previewed file. For an import from the command line, use `syncwatch import-config`.
-19. **Health check (r2):** `/healthz` and the healthcheck of the image now fail when notifications fail for more than 15 minutes. An outside check of `/healthz` then reports it. To change the 15 minutes, set `SYNCWATCH_HEALTH_NOTIFY_LIMIT`.
+11. **Findings that this version joins:** one cause now gives one finding (see the third round). At the update, the open findings below resolve with a resolved message, but the faults continue in other findings. Tell the persons who read the Discord channel before the update.
+    - An S1 finding for a Syncthing folder inside a share root resolves. The S2 finding of the share root stays open and lists the folder.
+    - When a full disk of the Syncthing database stopped the folders of a server, the H4 finding of each folder resolves. Then 1 urgent H4 finding `Syncthing database on <server>` opens for the server. Its urgent message and the resolved message come at approximately the same time.
+12. **Reverse proxy (r1):** if you use nginx, use `proxy_set_header Host $http_host;`. With `$host`, nginx removes the port, and the login and each save fail with "cross-origin request refused".
+13. **Gate and API key (r1):** the gate reads the Syncthing API key only at the start. After a change of the API key in Syncthing, restart the gate. Until then, the gate answers `502`, and H1 shows the instruction.
+14. **Gate image (r2):** update the gate on each NAS together with syncwatch, to the same version. The new gate permits the request for the files that a PC still needs (H5). An older gate refuses it: then H5 shows no file names, and the log of syncwatch tells it.
+15. **Login over HTTPS (r2):** log in again after the update. Over HTTPS, the cookies have new names, and syncwatch does not read the cookies of the older version. A lobby screen with the viewer password also needs one login.
+16. **Reverse proxy with HTTPS (r2):** set `SYNCWATCH_TRUSTED_PROXIES` to the address of the proxy, for example `172.18.0.2`. Without it, syncwatch ignores `X-Forwarded-Proto`. The login works, but the cookies have no `Secure` flag.
+17. **Scripts and open access (r2):** with open access, a request to `/api/v1/status` or `/api/v1/ha` without an API token gets `401` now. Make an API token in Settings → API for each script.
+18. **Home Assistant (r1 and r2):** compare your configuration with [examples/home-assistant.yaml](../examples/home-assistant.yaml). Change each template and automation that compares the status with `up to date`, `watch error` or `unknown`. The new values are `up_to_date`, `watch_error`, `unreachable`, `certificate_changed` and `not_contacted`. The status `error` now needs an open H4 finding, thus an automation on `error` starts later. Each entity has an `availability` template (r1). Thus a missing server or a refused API token shows as not available.
+19. **Imports from a script (r2):** `POST /settings/import` has 2 steps now: a preview, then the import of the previewed file. For an import from the command line, use `syncwatch import-config`.
+20. **Health check (r2):** `/healthz` and the healthcheck of the image now fail when notifications fail for more than 15 minutes. An outside check of `/healthz` then reports it. To change the 15 minutes, set `SYNCWATCH_HEALTH_NOTIFY_LIMIT`.
 
 **Good to know before a downgrade.** An older version opens the database of this version. But it does not know the API tokens of this version: make a new API token in it. An older version also refuses to import an export of this version, because of the new keys (for example `thresholds.relay_lost`).
 
@@ -156,13 +160,11 @@ These items apply to an update from the version `78ef2d8` (before the review).
 
 ### Documentation
 
-- The README, plan.md, the examples and the comments in the Dockerfile and the workflows follow the STE style guide of the review.
+- The README, plan.md, the examples and the comments in the Dockerfile and the workflows follow ASD-STE100 (Simplified Technical English).
 - The check titles, the page names and the labels are the names of the product text rewrite. Examples are Findings page, administrator, urgent message, settings notice, full check, structure scan and pinned certificate.
 - The severities are ERROR, WARNING and INFO.
 
 ## Second round (r1)
-
-The second round has 8 branches (`sim/r1-1` to `sim/r1-8`). The technical reports are in [docs/changes/](changes/) (`r1-*.md`).
 
 ### Findings
 
@@ -206,7 +208,7 @@ The second round has 8 branches (`sim/r1-1` to `sim/r1-8`). The technical report
 
 ## Third round (r2)
 
-The third round has a foundation branch and 8 branches (`sim/r2-0` to `sim/r2-8`). A repair branch (`sim/r2-repair-2`) corrected 2 small faults that the live check found. The team agreed each change on the decision cards of the review report. The technical reports are in [docs/changes/](changes/) (`r2-*.md`).
+The team agreed each change of the third round. After the live check, a repair corrected 2 small faults (see [Repairs after the live check](#repairs-after-the-live-check)).
 
 ### Sites and connections
 
@@ -286,6 +288,19 @@ The third round has a foundation branch and 8 branches (`sim/r2-0` to `sim/r2-8`
 - A resolved message after a restart of syncwatch gives the correct end of the fault.
 - The speed of H5 is steady. A PC that does not receive data gets no time left.
 
+## Before the test release
+
+### Release and build
+
+- The `linux/arm64` image contains the program for arm64. Before, the `Dockerfile` put the amd64 program into the arm64 image, and that image cannot start on an ARM NAS. The `linux/amd64` image and a plain `docker build` do not change.
+- Before the release workflow makes the image available, it checks that the image of each platform contains the program for that platform.
+- The image of the release workflow has provenance, a record of the build. The image index then has 1 more entry for each platform, with the platform `unknown/unknown`. The test release shows how the container interfaces of NAS products show these entries.
+
+### Documentation
+
+- The README example for Home Assistant on the same Docker network is `https://syncwatch:8080` with `verify_ssl: false`. The example `http://syncwatch:8080` gets the answer HTTP 400 from the image, because the image serves HTTPS.
+- The README and this list tell which open findings resolve one time after the update (item 11 of [What you must do after the update](#what-you-must-do-after-the-update)).
+
 ## Integrations: changes to /api/v1 after 78ef2d8
 
 This list is for scripts, Home Assistant and other programs that read `GET /api/v1/status` or `GET /api/v1/ha`. `78ef2d8` is the version before the review. Use the stable values: `check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`, and the status values. The texts for persons (the health line, `findings[].message`) can change in each version. The README has the [field reference](../README.md#field-reference) of both answers.
@@ -327,12 +342,12 @@ Changes of the second round (r1):
 
 Changes of the third round (r2):
 
-18. **Access (W-048).** Without an API token, only a logged-in session (administrator or viewer) or proxy mode reads the API. With open access, a request without an API token gets `401 {"error":"token required"}` on both addresses.
-19. **API tokens (W-053).** There are up to 5 named API tokens with the scope `ha` (only `/api/v1/ha`) or `full` (both addresses). An `ha` API token gets `403 {"error":"the API token permits only /api/v1/ha"}` from `/api/v1/status`, with `WWW-Authenticate: Bearer realm="syncwatch", error="insufficient_scope", scope="full"`. The API token of the older version is now the API token "API token" with the scope `full`.
-20. **Times (W-049).** Each time is UTC without fractions of a second, for example `2026-10-11T15:29:17Z`. Before, `servers[].last_contact` and `devices[].last_seen` had the local offset and fractions of a second. A time that syncwatch does not know is `null`, and the key is always in the answer. Before, the keys `last_contact`, `cert_expires`, `last_seen` and `notifications.since` were not in the answer when the time was not known.
-21. **Status values of Home Assistant (W-049).** `up to date` is now `up_to_date`, and `watch error` is now `watch_error`. `unknown` is now `unreachable` (the server is down), `certificate_changed` (a changed certificate) or `not_contacted` (no full check after the start). These values do not change: `syncing`, `scanning`, `error`, `paused`, `disabled`.
-22. **Status `error` of Home Assistant (W-054).** The status is `error` only while an H4 finding with the severity ERROR is open for the server, snoozed or not. For failed items without H4, the status is `syncing`. `folders_error` does not change.
+18. **Access.** Without an API token, only a logged-in session (administrator or viewer) or proxy mode reads the API. With open access, a request without an API token gets `401 {"error":"token required"}` on both addresses.
+19. **API tokens.** There are up to 5 named API tokens with the scope `ha` (only `/api/v1/ha`) or `full` (both addresses). An `ha` API token gets `403 {"error":"the API token permits only /api/v1/ha"}` from `/api/v1/status`, with `WWW-Authenticate: Bearer realm="syncwatch", error="insufficient_scope", scope="full"`. The API token of the older version is now the API token "API token" with the scope `full`.
+20. **Times.** Each time is UTC without fractions of a second, for example `2026-10-11T15:29:17Z`. Before, `servers[].last_contact` and `devices[].last_seen` had the local offset and fractions of a second. A time that syncwatch does not know is `null`, and the key is always in the answer. Before, the keys `last_contact`, `cert_expires`, `last_seen` and `notifications.since` were not in the answer when the time was not known.
+21. **Status values of Home Assistant.** `up to date` is now `up_to_date`, and `watch error` is now `watch_error`. `unknown` is now `unreachable` (the server is down), `certificate_changed` (a changed certificate) or `not_contacted` (no full check after the start). These values do not change: `syncing`, `scanning`, `error`, `paused`, `disabled`.
+22. **Status `error` of Home Assistant.** The status is `error` only while an H4 finding with the severity ERROR is open for the server, snoozed or not. For failed items without H4, the status is `syncing`. `folders_error` does not change.
 23. **New in /api/v1/status:** `servers[].site`, `notifications.next_try`, `findings[].snooze_until`, `findings[].snooze_reason`, `links[]` and `site_links[]`. `servers[]` and `devices[]` are `[]` when they are empty (before: `null`).
-24. **New in /api/v1/ha (W-052, W-057):** at the top `findings_open`, `findings_urgent`, `findings_error`, `findings_warn`, `findings_info`, `notifications_failing`, `notifications_failing_since`, `links` and `site_links`. For each server: `site`, `last_contact`, `findings_open` and `findings_urgent`.
+24. **New in /api/v1/ha:** at the top `findings_open`, `findings_urgent`, `findings_error`, `findings_warn`, `findings_info`, `notifications_failing`, `notifications_failing_since`, `links` and `site_links`. For each server: `site`, `last_contact`, `findings_open` and `findings_urgent`.
 25. **`findings[].since`** is `null` for C1 and H13. The age of these findings counts from `opened_at`. The C1 message gives the time of the last change. Before, `since` of C1 was the time of the last change.
 26. **Findings in the answer.** `findings[].check` has the new values `H12` and `H13`. A share root that is a Syncthing folder gives 1 S2 finding with a row `Syncthing folder inside` for each folder in it. These folders get no S1. A full disk of the Syncthing database gives 1 H4 finding for the server (subject "Syncthing database on SOL") and no H4 for each folder. A device that always connects through a relay gets no H11. The new detail keys are in the README (field reference). The keys of 78ef2d8 do not change.

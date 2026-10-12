@@ -7,8 +7,11 @@
 # the digest of the multi-arch index of the tag. Then replace it here:
 #   docker buildx imagetools inspect golang:1.27-alpine   # "Digest: sha256:…"
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# BuildKit sets TARGETOS and TARGETARCH for each platform of the build. Do not
+# give them a default value here: a default replaces the value of BuildKit.
+# Then each image gets the program for the default platform.
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
