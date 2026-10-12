@@ -31,7 +31,8 @@ import (
 const (
 	realKey = "syncthing-real-api-key-0123456789"
 	token   = "gate-token-for-syncwatch-0123456789"
-	devA    = "4PN542F-6INLZTY-ENGWNSD-7FV7WWJ-HIATIPR-2QPM2ZO-TFR5TRA-WF5QTQN" // a device ID
+	devA    = "4PN542F-6INLZTY-ENGWNSD-7FV7WWJ-HIATIPR-2QPM2ZO-TFR5TRA-WF5QTQN" // a device ID; it shares the folder f0
+	devB    = "MFZWI3D-BONSGYC-YLTMRWG-C43ENR5-QXGZDMM-FZWI3DP-BONSGYY-LTMRWAD" // a device ID that shares no folder
 )
 
 // fakeSyncthing answers the allowlisted endpoints and records what it got.
@@ -40,6 +41,7 @@ type fakeSyncthing struct {
 	reqs    []*http.Request
 	sep     string        // pathSeparator in /rest/system/status; "/" when empty
 	folders []string      // folder paths in /rest/config/folders; /s/LIVE-F when nil
+	shared  []string      // the devices of the first folder f0 besides AAAA and BBBB; devA when nil
 	down    bool          // answer 500 to everything
 	delay   time.Duration // wait this long before answering version and events
 }
@@ -47,7 +49,7 @@ type fakeSyncthing struct {
 func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, r.Clone(context.Background()))
-	sep, folders, down, delay := f.sep, f.folders, f.down, f.delay
+	sep, folders, shared, down, delay := f.sep, f.folders, f.shared, f.down, f.delay
 	f.mu.Unlock()
 	if r.URL.Path != "/rest/noauth/health" && r.Header.Get("X-API-Key") != realKey {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -66,6 +68,9 @@ func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if folders == nil {
 		folders = []string{"/s/LIVE-F"}
 	}
+	if shared == nil {
+		shared = []string{devA}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	switch r.URL.Path {
 	case "/rest/noauth/health":
@@ -83,7 +88,11 @@ func (f *fakeSyncthing) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s, _ := json.Marshal(p)
 			f := `{"id":"f` + strconv.Itoa(i) + `","label":"LIVE-F","path":` + string(s) + `,"rescanIntervalS":3600`
 			if i == 0 {
-				f += `,"devices":[{"deviceID":"AAAA","encryptionPassword":""},{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}]`
+				f += `,"devices":[{"deviceID":"AAAA","encryptionPassword":""},{"deviceID":"BBBB","encryptionPassword":"untrusted-secret"}`
+				for _, d := range shared {
+					f += `,{"deviceID":"` + d + `","encryptionPassword":""}`
+				}
+				f += `]`
 			}
 			out = append(out, f+"}")
 		}
@@ -286,9 +295,18 @@ func TestGateQueryAllowlist(t *testing.T) {
 		{"/rest/folder/errors?folder=f&page=1&perpage=5", 200},
 		{"/rest/folder/errors?folder=f&page=0&perpage=5", 400},
 		{"/rest/folder/errors?folder=f&page=1&perpage=x", 400},
-		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1&perpage=20", 200},
-		{"/rest/db/remoteneed?perpage=100&device=" + devA + "&folder=f", 200},
-		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1000&perpage=1", 200},
+		{"/rest/db/remoteneed?folder=f0&device=" + devA + "&page=1&perpage=20", 200},
+		{"/rest/db/remoteneed?folder=f0&device=" + devA + "&page=1&perpage=100", 200},
+		{"/rest/db/remoteneed?perpage=100&device=" + devA + "&folder=f0", 200},
+		// Only for a device that shares the folder: for another device, and
+		// for a device ID that Syncthing does not know, Syncthing lists
+		// every file of the folder.
+		{"/rest/db/remoteneed?folder=f0&device=" + devB + "&page=1&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1&perpage=20", 400},
+		// Only the first page: for a device that does not share the folder,
+		// Syncthing lists every file of the folder.
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=2&perpage=20", 400},
+		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1000&perpage=1", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&page=1", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=0", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=101", 400},
@@ -307,9 +325,13 @@ func TestGateQueryAllowlist(t *testing.T) {
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=20&perpage=20", 400},
 		{"/rest/db/remoteneed?folder=f&folder=g&device=" + devA + "&perpage=20", 400},
 		{"/rest/db/remoteneed?folder=f&device=" + devA + "&device=" + devA + "&perpage=20", 400},
-		{"/rest/events", 200},
+		// Without the mask Syncthing answers from its default subscription,
+		// with events that the collector does not ask for (LoginAttempt).
+		{"/rest/events", 400},
+		{"/rest/events?since=0&timeout=1", 400},
+		{"/rest/events?since=0&timeout=1&events=", 400},
 		{"/rest/events?since=0&timeout=1&events=" + mask, 200},
-		{"/rest/events?since=7&timeout=600", 200},
+		{"/rest/events?since=7&timeout=600&events=" + mask, 200},
 		{"/rest/events?timeout=601", 400},
 		{"/rest/events?timeout=-1", 400},
 		{"/rest/events?timeout=1s", 400},
@@ -334,7 +356,9 @@ func TestGateQueryAllowlist(t *testing.T) {
 			t.Errorf("%s: body %q", c.path, body)
 		}
 	}
-	if n := st.count(); n != passed {
+	// Besides the gate's own reads of the folder list for remoteneed
+	// (system/status and config/folders each time).
+	if n := st.count() - 2*st.countPath("/rest/config/folders"); n != passed {
 		t.Fatalf("%d requests reached Syncthing, %d passed", n, passed)
 	}
 	// The mask may come in any order; what was checked is what is sent.
@@ -349,36 +373,58 @@ func TestGateQueryAllowlist(t *testing.T) {
 }
 
 // The names of the files that a device still needs (W-058) pass the gate
-// with the query of syncwatch's client, unchanged; the gate says what it
-// refuses.
+// with the query of syncwatch's client, unchanged, for a device that shares
+// the folder; the gate says what it refuses.
 func TestGateRemoteNeed(t *testing.T) {
-	st, _, gs := setup(t)
+	st, g, gs := setup(t)
+	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	g.now = func() time.Time { return now }
 	cl, err := stclient.New(stclient.Options{Name: "NAS", URL: gs.URL, APIKey: token, Timeout: 5 * time.Second,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cl.RemoteNeed(context.Background(), "live-fjord-4finals", devA, 20); err != nil {
+	if _, err := cl.RemoteNeed(context.Background(), "f0", devA, 100); err != nil {
 		t.Fatalf("RemoteNeed through the gate: %v", err)
 	}
 	last := st.last()
 	if last.URL.Path != "/rest/db/remoteneed" || last.Header.Get("X-API-Key") != realKey {
 		t.Fatalf("Syncthing got %s with key %q", last.URL.Path, last.Header.Get("X-API-Key"))
 	}
-	if q := last.URL.Query(); q.Get("folder") != "live-fjord-4finals" || q.Get("device") != devA || q.Get("page") != "1" || q.Get("perpage") != "20" || len(q) != 4 {
+	if q := last.URL.Query(); q.Get("folder") != "f0" || q.Get("device") != devA || q.Get("page") != "1" || q.Get("perpage") != "100" || len(q) != 4 {
 		t.Fatalf("forwarded query %q", last.URL.RawQuery)
 	}
 	for path, want := range map[string]string{
-		"/rest/db/remoteneed?folder=f&device=" + devA:                       "the parameter perpage must be between 1 and 100",
-		"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=500":      "the parameter perpage must be between 1 and 100",
-		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=0&perpage=1": "the parameter page must be between 1 and 1000",
-		"/rest/db/remoteneed?folder=f&device=WS-CARL&perpage=20":            "the parameter device must be a complete device ID",
-		"/rest/db/remoteneed?device=" + devA + "&perpage=20":                "the parameter folder is necessary",
+		"/rest/db/remoteneed?folder=f&device=" + devA:                        "the parameter perpage must be between 1 and 100",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&perpage=500":       "the parameter perpage must be between 1 and 100",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=0&perpage=1":  "the parameter page must be 1",
+		"/rest/db/remoteneed?folder=f&device=" + devA + "&page=2&perpage=20": "the parameter page must be 1",
+		"/rest/db/remoteneed?folder=f&device=WS-CARL&perpage=20":             "the parameter device must be a complete device ID",
+		"/rest/db/remoteneed?device=" + devA + "&perpage=20":                 "the parameter folder is necessary",
+		"/rest/db/remoteneed?folder=f0&device=" + devB + "&perpage=20":       "the device does not share the folder",
+		"/rest/db/remoteneed?folder=f9&device=" + devA + "&perpage=20":       "the device does not share the folder",
 	} {
 		code, body := get(t, gs, http.MethodGet, path, token)
 		if code != http.StatusBadRequest || strings.TrimSpace(body) != "syncwatch gate: query not permitted: "+want {
 			t.Errorf("%s: %d %q", path, code, body)
 		}
+	}
+	if n := st.countPath("/rest/db/remoteneed"); n != 1 {
+		t.Fatalf("Syncthing got %d remoteneed requests, want only the permitted one", n)
+	}
+
+	// A device that was just added to the folder: the gate reads the
+	// folder list again after one minute.
+	st.mu.Lock()
+	st.shared = []string{devA, devB}
+	st.mu.Unlock()
+	need := "/rest/db/remoteneed?folder=f0&device=" + devB + "&page=1&perpage=100"
+	if code, _ := get(t, gs, http.MethodGet, need, token); code != http.StatusBadRequest {
+		t.Fatalf("new device within a minute: %d", code)
+	}
+	now = now.Add(61 * time.Second)
+	if code, _ := get(t, gs, http.MethodGet, need, token); code != 200 {
+		t.Fatalf("new device after a minute: %d", code)
 	}
 }
 
@@ -742,6 +788,7 @@ func TestGateLimitsParallelRequests(t *testing.T) {
 	defer gs.Close()
 	var once sync.Once
 	defer once.Do(func() { close(release) })
+	mask := strings.Join(stclient.EventMask, ",")
 	var wg sync.WaitGroup
 	codes := make(chan int, 100)
 	hold := func(path string, n int) {
@@ -769,8 +816,8 @@ func TestGateLimitsParallelRequests(t *testing.T) {
 			}
 		}
 	}
-	hold("/rest/events", 4)
-	if code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=60", token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel long-polls\n" {
+	hold("/rest/events?events="+mask, 4)
+	if code, body := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=60&events="+mask, token); code != http.StatusTooManyRequests || body != "syncwatch gate: too many parallel long-polls\n" {
 		t.Fatalf("5th long-poll: %d %q", code, body)
 	}
 	if code, _ := get(t, gs, http.MethodGet, "/rest/system/status", token); code != 200 {
@@ -798,7 +845,7 @@ func TestGateLimitsParallelRequests(t *testing.T) {
 		}
 	}
 	// The ended requests free their places.
-	if code, _ := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1", token); code != 200 {
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?since=0&timeout=1&events="+mask, token); code != 200 {
 		t.Fatalf("a long-poll after the others ended: %d", code)
 	}
 	g.imu.Lock()
@@ -868,10 +915,11 @@ func TestGateUpstreamTimeouts(t *testing.T) {
 	if code, body := get(t, gs, http.MethodGet, "/rest/system/version", token); code != http.StatusBadGateway || time.Since(start) > 500*time.Millisecond {
 		t.Fatalf("slow Syncthing: %d %s after %v", code, strings.TrimSpace(body), time.Since(start))
 	}
-	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=0", token); code != http.StatusBadGateway {
+	mask := strings.Join(stclient.EventMask, ",")
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=0&events="+mask, token); code != http.StatusBadGateway {
 		t.Fatalf("long-poll over its timeout plus the margin: %d", code)
 	}
-	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=1", token); code != 200 {
+	if code, _ := get(t, gs, http.MethodGet, "/rest/events?timeout=1&events="+mask, token); code != 200 {
 		t.Fatalf("long-poll within its timeout: %d", code)
 	}
 }
@@ -893,7 +941,7 @@ func TestClientThroughGate(t *testing.T) {
 		t.Fatalf("status: %+v %v", st, err)
 	}
 	fs, err := cl.ConfigFolders(ctx)
-	if err != nil || len(fs) != 1 || len(fs[0].Devices) != 2 {
+	if err != nil || len(fs) != 1 || len(fs[0].Devices) != 3 {
 		t.Fatalf("folders: %+v %v", fs, err)
 	}
 	evs, err := cl.Events(ctx, 0, time.Second, stclient.EventMask)

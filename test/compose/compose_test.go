@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/test/harness"
 )
 
@@ -244,7 +245,12 @@ func TestCompose(t *testing.T) {
 				t.Errorf("%s %s: %d, want %d (%s)", c.method, c.path, code, c.want, body)
 			}
 		}
-		code, body := call(http.MethodGet, "/rest/events?since=0&timeout=1", gateToken)
+		// The gate passes a long-poll only with the event mask of the
+		// collector.
+		if code, body := call(http.MethodGet, "/rest/events?since=0&timeout=1", gateToken); code != http.StatusBadRequest {
+			t.Errorf("events without the mask: %d, want 400 (%s)", code, body)
+		}
+		code, body := call(http.MethodGet, "/rest/events?since=0&timeout=1&events="+strings.Join(stclient.EventMask, ","), gateToken)
 		if code != http.StatusOK || strings.Contains(body, solKey) {
 			t.Fatalf("events through the gate: %d, key leaked: %v", code, strings.Contains(body, solKey))
 		}

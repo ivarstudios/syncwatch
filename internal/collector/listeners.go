@@ -116,21 +116,30 @@ func relayListeners(prev []model.RelayListener, okSince map[string]time.Time, st
 }
 
 // relayURI returns the listen address of a relay listener without its
-// query, which can hold the token of a private relay:
-// relay://10.115.1.60:22067/?id=…&token=… gives relay://10.115.1.60:22067.
+// query, which can hold the token of a private relay, and without its user
+// information, which can hold the password of a relay pool (Syncthing sends
+// it to the pool as basic authentication):
+// relay://10.115.1.60:22067/?id=…&token=… gives relay://10.115.1.60:22067,
+// dynamic+https://user:password@relays.example/endpoint gives
+// dynamic+https://relays.example/endpoint. H12 shows the address to viewers.
 // ok is false for the other listeners (tcp, quic).
 func relayURI(addr string) (uri string, ok bool) {
-	scheme, _, found := strings.Cut(addr, "://")
+	scheme, rest, found := strings.Cut(addr, "://")
 	if !found || (scheme != "relay" && !strings.HasPrefix(scheme, "dynamic+")) {
 		return "", false
 	}
 	u, err := url.Parse(addr)
 	if err != nil {
-		// Not a URL: keep what is before the query.
-		uri, _, _ = strings.Cut(addr, "?")
-		uri, _, _ = strings.Cut(uri, "#")
-		return strings.TrimSuffix(uri, "/"), true
+		// Not a URL: keep what is before the query, and from that what is
+		// after the last @ (a password can have a / or an @).
+		rest, _, _ = strings.Cut(rest, "?")
+		rest, _, _ = strings.Cut(rest, "#")
+		if i := strings.LastIndex(rest, "@"); i >= 0 {
+			rest = rest[i+1:]
+		}
+		return strings.TrimSuffix(scheme+"://"+rest, "/"), true
 	}
+	u.User = nil
 	u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = "", false, "", ""
 	if u.Path == "/" {
 		u.Path, u.RawPath = "", ""

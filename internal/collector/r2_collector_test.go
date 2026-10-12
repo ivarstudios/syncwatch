@@ -13,6 +13,7 @@ import (
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/rules"
 	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -133,16 +134,24 @@ func TestRelayListenerRetryIsNotAConnection(t *testing.T) {
 	}
 }
 
+// The URI that H12 shows has no secret: no query (the token of a private
+// relay) and no user information (the password of a private relay pool,
+// which Syncthing sends to the pool as basic authentication).
 func TestRelayURI(t *testing.T) {
 	for in, want := range map[string]string{
 		kitRelay:                         "relay://10.123.1.60:22067",
 		"relay://relay.sim.invalid:443/": "relay://relay.sim.invalid:443",
 		dynRelays:                        dynRelays,
-		"dynamic+https://relays.example.invalid/endpoint?x=1": "dynamic+https://relays.example.invalid/endpoint",
-		"relay://%zz/?token=secret":                           "relay://%zz", // not a URL: the query still goes
-		"tcp://0.0.0.0:22000":                                 "",
-		"quic://0.0.0.0:22000":                                "",
-		"relay":                                               "",
+		"dynamic+https://relays.example.invalid/endpoint?x=1":                  "dynamic+https://relays.example.invalid/endpoint",
+		"dynamic+https://ivar:pool-pass-123@relays.example.invalid/endpoint":   "dynamic+https://relays.example.invalid/endpoint",
+		"dynamic+http://ivar@relays.example.invalid/endpoint":                  "dynamic+http://relays.example.invalid/endpoint",
+		"relay://ivar:relay-pass-456@10.115.1.60:22067/?id=X&token=t":          "relay://10.115.1.60:22067",
+		"relay://%zz/?token=secret":                                            "relay://%zz", // not a URL: the query still goes
+		"relay://ivar:relay-pass-789@%zz/?token=secret":                        "relay://%zz", // and the user information
+		"dynamic+https://ivar:pass/with@slash@relays.example.invalid/endpoint": "dynamic+https://relays.example.invalid/endpoint",
+		"tcp://0.0.0.0:22000":  "",
+		"quic://0.0.0.0:22000": "",
+		"relay":                "",
 	} {
 		got, ok := relayURI(in)
 		if got != want || ok != (want != "") {
@@ -223,14 +232,59 @@ func TestNeedListsFromFullCheck(t *testing.T) {
 	}
 }
 
+// Syncthing lists the deletions that a device did not do yet in
+// /rest/db/remoteneed, in the order of the names, but counts them in
+// needDeletes and not in needItems: Syncthing 2.1.5 with a PC that cannot
+// delete 25 files and cannot replace 2 files gives needItems 2 and
+// needDeletes 25. A deletion is not a file that the device needs: the full
+// check reads 100 entries and keeps the first 20 names that are not
+// deletions, and H5 shows the 2 files and no "…and N more".
+func TestNeedListsWithoutDeletions(t *testing.T) {
+	fake := newFakeST(t)
+	fake.need = map[string]int64{"p-beta/" + devSirius: 2}
+	fake.needNames = []string{"busy.txt", "zz-late.txt"} // before and after the deletions
+	for i := 0; i < 25; i++ {
+		fake.needDeleted = append(fake.needDeleted, fmt.Sprintf("keep%02d.txt", i))
+	}
+	srv := httptest.NewTLSServer(fake)
+	defer srv.Close()
+	hub, _, _, stop := startManager(t, srv, "collector: {event_timeout: 5s}", nil, nil)
+	defer stop()
+	sv := waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	if nl := sv.NeedLists["p-beta"][devSirius]; fmt.Sprint(nl.Names) != "[busy.txt zz-late.txt]" || nl.Items != 2 {
+		t.Fatalf("need list %+v, want the 2 files and no deletion", nl)
+	}
+	cfg, err := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	for _, f := range rules.Evaluate(rules.Input{Snapshot: hub.Snapshot(), Config: cfg, Now: time.Now()}) {
+		if f.Check == "H5" && f.DetailValue("Folder ID") == "p-beta" && f.DetailValue("Device ID") == devSirius {
+			row = f.DetailValue("Needed files")
+		}
+	}
+	if row != "busy.txt · zz-late.txt" {
+		t.Fatalf("H5 row \"Needed files\" %q", row)
+	}
+}
+
 // A gate from before /rest/db/remoteneed refuses it with 404: no names, no
 // folder error, the full check completes, one INFO line, and the session
-// asks no more. The next session asks again (a new gate).
+// asks no more. The next session asks again (a new gate). The gate of the
+// published version 78ef2d8 says "endpoint not allowed", the later gates
+// "endpoint not permitted".
 func TestNeedListWithOldGate(t *testing.T) {
+	for _, refusal := range []string{"syncwatch gate: endpoint not permitted", "syncwatch gate: endpoint not allowed"} {
+		t.Run(refusal, func(t *testing.T) { needListWithOldGate(t, refusal) })
+	}
+}
+
+func needListWithOldGate(t *testing.T, refusal string) {
 	fake := newFakeST(t)
 	fake.need = map[string]int64{"p-beta/" + devSirius: 3, "p-gamma/" + devSirius: 2}
 	fake.needNames = []string{"a.txt", "b.txt", "c.txt"}
-	fake.needStatus, fake.needBody = http.StatusNotFound, "syncwatch gate: endpoint not permitted"
+	fake.needStatus, fake.needBody = http.StatusNotFound, refusal
 	srv := httptest.NewTLSServer(fake)
 	defer srv.Close()
 	var logs lockedBuf
