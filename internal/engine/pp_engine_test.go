@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,98 @@ import (
 )
 
 // Tests of the pre-publication review (pp-rules).
+
+// data-1 (W-046): S2 lists the Syncthing folders inside a share root in
+// place of their S1 findings. While S2 is ignored or snoozed, or not urgent
+// while S1 is urgent, each folder inside has its own S1 again (as before
+// W-046): a folder that Syncthing syncs 2 times always has a finding that a
+// person sees, with the urgency of S1. Also a folder that somebody adds
+// later. When S2 reports the folders again, their S1 findings close without
+// a resolved message: the fault continues.
+func TestShareRootHiddenGivesS1(t *testing.T) {
+	const root = "/share/AKKA-LIVE-4FINALS"
+	folder := func(r *rig, id, label, path string) {
+		r.hub.Update("a", func(s *model.Server) {
+			s.Folders[id] = &model.Folder{ID: id, Label: label, Path: path, State: "idle", Completion: map[string]*model.Completion{}}
+		})
+	}
+	visibleUrgent := func(t *testing.T, r *rig, v *View, part string) *View {
+		t.Helper()
+		s1 := find(v, "S1", part)
+		if s1 == nil {
+			t.Fatalf("no S1 %q", part)
+		}
+		if _, hidden := v.Snoozed(s1.ID, r.now); hidden || !s1.Urgent || s1.Stale {
+			t.Fatalf("S1 %q: hidden=%v urgent=%v stale=%v", part, hidden, s1.Urgent, s1.Stale)
+		}
+		r.eng.MarkPinged([]string{s1.ID}, r.now) // the urgent message went out
+		return v
+	}
+	for _, mode := range []string{"ignore", "snooze", "not urgent"} {
+		t.Run(mode, func(t *testing.T) {
+			r := newRig(t)
+			if mode == "not urgent" {
+				r.withConfig(t, `
+servers: [{name: A, url: "https://a:1"}, {name: B, url: "https://b:1"}]
+checks: {S2: {urgent: false}}
+`)
+			}
+			folder(r, "root", "AKKA-LIVE-4FINALS", root)
+			folder(r, "fjord", "LIVE-FJORD-4FINALS", root+"/LIVE-FJORD-4FINALS")
+			v := r.at(0)
+			s2 := find(v, "S2", "AKKA-LIVE-4FINALS on A")
+			if s2 == nil || s2.Urgent != (mode != "not urgent") {
+				t.Fatalf("S2: %+v", s2)
+			}
+			switch mode {
+			case "ignore":
+				if err := r.eng.Ignore(s2.ID, "The share is synced as a whole on purpose", "admin"); err != nil {
+					t.Fatal(err)
+				}
+			case "snooze":
+				if err := r.eng.Snooze(s2.ID, r.now.Add(7*24*time.Hour), "VPN work", "admin"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			visibleUrgent(t, r, r.at(time.Minute), "LIVE-FJORD-4FINALS inside AKKA-LIVE-4FINALS on A")
+			// Somebody adds PROJ-B inside the share root as its own folder.
+			folder(r, "projb", "PROJ-B", root+"/PROJ-B")
+			visibleUrgent(t, r, r.at(time.Minute), "PROJ-B inside AKKA-LIVE-4FINALS on A")
+
+			// S2 reports the folders again.
+			switch mode {
+			case "ignore":
+				if err := r.eng.Unsnooze(s2.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "snooze":
+				r.now = r.now.Add(7 * 24 * time.Hour) // the snooze ends
+			case "not urgent":
+				c := r.cfg.Get().Clone()
+				delete(c.Checks, "S2")
+				if err := r.cfg.Set(c); err != nil {
+					t.Fatal(err)
+				}
+			}
+			v = r.at(time.Minute)
+			if s1 := find(v, "S1", "inside AKKA-LIVE-4FINALS"); s1 != nil {
+				t.Fatalf("S1 still open: %s", s1.Message)
+			}
+			if s2 = find(v, "S2", "AKKA-LIVE-4FINALS on A"); s2 == nil || !strings.Contains(s2.Message, "It contains 2 other Syncthing folders") {
+				t.Fatalf("S2: %+v", s2)
+			}
+			if pend, _ := r.st.PendingResolved(); len(pend) != 0 {
+				t.Fatalf("a resolved message is due for %d findings, first %q: the folders are still inside", len(pend), pend[0].Message)
+			}
+			hist, _ := r.st.HistoryBetween(r.now.Add(-30*24*time.Hour), r.now.Add(time.Second))
+			for _, h := range hist {
+				if h.Check == "S1" && (h.ResolvedAt.IsZero() || !strings.HasSuffix(h.Message, "(listed in S2 AKKA-LIVE-4FINALS on A)")) {
+					t.Errorf("history of S1: %q resolved %v", h.Message, h.ResolvedAt)
+				}
+			}
+		})
+	}
+}
 
 // data-5 (a): LAPTOP-DANI always uses a relay, and an administrator pauses
 // it on A and B (a holiday). It has no connection because of the pause: no

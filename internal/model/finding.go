@@ -98,6 +98,11 @@ type Finding struct {
 	// open record open and stale, opens no new one and stops the timer of
 	// its observation. Not stored.
 	Held bool `json:"-"`
+	// Covers are the IDs of the findings of another check whose condition
+	// this finding reports now (S2 lists the S1 of the Syncthing folders
+	// inside a share root). The engine closes such an open finding without
+	// a resolved message: the condition continues. Not stored.
+	Covers []string `json:"-"`
 }
 
 // FindingID is a stable hash of a check, server and subject key.

@@ -396,17 +396,30 @@ func (e *Engine) Evaluate() {
 	if err != nil {
 		e.log.Warn("cannot read the conflict history", "err", err)
 	}
-	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts})
+	// S2 reports the folders inside a share root only while a person sees it.
+	hidden := map[string]bool{}
+	e.mu.Lock()
+	for id, sz := range e.snoozes {
+		if sz.Active(now) {
+			hidden[id] = true
+		}
+	}
+	e.mu.Unlock()
+	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts, Hidden: hidden})
 	z := newFreezer(snap)
 
 	e.mu.Lock()
 	produced := map[string]bool{}
 	held := map[string]bool{}
 	current := map[string]model.Finding{}
+	coveredBy := map[string]string{} // finding ID: the finding that reports its condition now
 	obsAdd := map[string]store.Observation{}
 	var obsRemove []string
 	for _, f := range fs {
 		produced[f.ID] = true
+		for _, id := range f.Covers {
+			coveredBy[id] = f.Check + " " + f.Subject
+		}
 		if f.Held {
 			// Judged from a last known state: like a frozen finding, and
 			// its timer stops.
@@ -519,6 +532,20 @@ func (e *Engine) Evaluate() {
 				e.save(rec)
 				changed = true
 			}
+			continue
+		}
+		if by, ok := coveredBy[id]; ok {
+			// Another finding reports the condition now (S2 lists the
+			// folder): close it quietly, the fault continues.
+			rec.ResolvedAt, rec.ResolvedNotifiedAt = now, now
+			e.save(rec)
+			if err := e.st.HistoryResolveNote(id, now, "listed in "+by); err != nil {
+				e.log.Warn("cannot write the finding history", "err", err)
+			}
+			delete(e.open, id)
+			delete(e.persisted, id)
+			changed = true
+			e.log.Info("finding closed", "reason", "listed in "+by, "check", rec.Check, "subject", rec.Subject, "id", id)
 			continue
 		}
 		// LastSeen stays the time of the last evaluation that saw the
