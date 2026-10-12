@@ -452,7 +452,8 @@ func (n *Notifier) probe(ctx context.Context, now time.Time, gen int) {
 		n.recordDelivery(now, gen, nil)
 		return
 	}
-	n.recordDelivery(now, gen, err) // the latest error for the banner
+	// The banner keeps the error of the last message: a test setup that
+	// takes only posts answers a check with another error.
 	n.dmu.Lock()
 	if gen == n.gen && n.state.Failing {
 		n.probes++
