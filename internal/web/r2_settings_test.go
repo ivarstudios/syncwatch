@@ -120,7 +120,7 @@ func TestImportPreviewChangesNothing(t *testing.T) {
 		"Thresholds of the checks: not in the file. syncwatch uses the default values.",
 		"syncwatch removes the server AKKA and deletes its API key and pinned certificate.",
 		"The API URL of the server SIRIUS changes. Type the API key again for SIRIUS.",
-		`Secrets in the file:</strong> the API key of the server SOL, the Discord webhook, the Discord webhook for settings notices, the API token "API token".`,
+		`Secrets in the file:</strong> the API key of the server SOL, the Discord webhook, the Discord webhook for settings notices, the API token "API token" (Full: /api/v1/status and /api/v1/ha).`,
 		"H6 paused for more than: 1d → 3d", // the lines of the settings notice
 		`<input type="checkbox" name="delete_servers"> Remove the server AKKA (syncwatch deletes its API key)</label>`,
 		`<input type="password" name="confirm"`,

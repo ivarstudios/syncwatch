@@ -93,10 +93,36 @@ func (c *Config) SiteOf(serverID string) string {
 }
 
 // siteOK reports whether a site name has at most MaxSiteLen characters and
-// no control or format characters.
+// no control, format or other invisible characters (U+3164 Hangul filler).
+// The only white space is the space (CleanSite).
 func siteOK(s string) bool {
 	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= MaxSiteLen &&
-		strings.IndexFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) < 0
+		strings.IndexFunc(s, func(r rune) bool {
+			return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) || (r != ' ' && unicode.IsSpace(r))
+		}) < 0
+}
+
+// CleanSite returns a site name with each run of white space as one space
+// and without white space at the ends. A no-break space or a line separator
+// from a paste looks the same as a space: the site then has the spelling of
+// the site typed with the space bar (import-4).
+func CleanSite(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// SpellSite gives the spelling site to each site that is the same without
+// regard to case: the site of syncwatch and the sites of the servers. A site
+// that the administrator types is thus the spelling of the site everywhere.
+func (c *Config) SpellSite(site string) {
+	if site == "" {
+		return
+	}
+	if strings.EqualFold(c.Site, site) {
+		c.Site = site
+	}
+	for i := range c.Servers {
+		if strings.EqualFold(c.Servers[i].Site, site) {
+			c.Servers[i].Site = site
+		}
+	}
 }
 
 // SameEndpoint reports whether two server URLs address the same scheme, host,
@@ -215,6 +241,19 @@ type API struct {
 	Token string `yaml:"token,omitempty" json:"-"`
 }
 
+// MinTokenLength is the shortest API token of a file (api.token), in
+// characters: the minimum of the passwords. The imported API token can have
+// the scope full, and the API has no rate limit for API tokens (import-3).
+const MinTokenLength = 10
+
+// tokenOK reports whether an API token of a file has at least MinTokenLength
+// characters and no white space, control or format characters: it refuses a
+// placeholder, a cut paste and an example value.
+func tokenOK(s string) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) >= MinTokenLength &&
+		strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) < 0
+}
+
 // Access modes.
 const (
 	AccessBuiltin = "builtin"
@@ -323,10 +362,28 @@ func (c *Config) ApplyDefaults() {
 			n.DiscordNoticesWebhook = u
 		}
 	}
+	c.API.Token = strings.TrimSpace(c.API.Token) // a paste can bring a line break
 	// notifications.repeat_urgent has no default: 0 is off.
-	c.Site = strings.TrimSpace(c.Site)
+	// One site has one spelling (import-4): the rules and the dashboard
+	// compare the sites as they are. A site that is the same as an earlier
+	// one without regard to case gets the spelling of the earlier one: the
+	// site of syncwatch first, then the sites of the servers in order.
+	var sites []string
+	spell := func(site string) string {
+		site = CleanSite(site)
+		for _, s := range sites {
+			if strings.EqualFold(s, site) {
+				return s
+			}
+		}
+		if site != "" {
+			sites = append(sites, site)
+		}
+		return site
+	}
+	c.Site = spell(c.Site)
 	for i := range c.Servers {
-		c.Servers[i].Site = strings.TrimSpace(c.Servers[i].Site)
+		c.Servers[i].Site = spell(c.Servers[i].Site)
 	}
 	// Syncthing writes device IDs in upper case; a pasted ID can have spaces
 	// around it.
@@ -540,6 +597,9 @@ func (c *Config) Validate() error {
 		if _, err := CanonicalNoticesWebhook(c.Notify.DiscordNoticesWebhook); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if c.API.Token != "" && !tokenOK(c.API.Token) {
+		errs = append(errs, fmt.Errorf("API token (api.token): the value must have at least %d characters and no spaces or control characters. Make the API token in Settings → API.", MinTokenLength))
 	}
 	if c.Notify.DiscordRoleID != "" && !roleIDRe.MatchString(c.Notify.DiscordRoleID) {
 		errs = append(errs, errors.New("Role ID (notifications.discord_role_id): the value must be the ID of the Discord role (17 to 20 digits)."))

@@ -257,13 +257,17 @@ func (s *Server) buildImportPreview(data []byte, old, c *config.Config) *importP
 		p.Secrets = append(p.Secrets, "the Discord webhook for settings notices")
 	}
 	if c.API.Token != "" {
-		p.Secrets = append(p.Secrets, "the "+legacyTokenName)
+		p.Secrets = append(p.Secrets, "the "+legacyTokenName+" ("+scopeLabel(s.legacyTokenScope())+")")
 	}
 
 	if weakensAccess(old, c) {
 		p.Weakens = accessLines(old, c)
 	}
 	p.NeedPassword = (len(removed) > 0 || len(p.Weakens) > 0) && s.adminConfigured()
+	// The lines have names of devices (from Syncthing) and servers: show
+	// their direction controls as the other pages do (text-5).
+	p.Changes, p.Removed, p.KeyAgain, p.Secrets = showAll(p.Changes), showAll(p.Removed), showAll(p.KeyAgain), showAll(p.Secrets)
+	p.DeleteLabel = showControls(p.DeleteLabel)
 	return p
 }
 

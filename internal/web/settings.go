@@ -53,6 +53,8 @@ func (s *Server) settingsData(info requestInfo, extra map[string]any) map[string
 	log, _ := s.st.Notifications(20)
 	for i := range log {
 		log[i].Channel = channelLabel(log[i].Channel)
+		// A title has folder labels and device names from Syncthing (text-5).
+		log[i].Summary, log[i].Error = showControls(log[i].Summary), showControls(log[i].Error)
 	}
 	_, hasViewer := s.setting(KeyViewerHash)
 	var kept int
@@ -441,7 +443,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		GUIURL:    strings.TrimRight(strings.TrimSpace(r.FormValue("gui_url")), "/"),
 		Disabled:  r.FormValue("disabled") == "on",
 		AllowHTTP: r.FormValue("allow_http") == "on",
-		Site:      strings.TrimSpace(r.FormValue("site")),
+		Site:      config.CleanSite(r.FormValue("site")),
 	}
 	if name == "" {
 		s.redirect(w, r, "/settings#servers", "A server needs a name.", true)
@@ -477,6 +479,7 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		sv.ID = id
 		c.Servers = append(c.Servers, sv)
 	}
+	c.SpellSite(sv.Site) // the typed spelling of a site is its spelling everywhere (import-4)
 	if err := c.Validate(); err != nil {
 		s.redirect(w, r, "/settings#servers", "Not saved. "+sentence(err.Error()), true)
 		return
@@ -519,6 +522,13 @@ func (s *Server) handleServerSave(w http.ResponseWriter, r *http.Request, info r
 		summary := "The API URL is " + sv.URL + "."
 		if sv.Site != "" {
 			summary += "\nThe site of the server is " + sv.Site + "."
+		}
+		// The spelling of the site can change the site of other servers and
+		// of syncwatch (SpellSite).
+		for _, l := range s.changesOf(cur, c) {
+			if !strings.HasPrefix(l, "The server "+sv.Name+" is added") {
+				summary += "\n" + l
+			}
 		}
 		s.announce(r, notify.Notice{Title: "Server " + name + " added", Summary: summary, Security: true})
 	} else {
@@ -616,7 +626,8 @@ func (s *Server) handleNotifySave(w http.ResponseWriter, r *http.Request, info r
 	c.Timezone = strings.TrimSpace(r.FormValue("timezone"))
 	c.PublicURL = strings.TrimRight(strings.TrimSpace(r.FormValue("public_url")), "/")
 	if formHas(r, "site") {
-		c.Site = strings.TrimSpace(r.FormValue("site"))
+		c.Site = config.CleanSite(r.FormValue("site"))
+		c.SpellSite(c.Site) // the typed spelling of a site is its spelling everywhere (import-4)
 	}
 	clearHook, hook := r.FormValue("discord_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_webhook"))
 	clearNotices, noticesHook := r.FormValue("discord_notices_webhook_clear") == "on", strings.TrimSpace(r.FormValue("discord_notices_webhook"))
@@ -1245,13 +1256,23 @@ func (s *Server) handleAccessSave(w http.ResponseWriter, r *http.Request, info r
 		s.redirect(w, r, "/settings#access", "Set an administrator password first. Then set built-in login to on.", true)
 		return
 	}
-	// A new viewer password lets someone else in, too.
+	// A new viewer password lets someone else in, too. It needs the
+	// administrator password also when it has no effect now: the check
+	// below must not tell a session without the administrator password
+	// whether a guess is the administrator password.
 	newViewerPW := viewerPW != "" && c.Access.Mode == config.AccessBuiltin && c.Access.Viewer == config.ViewerPassword
-	if weakensAccess(old, c) || newViewerPW {
+	if weakensAccess(old, c) || viewerPW != "" {
 		if msg := s.confirmAdmin(r, info, "access change refused"); msg != "" {
 			s.redirect(w, r, "/settings#access", msg, true)
 			return
 		}
+	}
+	// The login checks the administrator password first: with the same
+	// password, each viewer is an administrator (sessions-1). After the
+	// confirmation, "confirm" is the administrator password.
+	if viewerPW != "" && s.adminConfigured() && viewerPW == r.FormValue("confirm") {
+		s.redirect(w, r, "/settings#access", "The viewer password must be different from the administrator password.", true)
+		return
 	}
 	if viewerPW != "" {
 		h, err := HashPassword(viewerPW)
@@ -1343,6 +1364,10 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 		s.redirect(w, r, "/settings#access", "The new passwords are not the same.", true)
 		return
 	}
+	if s.sameAsViewer(pw) {
+		s.redirect(w, r, "/settings#access", errSameAsViewer, true)
+		return
+	}
 	nh, err := HashPassword(pw)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -1355,6 +1380,19 @@ func (s *Server) handlePasswordSave(w http.ResponseWriter, r *http.Request, info
 	}
 	s.announce(r, notify.Notice{Title: "Administrator password changed", Summary: "syncwatch logged out the other administrator sessions.", Security: true})
 	s.redirect(w, r, "/settings#access", "The administrator password is changed. syncwatch logged out the other administrator sessions.", false)
+}
+
+// errSameAsViewer refuses an administrator password that is the viewer
+// password.
+const errSameAsViewer = "The administrator password must be different from the viewer password."
+
+// sameAsViewer reports whether pw is the viewer password. The login checks
+// the administrator password first: an administrator password that is also
+// the viewer password makes each login with the viewer password an
+// administrator session (sessions-1).
+func (s *Server) sameAsViewer(pw string) bool {
+	h, ok := s.setting(KeyViewerHash)
+	return ok && CheckPassword(pw, h)
 }
 
 // handleDevicesSave saves the devices that always connect through a relay
@@ -1493,7 +1531,7 @@ func (s *Server) confirmImport(w http.ResponseWriter, r *http.Request, info requ
 	refuse := func(msg string) {
 		imports.release(id) // the pending import stays for a corrected confirmation
 		pv := s.buildImportPreview(p.data, old, c)
-		pv.ID, pv.Error = id, msg
+		pv.ID, pv.Error = id, showControls(msg) // msg can name servers
 		s.render(w, r, http.StatusUnprocessableEntity, "settings", info, s.settingsData(info, map[string]any{"ImportPreview": pv}))
 	}
 	removed := removedServers(old, c)
@@ -1542,6 +1580,15 @@ func (s *Server) hasLegacyToken() bool {
 	return err == nil && t != nil
 }
 
+// legacyTokenScope returns the scope that an imported api.token gets: the
+// scope of the API token "API token", or full when the import adds it.
+func (s *Server) legacyTokenScope() string {
+	if t, err := s.st.APITokenByName(store.LegacyTokenName); err == nil && t != nil {
+		return t.Scope
+	}
+	return store.ScopeFull
+}
+
 // applyImport stores the secrets of the file c, saves c as the configuration
 // and deletes the API keys and pinned certificates of the removed servers.
 func (s *Server) applyImport(w http.ResponseWriter, r *http.Request, old, c *config.Config) {
@@ -1560,8 +1607,9 @@ func (s *Server) applyImport(w http.ResponseWriter, r *http.Request, old, c *con
 		changes = append(changes, replacedOrAdded(s.st.HasSecret(store.SecretNoticesWebhook), "Discord webhook for settings notices"))
 	}
 	if c.API.Token != "" {
-		// "The API token "API token" is replaced." or "… is added."
-		changes = append(changes, replacedOrAdded(s.hasLegacyToken(), legacyTokenName))
+		// "The API token "API token" is replaced." or "… is added.", with
+		// what it can read.
+		changes = append(changes, replacedOrAdded(s.hasLegacyToken(), legacyTokenName)+" "+scopeSentence(s.legacyTokenScope()))
 	}
 	n, err := settings.ImportSecrets(s.st, c)
 	if err != nil {
