@@ -284,3 +284,66 @@ func pageOf(t *testing.T, c *http.Client, u string) (int, string) {
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
 }
+
+// sessions-4: a browser with a viewer session (the lobby screen, the PC of
+// a colleague) opens an administrator page. syncwatch sends it to the login
+// form with the reason, and the administrator logs in there: then the
+// browser gets the page that it asked for. The viewer password on that form
+// sends the browser back to the form, with the reason. A form of a viewer
+// session still gets 403.
+func TestViewerSessionGetsTheAdministratorLogin(t *testing.T) {
+	e := newEnv(t, twoServers+"access: {viewer: password}\n")
+	ah, _ := HashPassword("correct horse battery")
+	vh, _ := HashPassword("viewer password 1")
+	_ = e.st.SetSetting(KeyAdminHash, ah)
+	_ = e.st.SetSetting(KeyViewerHash, vh)
+	const reason = "This page needs the administrator password."
+	if r := e.post("/login", url.Values{"csrf": {e.csrf("/login")}, "password": {"viewer password 1"}, "next": {"/lobby"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/lobby" {
+		t.Fatalf("viewer login: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	toLogin := func(step string) {
+		t.Helper()
+		resp, _ := e.get("/settings")
+		if msg, isErr := flash(resp); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?next=/settings" || msg != reason || !isErr {
+			t.Fatalf("%s: GET /settings: %d %q, flash %q %v; want the login form with the reason", step, resp.StatusCode, resp.Header.Get("Location"), msg, isErr)
+		}
+		resp, body := e.get("/login?next=/settings")
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, `<div class="flash err" role="alert">✖ `+reason+`</div>`) ||
+			!strings.Contains(body, `name="password"`) || !strings.Contains(body, `<input type="hidden" name="next" value="/settings">`) {
+			t.Fatalf("%s: GET /login?next=/settings: %d, want the form with the reason:\n%s", step, resp.StatusCode, body)
+		}
+	}
+	toLogin("viewer session")
+	if r := e.post("/login", url.Values{"csrf": {e.csrf("/login?next=/settings")}, "password": {"viewer password 1"}, "next": {"/settings"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/settings" {
+		t.Fatalf("viewer password on the form: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	toLogin("the viewer password on the form")
+	if r := e.post("/login", url.Values{"csrf": {e.csrf("/login?next=/settings")}, "password": {"correct horse battery"}, "next": {"/settings"}}); r.StatusCode != http.StatusSeeOther || r.Header.Get("Location") != "/settings" {
+		t.Fatalf("administrator password on the form: %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
+	if resp, _ := e.get("/settings"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /settings after the administrator login: %d", resp.StatusCode)
+	}
+	if resp, _ := e.get("/login?next=/problems"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/problems" {
+		t.Errorf("/login with an administrator session: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// A form of a viewer session: 403, as before.
+	viewer := e.loginClient("viewer password 2", RoleViewer)
+	_, page := pageOf(t, viewer, e.srv.URL+"/")
+	resp, err := viewer.PostForm(e.srv.URL+"/settings/servers", url.Values{"csrf": {csrfRe.FindStringSubmatch(page)[1]}, "name": {"X"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(b), reason) {
+		t.Errorf("a form of a viewer session: %d, want 403 with the reason", resp.StatusCode)
+	}
+
+	// Open access without an administrator password: the first start.
+	open := newEnv(t, twoServers+"access: {viewer: open}\n")
+	if resp, _ := open.get("/settings"); resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/setup" {
+		t.Errorf("open access, no administrator password: GET /settings: %d %q, want /setup", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
