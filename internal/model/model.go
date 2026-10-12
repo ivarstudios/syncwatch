@@ -124,7 +124,7 @@ type Server struct {
 	Loaded            bool // at least one full re-check completed
 	LastFullCheck     time.Time
 	LastEvent         time.Time
-	LastStructureScan time.Time
+	LastStructureScan time.Time // the end of the last completed structure scan; zero before the first one
 
 	Folders        map[string]*Folder     // by folder ID
 	Devices        map[string]*Device     // configured devices, including itself

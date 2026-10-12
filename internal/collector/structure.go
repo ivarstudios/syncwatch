@@ -30,7 +30,7 @@ func (c *Collector) maybeScan(ctx context.Context) {
 	if ctx != c.sessCtx {
 		// A new session. Its scanTimer ends with it (the timer of the first
 		// session ran with that session only, and no timer followed it
-		// after a reconnect).
+		// after a reconnect). ScanNow starts its scans with this context.
 		c.sessCtx = ctx
 		if cfg.Mode == config.ModeEvents {
 			go c.scanTimer(ctx)
@@ -39,7 +39,17 @@ func (c *Collector) maybeScan(ctx context.Context) {
 	if c.scanning || time.Since(c.lastScan) < cfg.StructureInterval.D() {
 		return
 	}
+	c.startScan(ctx, cfg)
+}
+
+// startScan starts a structure scan in the background: a baseline scan when
+// one is due, else a regular scan. The timed scans (maybeScan) and the scans
+// that an administrator starts (ScanNow) both start here. The caller holds
+// scanMu, and no scan runs.
+func (c *Collector) startScan(ctx context.Context, cfg config.Collector) {
 	c.scanning = true
+	done := make(chan struct{})
+	c.scanDone = done
 	baseline := time.Since(c.lastBase) >= c.baselineEvery(cfg)
 	c.lastScan = time.Now()
 	if baseline {
@@ -48,13 +58,65 @@ func (c *Collector) maybeScan(ctx context.Context) {
 	go func() {
 		defer func() {
 			c.scanMu.Lock()
-			c.scanning = false
+			c.scanning, c.scanDone = false, nil
 			c.scanMu.Unlock()
+			close(done)
 		}()
 		if err := c.scan(ctx, baseline); err != nil {
 			c.log.Warn("structure scan failed", "err", shortErr(err))
 		}
 	}()
+}
+
+// manualEvery is the shortest time between 2 structure scans of a server
+// that an administrator starts (ScanNow).
+var manualEvery = 30 * time.Second
+
+// The states of a request for a structure scan (ScanStart.State).
+const (
+	ScanStarted = "started"  // the scan started now
+	ScanRunning = "running"  // a scan runs: syncwatch starts no second scan
+	ScanTooSoon = "too-soon" // an administrator started a scan less than 30 seconds ago
+	ScanNotUp   = "not-up"   // the server is not up, or its first full check is not complete
+)
+
+// ScanStart is the answer to a request for a structure scan (ScanNow).
+type ScanStart struct {
+	State string
+	// Started is the start of the last scan of the server: the new scan,
+	// or the scan that runs. Zero for ScanNotUp.
+	Started time.Time
+	// Next is the earliest start of the next scan that an administrator
+	// can start (ScanTooSoon).
+	Next time.Time
+	// Done is closed when the last scan is complete. It is nil when no scan
+	// runs.
+	Done <-chan struct{}
+}
+
+// ScanNow starts a structure scan of the server at once, for an
+// administrator (W-056). The scan is the same as a timed scan (startScan),
+// thus it only reads. One scan of a server runs at a time, and an
+// administrator can start 1 scan of a server in manualEvery. The timed
+// scans continue from the start of this scan.
+func (c *Collector) ScanNow() ScanStart {
+	up := false
+	c.hub.View(c.id, func(s *model.Server) { up = s.Status == model.StatusUp && s.Loaded })
+	c.scanMu.Lock()
+	defer c.scanMu.Unlock()
+	ctx := c.sessCtx
+	if !up || ctx == nil || ctx.Err() != nil {
+		return ScanStart{State: ScanNotUp}
+	}
+	if !c.manualAt.IsZero() && time.Since(c.manualAt) < manualEvery {
+		return ScanStart{State: ScanTooSoon, Started: c.lastScan, Next: c.manualAt.Add(manualEvery), Done: c.scanDone}
+	}
+	if c.scanning {
+		return ScanStart{State: ScanRunning, Started: c.lastScan, Done: c.scanDone}
+	}
+	c.startScan(ctx, c.cfg.Get().Collector)
+	c.manualAt = c.lastScan
+	return ScanStart{State: ScanStarted, Started: c.lastScan, Done: c.scanDone}
 }
 
 // A baseline scan that took less than fastBaseline makes the next one due
@@ -425,7 +487,9 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 			}
 		}
 		s.Structure.Nested = found
-		s.LastStructureScan = now
+		// The end of the scan: the structure findings show it as the time
+		// of the last scan (W-056).
+		s.LastStructureScan = now.Add(took)
 		s.Structure.ScanListings, s.Structure.ScanTook, s.Structure.ScanBaseline = int(listings.Load()), took, baseline
 	})
 	// Info level: what the scan costs the server is worth seeing.
