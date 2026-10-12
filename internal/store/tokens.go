@@ -29,6 +29,12 @@ const (
 // an older version becomes (see migrateAPIToken).
 const LegacyTokenName = "API token"
 
+// keyOldTokenRefused is the setting with the time of the secret api.token
+// (its updated_at) that moveOldAPIToken did not move. Settings showed that
+// value as refused, thus a later open does not move it. A new value of an
+// older version has a different time.
+const keyOldTokenRefused = "api.token_refused"
+
 // moveOldAPIToken moves the value token of the single API token of an older
 // version (the secret api.token, saved at created) into api_tokens in the
 // transaction tx. The rule is the rule of an imported api.token: the value
@@ -38,9 +44,14 @@ const LegacyTokenName = "API token"
 // from before the downgrade, which the older version refused, does not. A
 // value that an API token has already changes nothing. moved is false when
 // there are MaxAPITokens and none of them is "API token": then the value
-// stays a secret, and Settings shows it.
+// stays a secret, and Settings shows it as refused. It stays refused also at
+// a later open with fewer API tokens (keyOldTokenRefused).
 func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err error) {
 	hash := HashAPIToken(token)
+	var refused int64
+	if err := tx.QueryRow(`SELECT CAST(value AS INTEGER) FROM settings WHERE key=?`, keyOldTokenRefused).Scan(&refused); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
 	rows, err := tx.Query(`SELECT id, name, hash FROM api_tokens`)
 	if err != nil {
 		return false, err
@@ -65,6 +76,8 @@ func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err e
 	switch {
 	case same:
 		return true, nil
+	case refused == created:
+		return false, nil
 	case legacy != "":
 		_, err = tx.Exec(`UPDATE api_tokens SET hash=?, created_at=?, last_used=0 WHERE id=?`, hash, created, legacy)
 	case n < MaxAPITokens:
@@ -74,7 +87,8 @@ func moveOldAPIToken(tx *sql.Tx, token string, created int64) (moved bool, err e
 				id, LegacyTokenName, ScopeFull, hash, created)
 		}
 	default:
-		return false, nil
+		_, err = tx.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, keyOldTokenRefused, created)
+		return false, err
 	}
 	return err == nil, err
 }
