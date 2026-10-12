@@ -206,7 +206,9 @@ func TestOldAPITokenMigrated(t *testing.T) {
 	if again, _ := s.APITokens(); len(again) != 1 || again[0] != tok {
 		t.Fatalf("a second open changed the API tokens: %+v", again)
 	}
-	// While api_tokens has a row, a secret api.token stays a secret.
+	// A secret api.token that an older version wrote after the move (a
+	// downgrade) is the new value of "API token" at the next open (see
+	// TestOldAPITokenAfterDowngrade).
 	if err := s.SetSecret(SecretAPIToken, "swt_new"); err != nil {
 		t.Fatal(err)
 	}
@@ -216,8 +218,120 @@ func TestOldAPITokenMigrated(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if again, _ := s.APITokens(); len(again) != 1 || !s.HasSecret(SecretAPIToken) {
+	if again, _ := s.APITokens(); len(again) != 1 || again[0].ID != tok.ID || s.HasSecret(SecretAPIToken) {
 		t.Fatalf("api.token with a row in api_tokens: %+v, secret %v", again, s.HasSecret(SecretAPIToken))
+	}
+	if got, _ := s.APITokenByValue("swt_new"); got == nil || got.ID != tok.ID {
+		t.Fatalf("the value of the older version: %+v", got)
+	}
+}
+
+// Update, downgrade, and update again. The older version does not know
+// api_tokens: it refuses the moved value, and the administrator makes a new
+// API token in it (the secret api.token), as docs/CHANGES-review.md tells.
+// At the next update, that value replaces the value of "API token": the
+// value in use works, and the value that the older version refused does not
+// come back. The rule is the rule of an imported api.token.
+func TestOldAPITokenAfterDowngrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syncwatch.db")
+	key := bytes.Repeat([]byte{4}, 32)
+	open := func() *Store {
+		t.Helper()
+		s, err := Open(path, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	// olderVersion writes the API token that an older version makes, and
+	// returns the time of the secret.
+	olderVersion := func(s *Store, v string) time.Time {
+		t.Helper()
+		if err := s.SetSecret(SecretAPIToken, v); err != nil {
+			t.Fatal(err)
+		}
+		var at int64
+		if err := s.db.QueryRow(`SELECT updated_at FROM secrets WHERE name=?`, SecretAPIToken).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return fromMS(at)
+	}
+	accepted := func(s *Store, v string) *APIToken {
+		t.Helper()
+		got, err := s.APITokenByValue(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	s := open()
+	olderVersion(s, "swt_v1")
+	s.Close()
+	s = open() // the update
+	moved := accepted(s, "swt_v1")
+	if moved == nil {
+		t.Fatal("the first update did not move the API token")
+	}
+	if _, err := s.AddAPIToken("Home Assistant", ScopeHA, "swt_ha", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	made := olderVersion(s, "swt_v2") // the downgrade
+	s.Close()
+
+	s = open() // the update again
+	got := accepted(s, "swt_v2")
+	if got == nil || got.ID != moved.ID || got.Name != LegacyTokenName || got.Scope != ScopeFull || !got.CreatedAt.Equal(made) || !got.LastUsed.IsZero() {
+		t.Fatalf("the API token of the older version after the update: %+v, want the API token %+v with the new value, made %v", got, moved, made)
+	}
+	if old := accepted(s, "swt_v1"); old != nil {
+		t.Fatalf("the value that the older version refused: %+v", old)
+	}
+	if s.HasSecret(SecretAPIToken) {
+		t.Fatal("the secret api.token is still stored: Settings shows it as refused")
+	}
+	if list, _ := s.APITokens(); len(list) != 2 || accepted(s, "swt_ha") == nil {
+		t.Fatalf("the other API tokens: %+v", list)
+	}
+
+	// The name compares without regard to case, and the scope stays. A
+	// value that an API token has already only removes the secret.
+	if err := s.DeleteAPIToken(got.ID); err != nil {
+		t.Fatal(err)
+	}
+	mine, err := s.AddAPIToken("api TOKEN", ScopeHA, "swt_mine", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderVersion(s, "swt_v3")
+	s.Close()
+	s = open()
+	if got := accepted(s, "swt_v3"); got == nil || got.ID != mine.ID || got.Scope != ScopeHA || accepted(s, "swt_mine") != nil {
+		t.Fatalf("the value of the older version and the API token %q (ha): %+v", mine.Name, got)
+	}
+	olderVersion(s, "swt_ha")
+	s.Close()
+	s = open()
+	if list, _ := s.APITokens(); len(list) != 2 || s.HasSecret(SecretAPIToken) || accepted(s, "swt_ha") == nil || accepted(s, "swt_ha").Name != "Home Assistant" {
+		t.Fatalf("a value that an API token has: %+v, secret %v", list, s.HasSecret(SecretAPIToken))
+	}
+
+	// With MaxAPITokens and none named "API token", the value stays a secret,
+	// and syncwatch does not accept it: Settings shows it.
+	if err := s.DeleteAPIToken(mine.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < MaxAPITokens-1; i++ {
+		if _, err := s.AddAPIToken("Script "+string(rune('A'+i)), ScopeFull, "swt_script_"+string(rune('a'+i)), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	olderVersion(s, "swt_v4")
+	s.Close()
+	s = open()
+	defer s.Close()
+	if list, _ := s.APITokens(); len(list) != MaxAPITokens || !s.HasSecret(SecretAPIToken) || accepted(s, "swt_v4") != nil {
+		t.Fatalf("with %d API tokens: %+v, secret %v", MaxAPITokens, list, s.HasSecret(SecretAPIToken))
 	}
 }
 
