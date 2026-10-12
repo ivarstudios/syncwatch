@@ -4,6 +4,7 @@ package web
 
 import (
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ivarstudios/syncwatch/internal/config"
+	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
 const (
@@ -152,5 +154,61 @@ func TestSetupRefusesTheViewerPassword(t *testing.T) {
 	}
 	if resp, _ := e.postPage("/setup", url.Values{"csrf": {csrf}, "token": {token}, "password": {ppAdminPW}, "password2": {ppAdminPW}}); resp.StatusCode != http.StatusSeeOther || !e.web.adminConfigured() {
 		t.Fatalf("setup with a different password: %d", resp.StatusCode)
+	}
+}
+
+// import-3: syncwatch makes the API token of an imported file (api.token)
+// the API token "API token", with the scope full when it adds it. A weak
+// value is refused at the preview, before syncwatch stores anything. The
+// preview and the settings notice name the scope.
+func TestImportedAPITokenIsCheckedAndShowsItsScope(t *testing.T) {
+	const servers = "servers: [{name: AKKA, url: 'https://a:1'}]\n"
+	e := adminEnv(t, servers)
+	csrf := e.csrf("/settings")
+	resp, _, id := impPreview(e, csrf, servers+"api: {token: x}\n")
+	msg, isErr := flash(resp)
+	if want := "Import failed. API token (api.token): the value must have at least 10 characters and no spaces or control characters. Make the API token in Settings → API."; id != "" || !isErr || msg != want {
+		t.Fatalf("a 1-character API token: preview %v, %q (error %v)", id != "", msg, isErr)
+	}
+	if e.hasAPIToken("x") {
+		t.Fatal("the refused API token was stored")
+	}
+
+	for _, tc := range []struct {
+		scope, value, preview, line string
+	}{
+		{store.ScopeFull, "swt_imported_value_1", `the API token "API token" (Full: /api/v1/status and /api/v1/ha)`,
+			`The API token "API token" is added. It can read /api/v1/status and /api/v1/ha.`},
+		{store.ScopeHA, "swt_imported_value_2", `the API token "API token" (Home Assistant: /api/v1/ha only)`,
+			`The API token "API token" is replaced. It can read /api/v1/ha only.`},
+	} {
+		if tc.scope == store.ScopeHA {
+			// The scope of the API token "API token" stays: an administrator
+			// gave it the scope Home Assistant.
+			t0, _ := e.st.APITokenByName(store.LegacyTokenName)
+			if err := e.st.DeleteAPIToken(t0.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.st.AddAPIToken(store.LegacyTokenName, store.ScopeHA, "swt_ha_value_0", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, page, id := impPreview(e, csrf, servers+"api: {token: "+tc.value+"}\n")
+		if id == "" {
+			t.Fatalf("%s: no preview: %s", tc.scope, impError(page))
+		}
+		if p := html.UnescapeString(section(t, page, "import")); !strings.Contains(p, "<strong>Secrets in the file:</strong> "+tc.preview+".") {
+			t.Fatalf("%s: the preview does not name the scope: %s", tc.scope, p)
+		}
+		n := len(e.noticeList())
+		if resp, _ := impConfirm(e, csrf, id, nil); resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("%s: import %d", tc.scope, resp.StatusCode)
+		}
+		if all := e.noticeList(); len(all) != n+1 || !strings.Contains(all[n], tc.line) {
+			t.Fatalf("%s: the notice does not name the scope: %q", tc.scope, all[n:])
+		}
+		if tok, _ := e.st.APITokenByValue(tc.value); tok == nil || tok.Scope != tc.scope {
+			t.Fatalf("%s: the imported API token: %+v", tc.scope, tok)
+		}
 	}
 }

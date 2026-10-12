@@ -215,6 +215,19 @@ type API struct {
 	Token string `yaml:"token,omitempty" json:"-"`
 }
 
+// MinTokenLength is the shortest API token of a file (api.token), in
+// characters: the minimum of the passwords. The imported API token can have
+// the scope full, and the API has no rate limit for API tokens (import-3).
+const MinTokenLength = 10
+
+// tokenOK reports whether an API token of a file has at least MinTokenLength
+// characters and no white space, control or format characters: it refuses a
+// placeholder, a cut paste and an example value.
+func tokenOK(s string) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) >= MinTokenLength &&
+		strings.IndexFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) < 0
+}
+
 // Access modes.
 const (
 	AccessBuiltin = "builtin"
@@ -323,6 +336,7 @@ func (c *Config) ApplyDefaults() {
 			n.DiscordNoticesWebhook = u
 		}
 	}
+	c.API.Token = strings.TrimSpace(c.API.Token) // a paste can bring a line break
 	// notifications.repeat_urgent has no default: 0 is off.
 	c.Site = strings.TrimSpace(c.Site)
 	for i := range c.Servers {
@@ -540,6 +554,9 @@ func (c *Config) Validate() error {
 		if _, err := CanonicalNoticesWebhook(c.Notify.DiscordNoticesWebhook); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if c.API.Token != "" && !tokenOK(c.API.Token) {
+		errs = append(errs, fmt.Errorf("API token (api.token): the value must have at least %d characters and no spaces or control characters. Make the API token in Settings → API.", MinTokenLength))
 	}
 	if c.Notify.DiscordRoleID != "" && !roleIDRe.MatchString(c.Notify.DiscordRoleID) {
 		errs = append(errs, errors.New("Role ID (notifications.discord_role_id): the value must be the ID of the Discord role (17 to 20 digits)."))

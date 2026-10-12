@@ -1569,6 +1569,15 @@ func (s *Server) hasLegacyToken() bool {
 	return err == nil && t != nil
 }
 
+// legacyTokenScope returns the scope that an imported api.token gets: the
+// scope of the API token "API token", or full when the import adds it.
+func (s *Server) legacyTokenScope() string {
+	if t, err := s.st.APITokenByName(store.LegacyTokenName); err == nil && t != nil {
+		return t.Scope
+	}
+	return store.ScopeFull
+}
+
 // applyImport stores the secrets of the file c, saves c as the configuration
 // and deletes the API keys and pinned certificates of the removed servers.
 func (s *Server) applyImport(w http.ResponseWriter, r *http.Request, old, c *config.Config) {
@@ -1587,8 +1596,9 @@ func (s *Server) applyImport(w http.ResponseWriter, r *http.Request, old, c *con
 		changes = append(changes, replacedOrAdded(s.st.HasSecret(store.SecretNoticesWebhook), "Discord webhook for settings notices"))
 	}
 	if c.API.Token != "" {
-		// "The API token "API token" is replaced." or "… is added."
-		changes = append(changes, replacedOrAdded(s.hasLegacyToken(), legacyTokenName))
+		// "The API token "API token" is replaced." or "… is added.", with
+		// what it can read.
+		changes = append(changes, replacedOrAdded(s.hasLegacyToken(), legacyTokenName)+" "+scopeSentence(s.legacyTokenScope()))
 	}
 	n, err := settings.ImportSecrets(s.st, c)
 	if err != nil {

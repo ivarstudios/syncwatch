@@ -257,7 +257,7 @@ func (s *Server) buildImportPreview(data []byte, old, c *config.Config) *importP
 		p.Secrets = append(p.Secrets, "the Discord webhook for settings notices")
 	}
 	if c.API.Token != "" {
-		p.Secrets = append(p.Secrets, "the "+legacyTokenName)
+		p.Secrets = append(p.Secrets, "the "+legacyTokenName+" ("+scopeLabel(s.legacyTokenScope())+")")
 	}
 
 	if weakensAccess(old, c) {
