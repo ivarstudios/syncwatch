@@ -62,15 +62,18 @@ func TestRemoteNeed(t *testing.T) {
 	}
 }
 
-// An older gate refuses the new endpoint with 404 "endpoint not permitted".
-// Syncthing's own 404 (an unknown folder) and other gate refusals are not
-// that answer.
+// An older gate refuses the new endpoint with 404 "endpoint not permitted",
+// the gate of the published version 78ef2d8 with 404 "endpoint not
+// allowed". Syncthing's own 404 (an unknown folder) and other gate
+// refusals are not that answer.
 func TestGateRefusedEndpoint(t *testing.T) {
 	for _, c := range []struct {
 		err  error
 		want bool
 	}{
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 404, Body: "syncwatch gate: endpoint not permitted"}, true},
+		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 404, Body: "syncwatch gate: endpoint not allowed"}, true},
+		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 400, Body: "syncwatch gate: endpoint not allowed"}, false},
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 404, Body: "no such folder"}, false},
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 400, Body: "syncwatch gate: query not permitted: the parameter perpage must be between 1 and 100"}, false},
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 403, Body: "syncwatch gate: gate token missing or not correct"}, false},

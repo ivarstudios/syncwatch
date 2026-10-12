@@ -225,12 +225,20 @@ func TestNeedListsFromFullCheck(t *testing.T) {
 
 // A gate from before /rest/db/remoteneed refuses it with 404: no names, no
 // folder error, the full check completes, one INFO line, and the session
-// asks no more. The next session asks again (a new gate).
+// asks no more. The next session asks again (a new gate). The gate of the
+// published version 78ef2d8 says "endpoint not allowed", the later gates
+// "endpoint not permitted".
 func TestNeedListWithOldGate(t *testing.T) {
+	for _, refusal := range []string{"syncwatch gate: endpoint not permitted", "syncwatch gate: endpoint not allowed"} {
+		t.Run(refusal, func(t *testing.T) { needListWithOldGate(t, refusal) })
+	}
+}
+
+func needListWithOldGate(t *testing.T, refusal string) {
 	fake := newFakeST(t)
 	fake.need = map[string]int64{"p-beta/" + devSirius: 3, "p-gamma/" + devSirius: 2}
 	fake.needNames = []string{"a.txt", "b.txt", "c.txt"}
-	fake.needStatus, fake.needBody = http.StatusNotFound, "syncwatch gate: endpoint not permitted"
+	fake.needStatus, fake.needBody = http.StatusNotFound, refusal
 	srv := httptest.NewTLSServer(fake)
 	defer srv.Close()
 	var logs lockedBuf
