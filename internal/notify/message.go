@@ -105,14 +105,11 @@ var (
 
 func escapeMD(s string) string {
 	s = strings.Map(func(r rune) rune {
-		switch {
-		case r == 0x2028 || r == 0x2029 || unicode.IsControl(r):
-			return ' ' // line breaks and other controls
-		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		if r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
 			return -1 // bidi overrides, embeddings and isolates
 		}
 		return r
-	}, strings.ReplaceAll(s, "\r\n", "\n"))
+	}, OneLine(s))
 	s = mdEscaper.Replace(s)
 	// A zero-width space after the scheme's colon stops the autolink.
 	s = bareLink.ReplaceAllStringFunc(s, func(u string) string { return strings.TrimSuffix(u, "//") + zwsp + "//" })
@@ -120,6 +117,30 @@ func escapeMD(s string) string {
 		s = `\` + s
 	}
 	return listItem.ReplaceAllString(s, `$1\.$2`)
+}
+
+// OneLine puts a text that syncwatch does not control (a device name, a
+// folder label, an error text of Syncthing) on one line: line breaks and
+// other control characters become spaces. A settings notice puts such a text
+// through it before it joins its lines: Discord gets each line of a notice
+// escaped, and a line break in a name would start a line of its own.
+func OneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == 0x2028 || r == 0x2029 || unicode.IsControl(r) {
+			return ' ' // line breaks and other controls
+		}
+		return r
+	}, strings.ReplaceAll(s, "\r\n", "\n"))
+}
+
+// escapeLines escapes each line of a text with escapeMD and keeps the line
+// breaks.
+func escapeLines(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = escapeMD(l)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func findingLine(r *store.Record, url string) string {
