@@ -65,9 +65,33 @@ type Collector struct {
 // server must chain to: nil is the system pool. Tests set a test CA.
 var rootCAs *x509.CertPool
 
+// pinQuiet is how long a certificate that the collector pinned is no news:
+// when the server gives it again in this time, the collector pins it again
+// without a settings notice. 2 front ends with their own CA-signed
+// certificate for the same host name (DNS round robin, a load balancer)
+// make the client pin A, B, A, B ... at each new connection: they give 2
+// notices, not 1 for each connection.
+const pinQuiet = 24 * time.Hour
+
+// pinNews reports whether the pin of fp at now is news: the collector did
+// not pin fp in the pinQuiet before now. pinned has the fingerprints that
+// the collector pinned, with the time of the last pin; pinNews records fp
+// and forgets the fingerprints of before pinQuiet.
+func pinNews(pinned map[string]time.Time, fp string, now time.Time) bool {
+	for k, at := range pinned {
+		if now.Sub(at) >= pinQuiet {
+			delete(pinned, k)
+		}
+	}
+	_, seen := pinned[fp]
+	pinned[fp] = now
+	return !seen
+}
+
 // newCollector makes the collector of one server. onPin, when not nil, is
 // called after the collector pinned a certificate of the server without an
-// administrator (see Manager.OnPin).
+// administrator (see Manager.OnPin), at most once in pinQuiet for each
+// certificate.
 func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Store, cfg *config.Holder, log *slog.Logger, onPin func(serverID, fingerprint string, renewal bool)) (*Collector, error) {
 	pin, err := st.Pin(sc.ID)
 	if err != nil {
@@ -77,6 +101,7 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 		id: sc.ID, hub: hub, st: st, cfg: cfg, log: log.With("server", sc.Name),
 		wake: make(chan struct{}, 1), fullNow: make(chan struct{}, 1), trafficEvery: trafficEvery,
 	}
+	pinned := map[string]time.Time{} // see pinNews; only OnPin uses it, under the lock of the client
 	c.client, err = stclient.New(stclient.Options{
 		Name:    sc.Name,
 		URL:     sc.URL,
@@ -94,7 +119,7 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 			if err := st.SetPin(sc.ID, fp); err != nil {
 				c.log.Error("cannot save the pinned certificate", "err", err)
 			}
-			if onPin != nil && old != fp {
+			if news := pinNews(pinned, fp, time.Now()); news && onPin != nil && old != fp {
 				// Not here: the client calls this in the TLS handshake and
 				// holds its lock.
 				go onPin(sc.ID, fp, old != "")
