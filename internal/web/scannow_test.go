@@ -460,9 +460,32 @@ func TestScanNowInSettings(t *testing.T) {
 	if calls := hook.called(); len(calls) != 2 || calls[0] != "akka" || calls[1] != "sol" {
 		t.Fatalf("scans %v, want [akka sol]", calls)
 	}
-	if ok != "The structure scan of server AKKA started at 09:08:00. The result follows on this page." ||
+	// The Settings page has no findings and no live updates: the answer
+	// names the Findings page (review of W-056, finding 2).
+	if ok != "The structure scan of server AKKA started at 09:08:00. The Findings page shows the result after the scan." ||
 		failed != "Server SOL is unreachable: refused. syncwatch can scan it when it is up again." {
-		t.Fatalf("answer: %q / %q", ok, failed)
+		t.Errorf("answer: %q / %q", ok, failed)
+	}
+	for _, c := range []struct {
+		name string
+		done <-chan struct{}
+		want string
+	}{
+		{"a second press after a complete scan", nil,
+			"The last structure scan of server AKKA started at 09:08:00. The Findings page shows the result. You can start the next scan at 09:08:30."},
+		{"a second press while the scan runs", running,
+			"The last structure scan of server AKKA started at 09:08:00. The Findings page shows the result after the scan. You can start the next scan at 09:08:30."},
+	} {
+		withScanHook(e, func(id string) collector.ScanStart {
+			if id == "akka" {
+				return collector.ScanStart{State: collector.ScanTooSoon, Started: today(e, 9, 8, 0), Next: today(e, 9, 8, 30), Done: c.done}
+			}
+			return collector.ScanStart{State: collector.ScanNotUp}
+		})
+		ok, failed := flashes(e.post("/structure/scan", url.Values{"csrf": {e.csrf("/settings")}, "back": {"/settings#structure"}}))
+		if want := c.want + "\nServer SOL is unreachable: refused. syncwatch can scan it when it is up again."; ok != "" || failed != want {
+			t.Errorf("%s in Settings: %q / %q, want %q", c.name, ok, failed, want)
+		}
 	}
 }
 

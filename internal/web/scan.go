@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -93,6 +94,12 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 	v := s.eng.View()
 	after := openStructure(v)
 
+	// The result of a scan shows on the Findings page: its list updates
+	// live. Another page (Settings → Structure) names the Findings page.
+	follows, is := "The result follows on this page.", "The result is on this page."
+	if u, err := url.Parse(back); err != nil || u.Path != "/problems" {
+		follows, is = "The Findings page shows the result after the scan.", "The Findings page shows the result."
+	}
 	var ok, refused []string
 	for i, sc := range targets {
 		st := starts[i]
@@ -103,8 +110,8 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 			// it: the next press can start a scan.
 			refused = append(refused, scanStoppedText(name, st.End.Stopped))
 		case st.State == collector.ScanStarted, st.State == collector.ScanRunning:
-			// The collector tells how the scan ended (End): the last scan
-			// of the server does not move for a scan that listed no share.
+			// A scan that ended here is complete (End). It can have shares
+			// that it could not list (scanCompleteText).
 			sv := v.Snapshot.Server(sc.ID)
 			if ended[i] && sv != nil {
 				done, failed := scanCompleteText(name, sv, before[sc.ID], after[sc.ID])
@@ -113,12 +120,12 @@ func (s *Server) handleScanNow(w http.ResponseWriter, r *http.Request, info requ
 				}
 				refused = append(refused, failed...)
 			} else {
-				ok = append(ok, fmt.Sprintf("The structure scan of server %s started at %s. The result follows on this page.", name, s.fmtClockSeconds(st.Started)))
+				ok = append(ok, fmt.Sprintf("The structure scan of server %s started at %s. %s", name, s.fmtClockSeconds(st.Started), follows))
 			}
 		case st.State == collector.ScanTooSoon:
-			result := "The result is on this page."
+			result := is
 			if st.Done != nil && !ended[i] {
-				result = "The result follows on this page."
+				result = follows
 			}
 			refused = append(refused, fmt.Sprintf("The last structure scan of server %s started at %s. %s You can start the next scan at %s.",
 				name, s.fmtClockSeconds(st.Started), result, s.fmtClockSeconds(st.Next)))
