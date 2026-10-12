@@ -287,6 +287,46 @@ func TestScanTimerStartsDueScans(t *testing.T) {
 	waitFor(t, hub, "the timer's second scan", func(s *model.Server) bool { return s.Structure.ScannedAt.After(first.Structure.ScannedAt) })
 }
 
+// Each session has its own scanTimer. Before, the timer ran with the first
+// session only: after a reconnect, a scan that fell due waited for the end
+// of the long-poll (up to event_timeout).
+func TestScanTimerRunsAgainAfterReconnect(t *testing.T) {
+	old := scanTimerEvery
+	scanTimerEvery = 50 * time.Millisecond
+	defer func() { scanTimerEvery = old }()
+	fake, hub, _, m, stop := setup(t)
+	defer stop()
+	waitFor(t, hub, "the first scan", func(s *model.Server) bool { return !s.LastStructureScan.IsZero() })
+	dropAndReconnect(t, fake, m, nil)
+
+	// The loop waits in long-polls of 15 seconds from now on.
+	fake.mu.Lock()
+	fake.longPoll = 15 * time.Second
+	fake.mu.Unlock()
+	polls := fake.count("/rest/events")
+	waitUntil(t, "a long-poll of 15 seconds", func() bool { return fake.count("/rest/events") > polls })
+	time.Sleep(100 * time.Millisecond)
+
+	m.mu.Lock()
+	c := m.running["akka"].c
+	m.mu.Unlock()
+	var before time.Time
+	hub.View("akka", func(s *model.Server) { before = s.LastStructureScan })
+	c.scanMu.Lock()
+	c.lastScan, c.lastBase = time.Now().Add(300*time.Millisecond-time.Hour), time.Now()
+	c.scanMu.Unlock()
+	deadline := time.Now().Add(slow(3 * time.Second))
+	for time.Now().Before(deadline) {
+		var last time.Time
+		hub.View("akka", func(s *model.Server) { last = s.LastStructureScan })
+		if last.After(before) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the due scan did not start during the long-poll: no scanTimer after the reconnect")
+}
+
 // A gap in the event IDs (Syncthing's 1000-event buffer overflowed, which
 // per-file events do during any big sync) no longer chains full re-checks:
 // the top-level project folders of the folders in the batch are re-scanned,

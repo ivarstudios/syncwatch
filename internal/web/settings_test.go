@@ -31,7 +31,7 @@ func TestConfigChanges(t *testing.T) {
 			[]string{"The API URL of the server AKKA changed from https://a:1 to https://a:2.", "The server NEW is added (API URL https://c:1).", "The server SOL is removed."}},
 		{"checks both ways", base + "checks: {H1: {enabled: false}, S1: {debounce: 30d}}\n", base + "checks: {H4: {urgent: false}, S1: {urgent: true}}\n",
 			[]string{"The check H1 (Server unreachable) is enabled.", "The check H4 (Folder sync stopped) does not send urgent messages now.", "The check S1 (Syncthing folder inside another) waits 5 minutes instead of 30 days before an urgent message."}},
-		// RT-1: the debounce of a check that sends no urgent messages
+		// The debounce of a check that sends no urgent messages
 		// delays no message.
 		{"debounce of a check that is not urgent", base, base + "checks: {H7: {debounce: 0s}}\n",
 			[]string{"The check H7 (PC offline) does not send urgent messages. Its debounce changed from 5 minutes to 0 seconds."}},
@@ -155,11 +155,11 @@ func TestEverySettingsChangeIsAnnounced(t *testing.T) {
 
 	post("/settings/password", url.Values{"current": {"correct horse battery"}, "password": {"another long password"}, "password2": {"another long password"}})
 	expect("password", "Administrator password changed")
-	csrf = e.csrf("/settings") // the new session has a new CSRF token (W-027)
+	csrf = e.csrf("/settings") // the new session has a new CSRF token
 
 	// The API token steps are TestAPITokenChangesAreAnnounced (api_test.go):
 	// the API token of twoServers is still set here.
-	// The import has 2 steps: the preview changes nothing (W-055).
+	// The import has 2 steps: the preview changes nothing.
 	if msg, isErr := impFile(e, csrf, "servers: [{name: Akka, id: akka, url: 'https://a:1', api_key: k3}, {name: SOL, url: 'https://b:1'}]\nthresholds: {paused: 1d}\napi: {token: swt_imported_token}\n", nil); isErr {
 		t.Fatalf("import: %s", msg)
 	}

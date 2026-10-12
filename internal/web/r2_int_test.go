@@ -1,7 +1,7 @@
 package web
 
-// Tests of the integrator of wave 3 (r2): contracts between the assignments,
-// end to end through the dashboard, the store and the JSON API.
+// Tests across the parts of version 0.9, end to end through the dashboard,
+// the store and the JSON API.
 
 import (
 	"html"
@@ -16,8 +16,8 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// An api.token in an imported file (the 2 steps of fixer 1) becomes the
-// value of the API token "API token" (fixer 5's ImportSecrets): the API
+// An api.token in an imported file (the import in 2 steps) becomes the
+// value of the API token "API token" (ImportSecrets): the API
 // accepts the new value with the full scope and refuses the old one, the
 // import card does not call api.token an encrypted secret, and the notice
 // names the API token.
@@ -81,10 +81,10 @@ func TestImportTokenLineFollowsTheImportRule(t *testing.T) {
 	}
 }
 
-// C3/C7/C11 end to end: the engine (fixer 2) computes the links between the
-// servers and the sites; /api/v1/status and /api/v1/ha (fixer 5) give them
-// with the keys of the plan, and the Overview (fixer 6) and the lobby page
-// (fixer 7) show the same rows.
+// The links end to end: the engine computes the links between the servers
+// and the sites; /api/v1/status and /api/v1/ha give them with the keys of
+// the field reference, and the Overview and the lobby page show the same
+// rows.
 func TestLinksEndToEnd(t *testing.T) {
 	e := adminEnv(t, `servers:
   - {name: AKKA, url: "https://a:1", site: "IVAR Office"}
@@ -180,7 +180,7 @@ api: {token: swt_test_token}
 	}
 }
 
-// C11: the Overview and the lobby page write the rows of the connections
+// The Overview and the lobby page write the rows of the connections
 // with one helper: 2 servers whose state is not known are joined with "and",
 // and a time of another day has its date.
 func TestOverviewAndLobbyWriteTheSameLinkRows(t *testing.T) {
@@ -214,12 +214,12 @@ func TestOverviewAndLobbyWriteTheSameLinkRows(t *testing.T) {
 	}
 }
 
-// C1 end to end: the keys that the Settings forms write (fixer 1) are the
-// keys that the checks read (fixer 2). The Devices card sets devices[].relay:
+// The settings keys end to end: the keys that the Settings forms write are
+// the keys that the checks read. The Devices card sets devices[].relay:
 // no H11 for the device, and H12 after thresholds.relay_lost of the Checks
 // form. The site of a server (Servers form) and the site of syncwatch
 // (Notifications form) go into the H1 message and its causes, and into
-// /api/v1/status (fixer 5).
+// /api/v1/status.
 func TestSettingsKeysReachTheChecks(t *testing.T) {
 	e := adminEnv(t, twoServers)
 	csrf := e.csrf("/settings")
@@ -247,6 +247,9 @@ func TestSettingsKeysReachTheChecks(t *testing.T) {
 		}
 		return false
 	}
+	// SOL finished a full check and does not have the laptop configured:
+	// H12 waits for every server that is not loaded.
+	e.hub.Update("sol", func(s *model.Server) { s.Status, s.Loaded, s.LastError = model.StatusUp, true, "" })
 	laptopOn(true, time.Now())
 	if !open("H11", "LAPTOP-DANI") {
 		t.Fatal("a device that connects through a relay must have H11 before the Devices form")
@@ -307,7 +310,7 @@ func TestSettingsKeysReachTheChecks(t *testing.T) {
 	}
 }
 
-// C7: both answers have every key that the plan names for wave 3, also when
+// Both answers have every key of the field reference of version 0.9, also when
 // the value is not known (null) or empty.
 func TestAPIKeysOfThePlan(t *testing.T) {
 	e := adminEnv(t, twoServers)

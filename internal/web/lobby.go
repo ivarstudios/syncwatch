@@ -18,7 +18,7 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
 
-// The lobby page (W-052, W-057): a read-only full-screen view for a screen in
+// The lobby page: a read-only full-screen view for a screen in
 // the office. It shows the health line, the connections between the sites,
 // the servers of each site and the open urgent and ERROR findings. A viewer
 // can open it (with open access without a login); no API token goes to the
@@ -51,7 +51,7 @@ type lobbyVM struct {
 }
 
 // lobbyLink is one row of the connections: between 2 sites, or between 2
-// servers when fewer than 2 sites are set (C11).
+// servers when fewer than 2 sites are set.
 type lobbyLink struct {
 	Text  string // "IVAR Office ↔ Branch office: connected from 08:12"
 	State string // model.LinkConnected, LinkDisconnected or LinkUnreachable
@@ -323,7 +323,7 @@ func lobbyPCs(snap *model.Snapshot, servers []*model.Server) string {
 	return "unknown"
 }
 
-// lobbyLinks gives the rows of the connections (C11): the rows of the
+// lobbyLinks gives the rows of the connections: the rows of the
 // Overview (linkRows, the same texts on both pages), and with a site only the
 // rows that touch the site.
 func (s *Server) lobbyLinks(v *engine.View, site string) []lobbyLink {
@@ -340,7 +340,7 @@ func (s *Server) lobbyLinks(v *engine.View, site string) []lobbyLink {
 var deviceIDText = regexp.MustCompile(`[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}`)
 
 // hideDeviceIDs shortens each complete device ID in a text as the pages of a
-// viewer show them (C12). The finding messages name devices by their names,
+// viewer show them. The finding messages name devices by their names,
 // but the name that a device sends can be any text.
 func hideDeviceIDs(s string) string {
 	return deviceIDText.ReplaceAllStringFunc(s, func(id string) string { return model.ShortID(id) + "…" })

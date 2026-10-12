@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// A clone shares no map or slice of the wave 3 fields with the original:
+// A clone shares no map or slice of the fields of version 0.9 with the original:
 // the engine and the hub change their copies while pages read the others.
 func TestCloneOfR2Fields(t *testing.T) {
 	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
@@ -63,7 +63,7 @@ func TestCloneOfR2Fields(t *testing.T) {
 // AddProgress keeps for each folder and device samples about 1 minute
 // apart (at most 2 in a minute) for 2 hours before the newest sample, and
 // at most 120. The newest sample always has the newest need, with the time
-// when that need began (W-059).
+// when that need began.
 func TestAddProgress(t *testing.T) {
 	at := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 	sv := &Server{ID: "akka"}
@@ -122,7 +122,7 @@ func TestAddProgress(t *testing.T) {
 		t.Fatalf("samples of 3 minutes: %s", got)
 	}
 
-	// W-059 (live re-test of wave 3, P2 a): a PC receives its files in 10
+	// A PC receives its files in 10
 	// seconds after it connects and then stops with 57 bytes that it cannot
 	// store. The end of the change stays a sample, also when the full
 	// checks add samples with the same need later.

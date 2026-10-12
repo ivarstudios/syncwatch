@@ -50,7 +50,7 @@ func storedNotices(t *testing.T, st *store.Store) []pendingNotice {
 // A security notice that Discord refuses (a deleted webhook: HTTP 404) is
 // kept until a channel accepts it: through 2 days and a restart. It has one
 // line in the notification log for the failure, not one for each retry, and
-// one when it is sent (W-051, ops-chaos OC-03). A notice that is not about
+// one when it is sent. A notice that is not about
 // security keeps the rule of r1: dropped when the webhook refuses it.
 func TestSecurityNoticeKeptUntilAChannelAcceptsIt(t *testing.T) {
 	start := local(2026, 10, 6, 10, 0)
@@ -315,8 +315,22 @@ func (f *fakeSender) sent() int {
 
 // A webhook for settings notices that cannot be decrypted (the secret key
 // changed) fails like a dead webhook: the test notice says why, a security
-// notice is kept, and the log has the error once, not at each tick.
+// notice is kept, and the log has the error once, not at each tick. The
+// result does not depend on the day: the test runs at fixed times of the
+// week, also on a Monday morning, when the default schedule sends the weekly
+// report.
 func TestUndecryptableNoticesWebhook(t *testing.T) {
+	for _, start := range []time.Time{
+		time.Date(2026, 10, 12, 9, 30, 0, 0, time.Local), // Monday, after the weekly report time
+		time.Date(2026, 10, 13, 7, 50, 0, 0, time.Local), // Tuesday, less than 24 hours after it
+		time.Date(2026, 10, 15, 12, 0, 0, 0, time.Local), // Thursday
+		time.Date(2026, 10, 18, 23, 0, 0, 0, time.Local), // Sunday, in the quiet hours
+	} {
+		t.Run(start.Format("Mon 15:04"), func(t *testing.T) { undecryptableNotices(t, start) })
+	}
+}
+
+func undecryptableNotices(t *testing.T, start time.Time) {
 	dir := t.TempDir()
 	keyA, keyB := make([]byte, 32), make([]byte, 32)
 	keyB[0] = 1
@@ -333,13 +347,18 @@ func TestUndecryptableNoticesWebhook(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st2.Close()
-	h, _ := config.NewHolder(config.Default())
+	// No scheduled message: the channel of the findings gets only what the
+	// settings notices send to it.
+	cfg := config.Default()
+	cfg.Notify.WeeklyDay, cfg.Notify.ReminderTime = "off", "off"
+	h, _ := config.NewHolder(cfg)
 	logs := &lockedLog{}
 	eng, err := engine.New(st2, model.NewHub(nil), h, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	n := New(eng, st2, h, slog.New(slog.NewTextHandler(logs, nil)))
+	n.now = func() time.Time { return start }
 	alert := &fakeSender{}
 	n.SetSenders(func() []Sender { return []Sender{alert} })
 	const want = "syncwatch cannot decrypt the Discord webhook for settings notices: check the secret key"
@@ -348,7 +367,6 @@ func TestUndecryptableNoticesWebhook(t *testing.T) {
 	}
 	n.Notice(Notice{Title: "Access settings changed", Summary: "x", Security: true})
 	waitFor(t, func() bool { return n.Delivery().NoticesKept == 1 })
-	start := time.Now()
 	for i := range 5 {
 		n.Tick(context.Background(), start.Add(time.Duration(i)*10*time.Minute))
 	}

@@ -38,18 +38,21 @@ type Collector struct {
 	certFails     int       // failed sessions in a row because the certificate changed
 	certWarned    time.Time // when the certificate change was last logged at WARN
 	lastFull      time.Time
-	needFull      bool // the next session starts with a full check: one did not complete, or see dropClears
-	configDue     bool // a ConfigSaved event in the current batch; see applyBatch
-	pendingDue    bool // a Pending*Changed event in the current batch
-	pendingWarned bool // the pending re-read failed and was logged this session
-	lastScan      time.Time
+	needFull      bool      // the next session starts with a full check: one did not complete, or see dropClears
+	configDue     bool      // a ConfigSaved event in the current batch; see applyBatch
+	pendingDue    bool      // a Pending*Changed event in the current batch
+	pendingWarned bool      // the pending re-read failed and was logged this session
+	lastScan      time.Time // the start of the last structure scan; it and the fields to baseChoice need scanMu
 	lastBase      time.Time
 	scanMu        sync.Mutex
 	scanning      bool
-	scanTimerOn   bool          // scanTimer runs (events mode)
-	baseTook      time.Duration // how long the last completed baseline scan took; see baselineEvery
-	baseKnown     bool          // a baseline scan completed since the start
-	baseChoice    string        // the baseline interval that noteBaseline logged last
+	scanDone      chan struct{}   // closed when the running scan is complete; nil while no scan runs
+	scanEnd       *ScanEnd        // how the running scan ended, written before scanDone closes; nil while no scan runs
+	sessCtx       context.Context // the context of the session that called maybeScan last; see maybeScan and ScanNow
+	manualAt      time.Time       // when the last scan that an administrator started began; see ScanNow
+	baseTook      time.Duration   // how long the last completed baseline scan took; see baselineEvery
+	baseKnown     bool            // a baseline scan completed since the start
+	baseChoice    string          // the baseline interval that noteBaseline logged last
 	gaps          gapState
 	clearDue      map[string]time.Time // folders whose error events cleared, with when; see confirmClears
 	copies        copySet              // conflict copies counted from events; see conflictCopy
@@ -65,9 +68,33 @@ type Collector struct {
 // server must chain to: nil is the system pool. Tests set a test CA.
 var rootCAs *x509.CertPool
 
+// pinQuiet is how long a certificate that the collector pinned is no news:
+// when the server gives it again in this time, the collector pins it again
+// without a settings notice. 2 front ends with their own CA-signed
+// certificate for the same host name (DNS round robin, a load balancer)
+// make the client pin A, B, A, B ... at each new connection: they give 2
+// notices, not 1 for each connection.
+const pinQuiet = 24 * time.Hour
+
+// pinNews reports whether the pin of fp at now is news: the collector did
+// not pin fp in the pinQuiet before now. pinned has the fingerprints that
+// the collector pinned, with the time of the last pin; pinNews records fp
+// and forgets the fingerprints of before pinQuiet.
+func pinNews(pinned map[string]time.Time, fp string, now time.Time) bool {
+	for k, at := range pinned {
+		if now.Sub(at) >= pinQuiet {
+			delete(pinned, k)
+		}
+	}
+	_, seen := pinned[fp]
+	pinned[fp] = now
+	return !seen
+}
+
 // newCollector makes the collector of one server. onPin, when not nil, is
 // called after the collector pinned a certificate of the server without an
-// administrator (see Manager.OnPin).
+// administrator (see Manager.OnPin), at most once in pinQuiet for each
+// certificate.
 func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Store, cfg *config.Holder, log *slog.Logger, onPin func(serverID, fingerprint string, renewal bool)) (*Collector, error) {
 	pin, err := st.Pin(sc.ID)
 	if err != nil {
@@ -77,6 +104,7 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 		id: sc.ID, hub: hub, st: st, cfg: cfg, log: log.With("server", sc.Name),
 		wake: make(chan struct{}, 1), fullNow: make(chan struct{}, 1), trafficEvery: trafficEvery,
 	}
+	pinned := map[string]time.Time{} // see pinNews; only OnPin uses it, under the lock of the client
 	c.client, err = stclient.New(stclient.Options{
 		Name:    sc.Name,
 		URL:     sc.URL,
@@ -94,7 +122,7 @@ func newCollector(sc config.Server, apiKey string, hub *model.Hub, st *store.Sto
 			if err := st.SetPin(sc.ID, fp); err != nil {
 				c.log.Error("cannot save the pinned certificate", "err", err)
 			}
-			if onPin != nil && old != fp {
+			if news := pinNews(pinned, fp, time.Now()); news && onPin != nil && old != fp {
 				// Not here: the client calls this in the TLS handshake and
 				// holds its lock.
 				go onPin(sc.ID, fp, old != "")
@@ -467,13 +495,14 @@ func (c *Collector) pollLoop(ctx context.Context) error {
 // the next structure scan, whichever comes first, but at least a second. A
 // scan that is still running when the next one is due doesn't count,
 // because maybeScan does nothing while one runs: the loop waits for the
-// next poll instead of spinning until the scan ends.
+// next poll instead of spinning until the scan ends. lastScan is read under
+// scanMu: ScanNow sets it from a request of the dashboard.
 func (c *Collector) pollWait(cfg config.Collector) time.Duration {
 	wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
 	c.scanMu.Lock()
-	scanning := c.scanning
+	scanning, lastScan := c.scanning, c.lastScan
 	c.scanMu.Unlock()
-	if w := time.Until(c.lastScan.Add(cfg.StructureInterval.D())); !scanning && w < wait {
+	if w := time.Until(lastScan.Add(cfg.StructureInterval.D())); !scanning && w < wait {
 		wait = w
 	}
 	return max(wait, time.Second)
@@ -711,7 +740,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 		}
 	}
 	now := time.Now()
-	// What the store keeps across restarts (W-021): the local changes that
+	// What the store keeps across restarts: the local changes that
 	// wait for the store go there first, so that it has the newest ones.
 	c.flushLocalChanges(true)
 	ids := make([]string, 0, len(newFolders))
@@ -736,7 +765,7 @@ func (c *Collector) fullCheck(ctx context.Context) error {
 					f.LastLocalChange = old.LastLocalChange
 				}
 			}
-			// Progress samples for H5 (W-059): the server's own copy and
+			// Progress samples for H5: the server's own copy and
 			// each device.
 			if statusRead[id] {
 				s.AddProgress(id, "", model.ProgressSample{At: now, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})

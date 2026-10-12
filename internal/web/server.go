@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ivarstudios/syncwatch/internal/collector"
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/engine"
 	"github.com/ivarstudios/syncwatch/internal/notify"
@@ -38,11 +39,12 @@ type Hooks struct {
 	AcceptCert      func(serverID, fingerprint string) error
 	ResetPin        func(serverID string) error
 	SendTest        func(ctx context.Context) error
-	SendNoticesTest func(ctx context.Context) error // send a test notice to the webhook for settings notices
-	Notice          func(notify.Notice)             // announce a security-relevant settings change
-	NoticeLater     func() func(notify.Notice)      // capture today's channels, announce to them later
-	ChannelsChanged func()                          // notification channels were replaced; retry now
-	Delivery        func() notify.Delivery          // whether notifications reach their channels
+	SendNoticesTest func(ctx context.Context) error           // send a test notice to the webhook for settings notices
+	Notice          func(notify.Notice)                       // announce a security-relevant settings change
+	NoticeLater     func() func(notify.Notice)                // capture today's channels, announce to them later
+	ChannelsChanged func()                                    // notification channels were replaced; retry now
+	Delivery        func() notify.Delivery                    // whether notifications reach their channels
+	ScanNow         func(serverID string) collector.ScanStart // start a structure scan of a server for an administrator
 }
 
 // Server is the HTTP handler.
@@ -189,6 +191,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /problems/{id}/snooze", s.action(RoleAdmin, s.handleSnooze))
 	m.HandleFunc("POST /problems/{id}/ignore", s.action(RoleAdmin, s.handleIgnore))
 	m.HandleFunc("POST /problems/{id}/unsnooze", s.action(RoleAdmin, s.handleUnsnooze))
+	m.HandleFunc("POST /structure/scan", s.action(RoleAdmin, s.handleScanNow))
 
 	m.HandleFunc("GET /settings", s.page(RoleAdmin, s.handleSettings))
 	m.HandleFunc("POST /settings/servers", s.action(RoleAdmin, s.handleServerSave))
@@ -287,7 +290,8 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 		http.Error(w, "login necessary", http.StatusUnauthorized)
 		return
 	}
-	if info.Role != RoleNone {
+	page := r.Method == http.MethodGet || r.Method == http.MethodHead
+	if info.Role != RoleNone && !page {
 		s.render(w, r, http.StatusForbidden, "error", info, map[string]any{"Title": "Not permitted", "Message": "This page needs the administrator password."})
 		return
 	}
@@ -296,9 +300,15 @@ func (s *Server) deny(w http.ResponseWriter, r *http.Request, info requestInfo) 
 		return
 	}
 	to := "/login"
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+	if page {
 		// Only a page can be returned to; a form has to be sent again.
 		to += "?next=" + urlQueryEscape(r.URL.RequestURI())
+	}
+	if info.Role != RoleNone {
+		// A viewer gets the login form with the reason: an administrator
+		// can log in also in a browser with a viewer session.
+		s.redirect(w, r, to, "This page needs the administrator password.", true)
+		return
 	}
 	http.Redirect(w, r, to, http.StatusSeeOther)
 }
@@ -427,10 +437,16 @@ func (s *Server) redirect(w http.ResponseWriter, r *http.Request, to, msg string
 	if isErr {
 		name = "sw_flash_err"
 	}
+	setFlash(w, name, msg)
+	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// setFlash sets the cookie of a flash message for the next page: sw_flash
+// (green) or sw_flash_err (red). An empty message sets nothing.
+func setFlash(w http.ResponseWriter, name, msg string) {
 	if msg != "" {
 		http.SetCookie(w, &http.Cookie{Name: name, Value: flashEncode(msg), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 60})
 	}
-	http.Redirect(w, r, to, http.StatusSeeOther)
 }
 
 func (s *Server) funcs() template.FuncMap {
@@ -466,10 +482,12 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request, info re
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	if info.Session != nil && info.Role != RoleNone {
+	if info.Session != nil && info.Role == RoleAdmin {
 		// Already logged in, for example through a link from Discord. A
-		// viewer session from before viewing was switched off gives no
-		// role; it gets the form rather than a page that sends it back.
+		// viewer session gets the form: an administrator can log in in the
+		// browser of a lobby screen or a colleague. A viewer session from
+		// before viewing was switched off gives no role; it gets the form
+		// rather than a page that sends it back.
 		http.Redirect(w, r, safeNext(r.URL.Query().Get("next")), http.StatusSeeOther)
 		return
 	}
@@ -584,6 +602,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request, info reques
 	}
 	if pw != r.FormValue("password2") {
 		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": "The passwords are not the same.", "Token": got})
+		return
+	}
+	if s.sameAsViewer(pw) {
+		s.render(w, r, http.StatusBadRequest, "setup", info, map[string]any{"Title": "First start", "Error": errSameAsViewer, "Token": got})
 		return
 	}
 	hash, err := HashPassword(pw)
@@ -747,7 +769,7 @@ func (s *Server) handleIgnore(w http.ResponseWriter, r *http.Request, info reque
 func (s *Server) announceHidden(r *http.Request, id, what, detail string) {
 	for _, f := range s.eng.View().Open {
 		if f.ID == id && f.Urgent {
-			s.announce(r, notify.Notice{Title: "Urgent finding " + what, Summary: f.Check + " " + f.Subject + ": " + f.Message + "\n" + detail, Security: false})
+			s.announce(r, notify.Notice{Title: "Urgent finding " + what, Summary: notify.OneLine(f.Check+" "+f.Subject+": "+f.Message) + "\n" + notify.OneLine(detail), Security: false})
 			return
 		}
 	}

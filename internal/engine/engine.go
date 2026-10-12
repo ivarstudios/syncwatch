@@ -39,6 +39,8 @@ type Engine struct {
 	snap        *model.Snapshot
 	version     uint64
 	evaluated   time.Time
+	evalStarted uint64 // the number of evaluations that started; see Settle
+	evalDone    uint64 // the number of the last complete evaluation
 	fingerprint uint64
 	changedAt   time.Time
 
@@ -91,6 +93,41 @@ func (e *Engine) Trigger() {
 	}
 }
 
+// settleEvery is how often Settle looks for the evaluation it waits for.
+const settleEvery = 10 * time.Millisecond
+
+// Settle asks for an evaluation and waits until an evaluation that started
+// after the call is complete, at most for d or until ctx ends. It reports
+// whether one completed. Such an evaluation has the state of the hub at the
+// call: the answer to "Scan now" waits with it, thus the page after
+// the answer shows the findings of the scan. Only Run evaluates, one
+// evaluation at a time.
+func (e *Engine) Settle(ctx context.Context, d time.Duration) bool {
+	e.mu.Lock()
+	want := e.evalStarted + 1
+	e.mu.Unlock()
+	e.Trigger()
+	limit := time.NewTimer(d)
+	defer limit.Stop()
+	tick := time.NewTicker(settleEvery)
+	defer tick.Stop()
+	for {
+		e.mu.Lock()
+		done := e.evalDone >= want
+		e.mu.Unlock()
+		if done {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-limit.C:
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
 // Run evaluates on every hub change (coalesced), on Trigger, and every 30 s
 // so time-based thresholds fire without new data.
 func (e *Engine) Run(ctx context.Context) {
@@ -105,11 +142,13 @@ func (e *Engine) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-e.hub.Changed():
-			// Coalesce bursts of events into one evaluation.
+			// Coalesce bursts of events into one evaluation. A Trigger
+			// (Settle, a configuration change) ends the wait.
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(time.Second):
+			case <-e.trigger:
 			}
 		case <-e.trigger:
 		case <-tick.C:
@@ -160,6 +199,7 @@ type freezer struct {
 	stale     map[string]bool // not up, or not loaded since the start
 	unknown   map[string]bool // not contacted since the start
 	unscanned map[string]bool // up, but no structure scan has finished since the start
+	unloaded  bool            // a server is not loaded since the start: its devices are not known
 	failed    map[string]failedShares
 }
 
@@ -175,6 +215,9 @@ func newFreezer(snap *model.Snapshot) *freezer {
 		z.present[sv.ID] = true
 		if sv.Status == model.StatusUnknown {
 			z.unknown[sv.ID] = true
+		}
+		if !sv.Loaded {
+			z.unloaded = true
 		}
 		if sv.Status != model.StatusUp || !sv.Loaded {
 			z.stale[sv.ID] = true
@@ -240,7 +283,8 @@ func (z *freezer) anyPresentStale(ids []string) bool {
 // connects through a relay (no server: the device has no connection). A
 // server that cannot be reached can still have the device connected, so
 // such a finding can only be judged while every server that has the device
-// configured is reachable.
+// configured is reachable. A server that is not loaded since the start can
+// have the device configured too: its device list is not known yet.
 func absenceCheck(f model.Finding) bool {
 	switch f.Check {
 	case "H7", "C2":
@@ -299,7 +343,7 @@ func (z *freezer) frozen(f model.Finding) bool {
 		return z.unknown[f.Server]
 	}
 	if f.Server == "" {
-		if absenceCheck(f) && z.anyPresentStale(f.Related) {
+		if absenceCheck(f) && (z.unloaded || z.anyPresentStale(f.Related)) {
 			return true
 		}
 		// Other cross-server findings are judged on whichever related
@@ -380,6 +424,11 @@ func (e *Engine) Evaluate() {
 		// empty snapshot would resolve every open finding.
 		return
 	}
+	// The number of this evaluation, before the snapshot: see Settle.
+	e.mu.Lock()
+	e.evalStarted++
+	run := e.evalStarted
+	e.mu.Unlock()
 	cfg := e.cfg.Get()
 	snap := e.hub.Snapshot()
 	now := e.now()
@@ -391,17 +440,30 @@ func (e *Engine) Evaluate() {
 	if err != nil {
 		e.log.Warn("cannot read the conflict history", "err", err)
 	}
-	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts})
+	// S2 reports the folders inside a share root only while a person sees it.
+	hidden := map[string]bool{}
+	e.mu.Lock()
+	for id, sz := range e.snoozes {
+		if sz.Active(now) {
+			hidden[id] = true
+		}
+	}
+	e.mu.Unlock()
+	fs := rules.Evaluate(rules.Input{Snapshot: snap, Config: cfg, Structure: e.cfg.Structure(), Now: now, Conflicts: conflicts, Hidden: hidden})
 	z := newFreezer(snap)
 
 	e.mu.Lock()
 	produced := map[string]bool{}
 	held := map[string]bool{}
 	current := map[string]model.Finding{}
+	coveredBy := map[string]string{} // finding ID: the finding that reports its condition now
 	obsAdd := map[string]store.Observation{}
 	var obsRemove []string
 	for _, f := range fs {
 		produced[f.ID] = true
+		for _, id := range f.Covers {
+			coveredBy[id] = f.Check + " " + f.Subject
+		}
 		if f.Held {
 			// Judged from a last known state: like a frozen finding, and
 			// its timer stops.
@@ -454,7 +516,7 @@ func (e *Engine) Evaluate() {
 				// It flapped back before its "resolved" message went out:
 				// carry on as the same, already-announced problem. The time
 				// of the last repeat goes with it, or the notifier repeats
-				// the urgent message again at once (W-050).
+				// the urgent message again at once.
 				rec.PingedAt = old.PingedAt
 				rec.RepeatedAt = old.RepeatedAt
 			}
@@ -516,9 +578,23 @@ func (e *Engine) Evaluate() {
 			}
 			continue
 		}
+		if by, ok := coveredBy[id]; ok {
+			// Another finding reports the condition now (S2 lists the
+			// folder): close it quietly, the fault continues.
+			rec.ResolvedAt, rec.ResolvedNotifiedAt = now, now
+			e.save(rec)
+			if err := e.st.HistoryResolveNote(id, now, "listed in "+by); err != nil {
+				e.log.Warn("cannot write the finding history", "err", err)
+			}
+			delete(e.open, id)
+			delete(e.persisted, id)
+			changed = true
+			e.log.Info("finding closed", "reason", "listed in "+by, "check", rec.Check, "subject", rec.Subject, "id", id)
+			continue
+		}
 		// LastSeen stays the time of the last evaluation that saw the
 		// finding open: the resolved message tells from it whether the
-		// fault ended while syncwatch did not run (W-038).
+		// fault ended while syncwatch did not run.
 		rec.ResolvedAt = now
 		e.save(rec)
 		if err := e.st.HistoryResolve(id, now); err != nil {
@@ -531,6 +607,7 @@ func (e *Engine) Evaluate() {
 	}
 	e.snap = snap
 	e.evaluated = now
+	e.evalDone = max(e.evalDone, run)
 	// Only tell dashboards to refresh when something they show changed.
 	fp := visibleFingerprint(snap)
 	publish := changed || fp != e.fingerprint

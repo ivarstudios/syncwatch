@@ -33,7 +33,7 @@ func rows(f *model.Finding, key string) []string {
 	return out
 }
 
-// W-046 (a): a share root that is a Syncthing folder is one finding. The
+// A share root that is a Syncthing folder is one finding. The
 // Syncthing folders inside it are rows of S2, not one urgent S1 each. An S1
 // between 2 folders that are not share roots stays.
 func TestShareRootListsTheFoldersInside(t *testing.T) {
@@ -95,7 +95,7 @@ func TestShareRootListsTheFoldersInside(t *testing.T) {
 	}
 }
 
-// W-046 (a): a full disk of Syncthing's database stops every folder of the
+// A full disk of Syncthing's database stops every folder of the
 // server. That is 1 urgent H4 for the server that lists the folders, not 1
 // for each folder. A folder with another error gets its own H4 as well.
 func TestDatabaseDiskIsOneFinding(t *testing.T) {
@@ -155,7 +155,7 @@ func TestDatabaseDiskIsOneFinding(t *testing.T) {
 	}
 }
 
-// W-046 (orchestrator DECISION): a pull that Syncthing refuses for lack of
+// A pull that Syncthing refuses for lack of
 // space in the folder (minDiskFree) is a failed item with that error. H4
 // opens at once with the reason "out of space", not after failing_files.
 func TestOutOfSpaceInFolderOpensAtOnce(t *testing.T) {
@@ -176,7 +176,7 @@ func TestOutOfSpaceInFolderOpensAtOnce(t *testing.T) {
 	}
 }
 
-// W-047 (a): a device that always connects through a relay (devices[].relay)
+// A device that always connects through a relay (devices[].relay)
 // gets no H11. H12 opens when it has no connection to any server that is up
 // for relay_lost. A device without the flag keeps H11.
 func TestRelayDevice(t *testing.T) {
@@ -237,7 +237,7 @@ func TestRelayDevice(t *testing.T) {
 	mustNot(t, run(t, c, akka, sol), "H12", "")
 }
 
-// W-047 (b): H12 for a server whose relay listener has no connection to the
+// H12 for a server whose relay listener has no connection to the
 // relay, after relay_lost. A connected listener or a server that is down
 // gives none.
 func TestRelayListener(t *testing.T) {
@@ -275,7 +275,7 @@ func TestRelayListener(t *testing.T) {
 	mustNot(t, run(t, c, akka), "H12", "")
 }
 
-// W-057 (c): with the sites set, H1 for a network failure names the site of
+// With the sites set, H1 for a network failure names the site of
 // the server and the site of syncwatch, and the VPN between them; H2 names
 // the 2 sites. Without sites, the texts of r1 stay. When another server is
 // connected to the unreachable server, a row says so.
@@ -319,7 +319,7 @@ func TestSiteTexts(t *testing.T) {
 	}
 	// In the first minutes after the last contact, Syncthing can still keep
 	// a connection whose network path is down (a silent cut of the VPN: up
-	// to 7.5 minutes on the kit).
+	// to 7.5 minutes in a test).
 	sol.LastContact = now.Add(-8 * time.Minute)
 	if f := mustFind(t, run(t, c, akka, sol), "H1", "Server SOL"); f.DetailValue("What AKKA sees") != "" {
 		t.Fatal("a row 8 minutes after the last contact")
@@ -357,7 +357,7 @@ func TestSiteTexts(t *testing.T) {
 	}
 }
 
-// W-058 (b): H5 for a device names the files that it still needs, from the
+// H5 for a device names the files that it still needs, from the
 // list that the collector reads from the server (Server.NeedLists).
 func TestStuckDeviceNamesNeededFiles(t *testing.T) {
 	c := ivarConfig(t)
@@ -410,7 +410,7 @@ func samplesAt(sv *model.Server, folderID, dev string, need, global, perMinute i
 	}
 }
 
-// W-059 (b): H5 keeps its time rule and shows the progress of the sync:
+// H5 keeps its time rule and shows the progress of the sync:
 // the bytes received, the speed over the last 10 minutes and the time left.
 // The values are rounded, thus 2 evaluations 30 seconds apart give the same
 // message.
@@ -509,7 +509,7 @@ func TestProgressTexts(t *testing.T) {
 	}
 }
 
-// W-061 (b): an INFO hint when the certificate of a server expires in less
+// An INFO hint when the certificate of a server expires in less
 // than 30 days or expired. syncwatch continues to read the server.
 func TestCertificateExpiresSoon(t *testing.T) {
 	c := ivarConfig(t)
@@ -544,7 +544,7 @@ func TestCertificateExpiresSoon(t *testing.T) {
 	mustNot(t, run(t, c, akka), "H13", "")
 }
 
-// W-021: a project that nobody changed after the copy has no pulled file and
+// A project that nobody changed after the copy has no pulled file and
 // no local change. C1 uses the time when syncwatch first saw the folder (the
 // earliest of the servers). The message gives the date and the time in the
 // configured zone; Since is zero.
@@ -553,11 +553,11 @@ func TestInactiveProjectFirstSeen(t *testing.T) {
 	c.Timezone = "Europe/Stockholm"
 	akka := server("akka", "AKKA", akkaID)
 	sol := server("sol", "SOL", solID)
-	a := folder("ice", "LIVE-ORION2026-1SOURCE", "/s/AKKA-LIVE-1SOURCE/LIVE-ORION2026-1SOURCE")
+	a := folder("orion", "LIVE-ORION2026-1SOURCE", "/s/AKKA-LIVE-1SOURCE/LIVE-ORION2026-1SOURCE")
 	a.FirstSeen = now.Add(-200 * 24 * time.Hour)
-	s := folder("ice", "LIVE-ORION2026-1SOURCE", "/s/SOL-LIVE-1SOURCE/LIVE-ORION2026-1SOURCE")
+	s := folder("orion", "LIVE-ORION2026-1SOURCE", "/s/SOL-LIVE-1SOURCE/LIVE-ORION2026-1SOURCE")
 	s.FirstSeen = now.Add(-150 * 24 * time.Hour)
-	akka.Folders["ice"], sol.Folders["ice"] = a, s
+	akka.Folders["orion"], sol.Folders["orion"] = a, s
 	c1 := mustFind(t, run(t, c, akka, sol), "C1", "LIVE-ORION2026-1SOURCE")
 	want := "No file in folder LIVE-ORION2026-1SOURCE changed in the last 200 days (syncwatch first saw the folder on 2026-03-19 13:00). You can archive it"
 	if c1.Message != want {
@@ -584,7 +584,7 @@ func TestInactiveProjectFirstSeen(t *testing.T) {
 	mustNot(t, run(t, c, akka, sol), "C1", "")
 }
 
-// W-038: every finding has 1 sentence for its resolved message. It ends with
+// Every finding has 1 sentence for its resolved message. It ends with
 // a period and does not repeat the sentence of the open finding. The
 // scenarios below give every check of the catalog.
 func TestEveryFindingHasAResolvedSentence(t *testing.T) {
@@ -697,7 +697,7 @@ func TestEveryFindingHasAResolvedSentence(t *testing.T) {
 	}
 }
 
-// W-059 (live re-test of wave 3, P2 a): a Windows PC received its files in
+// A Windows PC received its files in
 // 10 seconds after it connected and then stopped with 3 files (57 bytes)
 // that it cannot store. H5 promises no end: no time left. When the 10
 // minutes no longer hold the files that arrived, the speed is 0.
@@ -737,7 +737,7 @@ func TestStuckPCGetsNoTimeLeft(t *testing.T) {
 	}
 }
 
-// W-059 (live re-test of wave 3, P2 b): a need that rises inside the 10
+// A need that rises inside the 10
 // minutes does not hide the data that arrived. A sync that began inside
 // the 10 minutes (the folder needed nothing before) has the speed from its
 // start. New files that come while a sync runs do not stop the count.
@@ -759,7 +759,7 @@ func TestStuckSyncCountsDataAfterTheNeedRose(t *testing.T) {
 		sol.AddProgress("s", "", model.ProgressSample{At: now, NeedBytes: f.NeedBytes, GlobalBytes: f.GlobalBytes})
 		return sol, f
 	}
-	// The file came 9 minutes 50 seconds ago (the live re-test: before
+	// The file came 9 minutes 50 seconds ago (a live test: before
 	// the fix, "0 (no data arrived in the last 10 minutes)").
 	sol, _ := sync(9*time.Minute + 50*time.Second)
 	h5 := mustFind(t, run(t, c, sol), "H5", "Folder LIVE-FJORD-1SOURCE on SOL")
@@ -802,7 +802,7 @@ func TestStuckSyncCountsDataAfterTheNeedRose(t *testing.T) {
 	}
 }
 
-// W-059 (live check of the repair on s19): a steady sync gives the same
+// A steady sync gives the same
 // speed at each evaluation. The samples are about 1 minute apart (55
 // seconds here) and the newest sample moves with each event: of the 2
 // samples around the start of the 10 minutes, only the part after the start

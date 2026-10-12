@@ -1,10 +1,10 @@
 package web
 
-// Tests of wave 3 (r2) for /api/v1/status, /api/v1/ha and the API tokens:
-// W-053 and W-031 (named API tokens with a scope and a last use), W-048 (no
-// API without an API token or a login), W-049 (one time format and stable
-// status values), W-054 (HA status error only with H4), W-052 and W-057.api
-// (counts, notifications, sites and links), W-036 (snooze end and reason).
+// Tests of /api/v1/status, /api/v1/ha and the API tokens of version 0.9:
+// named API tokens with a scope and a last use, no API without an API token
+// or a login, one time format and stable status values, the HA status error
+// only with H4, the counts, notifications, sites and links, and the snooze
+// end and reason.
 
 import (
 	"encoding/json"
@@ -98,7 +98,7 @@ func call(t *testing.T, c *http.Client, u, token string) (int, string) {
 	return resp.StatusCode, string(b)
 }
 
-// W-053 acceptance: an ha API token reads /api/v1/ha and gets 403 on
+// An ha API token reads /api/v1/ha and gets 403 on
 // /api/v1/status; a full API token reads both; revoking 1 API token leaves
 // the others working; the API token of the configuration file (the single
 // API token of an older version) works as "API token" with the scope full.
@@ -162,7 +162,7 @@ func TestAPITokenScopes(t *testing.T) {
 	}
 }
 
-// W-053: the value of a new API token shows one time, in the panel at the top
+// The value of a new API token shows one time, in the panel at the top
 // of the answer, with the name and the addresses of its scope. The list shows
 // the name, the scope, the creation time and "never" for the last use.
 func TestNewAPITokenShownOnce(t *testing.T) {
@@ -206,7 +206,7 @@ func TestNewAPITokenShownOnce(t *testing.T) {
 	}
 }
 
-// W-031: the last use of an API token shows in the list, at most 1 minute
+// The last use of an API token shows in the list, at most 1 minute
 // late. syncwatch writes it at most once a minute for each API token.
 func TestAPITokenLastUsed(t *testing.T) {
 	e := adminEnv(t, twoServers+"timezone: UTC\n")
@@ -249,7 +249,7 @@ func TestAPITokenLastUsed(t *testing.T) {
 	}
 }
 
-// W-053: at most 5 API tokens. With 5, the card has no "Add API token" form
+// At most 5 API tokens. With 5, the card has no "Add API token" form
 // and says why; a sixth one is refused with the message in the card. Names
 // must be unique without regard to case; the typed name stays in the form.
 func TestAPITokenLimitAndNames(t *testing.T) {
@@ -291,7 +291,7 @@ func TestAPITokenLimitAndNames(t *testing.T) {
 	}
 }
 
-// W-053: the route of the single API token of an older version, POST
+// The route of the single API token of an older version, POST
 // /settings/api-token, works on the API token "API token": generate gives
 // it a new value (its scope stays) or adds it with the scope full; revoke
 // revokes it. The other API tokens do not change.
@@ -349,7 +349,7 @@ func TestOldAPITokenSecretIsNotAccepted(t *testing.T) {
 	}
 }
 
-// W-048: the JSON API needs an API token or a login, also with open access.
+// The JSON API needs an API token or a login, also with open access.
 // A logged-in viewer or administrator and proxy mode pass without a token.
 func TestAPINeedsTokenOrLogin(t *testing.T) {
 	paths := []string{"/api/v1/status", "/api/v1/ha"}
@@ -404,7 +404,7 @@ func TestAPINeedsTokenOrLogin(t *testing.T) {
 }
 
 // timeKeys are the keys of time values in both answers.
-var timeKeys = map[string]bool{"generated_at": true, "last_contact": true, "cert_expires": true, "last_seen": true, "since": true,
+var timeKeys = map[string]bool{"generated_at": true, "last_contact": true, "cert_expires": true, "last_structure_scan": true, "last_seen": true, "since": true,
 	"opened_at": true, "next_try": true, "snooze_until": true, "notifications_failing_since": true}
 
 var utcSecond = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
@@ -438,7 +438,7 @@ func checkTimes(t *testing.T, where string, v any) int {
 	return n
 }
 
-// W-049: every time in both answers is UTC with whole seconds; a time that
+// Every time in both answers is UTC with whole seconds; a time that
 // is not known is null, not a missing key. last_contact and last_seen were
 // local times with an offset.
 func TestAPITimesAreUTC(t *testing.T) {
@@ -507,7 +507,7 @@ func TestAPITimesAreUTC(t *testing.T) {
 }
 
 // view is a hand-made engine view: a snapshot with the servers and the open
-// findings, for the answers that the engine of another assignment fills.
+// findings, for the answers that the engine fills.
 func view(servers []*model.Server, open ...*store.Record) *engine.View {
 	return &engine.View{Snapshot: &model.Snapshot{At: time.Now(), Servers: servers}, Open: open, Snoozes: map[string]store.Snooze{}}
 }
@@ -526,7 +526,7 @@ func rec(check, server string, sev model.Severity, urgent bool, related ...strin
 		Subject: check, Message: check}, OpenedAt: time.Now(), Since: time.Now()}
 }
 
-// W-049, W-054: the status values of /api/v1/ha have no spaces, and error
+// The status values of /api/v1/ha have no spaces, and error
 // needs an open H4 finding with severity ERROR.
 func TestHAStatusValues(t *testing.T) {
 	e := newEnv(t, `servers: [{name: A, url: "https://a:1"}, {name: B, url: "https://b:1", disabled: true}]`)
@@ -577,7 +577,7 @@ func TestHAStatusValues(t *testing.T) {
 	}
 }
 
-// W-054 with the engine: failed items without H4 (failing_files waits 1
+// With the engine: failed items without H4 (failing_files waits 1
 // hour) give syncing and folders_error 1; a folder error opens H4 at once and
 // gives error.
 func TestHAErrorFollowsH4(t *testing.T) {
@@ -606,7 +606,7 @@ func TestHAErrorFollowsH4(t *testing.T) {
 	}
 }
 
-// W-052: the counts of /api/v1/ha are the counts of /api/v1/status; each
+// The counts of /api/v1/ha are the counts of /api/v1/status; each
 // server counts its findings and the findings that relate to it; the
 // notification state is in the answer.
 func TestHACountsAndNotifications(t *testing.T) {
@@ -668,7 +668,7 @@ func TestHACountsAndNotifications(t *testing.T) {
 	}
 }
 
-// W-057.api, W-052: the sites and the links in both answers, from a
+// The sites and the links in both answers, from a
 // hand-made view (the engine fills the links).
 func TestAPISitesAndLinks(t *testing.T) {
 	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", site: IVAR Office}, {name: SOL, url: "https://b:1", site: Branch office}, {name: SIRIUS, url: "https://c:1", disabled: true}]
@@ -719,7 +719,7 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-// W-036: findings[].snooze_until and snooze_reason: the end and the reason
+// findings[].snooze_until and snooze_reason: the end and the reason
 // of a snooze; null and the reason for an ignore; null and "" without a
 // snooze. snoozed, ignored and counts do not change.
 func TestAPISnoozeUntilAndReason(t *testing.T) {

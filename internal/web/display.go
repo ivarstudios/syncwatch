@@ -39,10 +39,10 @@ type detailRow struct {
 	Label, Value string
 }
 
-// deviceIDKeys are the detail keys whose values are device IDs (C4).
+// deviceIDKeys are the detail keys whose values are device IDs.
 var deviceIDKeys = map[string]bool{"Device ID": true, "Offered by": true}
 
-// shortDeviceID is the form of a device ID that viewers see (C12, W-048):
+// shortDeviceID is the form of a device ID that viewers see:
 // the first group and "…". Viewers cannot use the full ID, and the pages
 // show less of the studio network.
 func shortDeviceID(id string) string {

@@ -33,6 +33,7 @@ const (
 	keyWeekly    = "notify.last_weekly"
 	keyAnnounced = "notify.announced"    // see announcedRun
 	keyKept      = "notify.kept_notices" // see pendingNotice
+	keyFailing   = "notify.failing"      // see storedFailure
 )
 
 // Notifier decides what to send and when.
@@ -69,6 +70,8 @@ type Notifier struct {
 	noticesErr bool       // the error of reading that webhook is in the log
 	hold       *time.Timer
 	holdUntil  time.Time // the end of the hold window of an urgent message; see holdUrgent
+	probes     int       // failed checks in a row of a failing channel; see probe
+	probeAt    time.Time // the time of the next check
 }
 
 // ownChannel is the delivery state of the webhook for settings notices. Its
@@ -92,6 +95,9 @@ type pendingNotice struct {
 	// GiveUp is when a notice that is not about security is dropped; zero
 	// for a security notice, which is kept until a channel accepts it.
 	GiveUp time.Time `json:"give_up,omitzero"`
+	// sending: the first send of a security notice runs (see notice), and
+	// the retries skip it. Not stored: after a restart, the retries send it.
+	sending bool
 }
 
 // Settings notices that are not about security are retried for a day. At
@@ -112,12 +118,13 @@ type Delivery struct {
 	Failing     bool
 	Since       time.Time // first failure in the current run of failures
 	Error       string    // the latest error
-	NextTry     time.Time // while failing: the time of the next send; zero otherwise
+	NextTry     time.Time // while failing: the time of the next send or check (probe); zero otherwise
 	NoticesKept int       // settings notices that wait for a channel that accepts them
 }
 
 // Notice is a settings notice: a change of a setting that the channels must
-// hear about.
+// hear about. The Summary has lines of text without formatting; a name or
+// another text from Syncthing in a line goes through OneLine first.
 type Notice struct {
 	Title, Summary string
 	// Security marks a change of a secret (an API key, a webhook, an API
@@ -132,7 +139,11 @@ func (n *Notifier) Delivery() Delivery {
 	defer n.dmu.Unlock()
 	n.readKept()
 	d := n.state
-	d.NoticesKept = len(n.notices)
+	for _, p := range n.notices {
+		if !p.sending {
+			d.NoticesKept++
+		}
+	}
 	return d
 }
 
@@ -144,6 +155,10 @@ func (n *Notifier) ChannelsChanged() {
 	n.dmu.Lock()
 	n.gen++
 	n.failures, n.retryAt = 0, time.Time{}
+	n.probes, n.probeAt = 0, time.Time{}
+	if n.state.Failing {
+		n.saveFailure(nil)
+	}
 	n.state = Delivery{}
 	n.lastErr = map[string]string{}
 	n.own = ownChannel{}
@@ -165,8 +180,12 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	n.dmu.Lock()
 	defer n.dmu.Unlock()
 	if err == nil {
+		if n.state.Failing {
+			n.saveFailure(nil)
+		}
 		n.state = Delivery{}
 		n.failures, n.retryAt = 0, time.Time{}
+		n.probes, n.probeAt = 0, time.Time{}
 		return
 	}
 	if gen != n.gen {
@@ -175,7 +194,10 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	if !n.state.Failing {
 		n.state.Failing, n.state.Since = true, now
 	}
-	n.state.Error = err.Error()
+	if e := err.Error(); e != n.state.Error {
+		n.state.Error = e
+		n.saveFailure(&storedFailure{Since: n.state.Since, Error: e})
+	}
 	// Kept until the catch-up went out: a new webhook or a successful test
 	// message clears the banner, not what the channel missed.
 	if n.missed.IsZero() {
@@ -183,7 +205,31 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	}
 }
 
+// storedFailure is the state "notifications fail", stored in the settings
+// (keyFailing): a restart keeps it. Else each start of syncwatch says "ok" in
+// /healthz and calls the dead-man URL until the limit passes again, also
+// while Discord refuses every message.
+type storedFailure struct {
+	Since time.Time `json:"since"`
+	Error string    `json:"error"`
+}
+
+// saveFailure stores the failure, or deletes it (nil). The caller holds dmu.
+func (n *Notifier) saveFailure(f *storedFailure) {
+	var err error
+	if f == nil {
+		err = n.st.DeleteSetting(keyFailing)
+	} else {
+		err = n.st.SetJSONSetting(keyFailing, f)
+	}
+	if err != nil {
+		n.log.Warn("cannot save the state of the notifications", "err", err)
+	}
+}
+
 // New creates a notifier that builds its senders from the stored secrets.
+// A failure stored before the start continues: the first tick checks the
+// channel (see probe), and what the channel missed goes out in the catch-up.
 func New(src Source, st *store.Store, cfg *config.Holder, log *slog.Logger) *Notifier {
 	if log == nil {
 		log = slog.Default()
@@ -192,6 +238,14 @@ func New(src Source, st *store.Store, cfg *config.Holder, log *slog.Logger) *Not
 		delivered: map[string]map[string]bool{}, lastErr: map[string]string{}}
 	n.senders = n.defaultSenders
 	n.noticeSenders = n.defaultNoticeSenders
+	var f storedFailure
+	if found, err := st.JSONSetting(keyFailing, &f); err != nil {
+		log.Warn("cannot read the state of the notifications", "err", err)
+	} else if found && !f.Since.IsZero() {
+		n.state = Delivery{Failing: true, Since: f.Since, Error: f.Error}
+		n.missed = f.Since
+		log.Warn("notifications fail from before the start", "since", f.Since, "err", f.Error)
+	}
 	return n
 }
 
@@ -262,6 +316,15 @@ func (b *brokenChannel) Name() string {
 }
 
 func (b *brokenChannel) Send(context.Context, Message) error { return b.err }
+
+// Probe fails with the reason, as Send.
+func (b *brokenChannel) Probe(context.Context) error { return b.err }
+
+// prober is a channel that can check that it works without a message
+// (Discord.Probe).
+type prober interface {
+	Probe(ctx context.Context) error
+}
 
 // Wake asks for a tick soon (after an evaluation).
 func (n *Notifier) Wake() {
@@ -353,7 +416,53 @@ func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	}
 	if nerr != nil {
 		n.fail(now, gen, nerr)
+		return
 	}
+	n.probe(ctx, now, gen)
+}
+
+// probe checks a failing channel of the findings when the tick sent nothing
+// to it and no try is due. Else a failure that nothing tries again (a test
+// message, a message whose finding is snoozed before the next try, the quiet
+// hours) stays in the banner and in /healthz until the next message, which
+// can be days later. The check posts nothing. A success ends the failure;
+// the catch-up of what the channel missed stays. The checks back off as the
+// sends do.
+func (n *Notifier) probe(ctx context.Context, now time.Time, gen int) {
+	n.dmu.Lock()
+	due := n.state.Failing && !now.Before(n.retryAt) && !now.Before(n.probeAt)
+	n.dmu.Unlock()
+	if !due {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	results := map[string]error{}
+	for _, s := range n.senders() {
+		if p, ok := s.(prober); ok {
+			results[s.Name()] = p.Probe(ctx)
+		}
+	}
+	if len(results) == 0 {
+		return
+	}
+	err := deliveryErr(results)
+	if err == nil {
+		n.log.Info("Discord webhook answers again")
+		n.recordDelivery(now, gen, nil)
+		return
+	}
+	// The banner keeps the error of the last message: a test setup that
+	// takes only posts answers a check with another error.
+	n.dmu.Lock()
+	if gen == n.gen && n.state.Failing {
+		n.probes++
+		n.probeAt = now.Add(backoff(n.probes, err))
+		n.state.NextTry = n.probeAt
+	}
+	d := n.probeAt.Sub(now)
+	n.dmu.Unlock()
+	n.log.Warn("cannot reach the Discord webhook", "err", err, "retry_in", d)
 }
 
 // fail backs off after a failed send in a tick that started in generation
@@ -599,13 +708,17 @@ func (n *Notifier) repeat(ctx context.Context, cfg *config.Config, v *engine.Vie
 
 // repeatDue returns the findings whose urgent message falls due again: open
 // urgent ERROR findings of one server that are not stale, snoozed or
-// ignored, announced at least one interval ago.
+// ignored, announced at least one interval ago. When one is due, the ones
+// announced more than half an interval ago go with it: then they share one
+// clock, and the role gets one mention in each interval, not one for each
+// finding.
 func repeatDue(cfg *config.Config, v *engine.View, now time.Time) []*store.Record {
 	every := cfg.Notify.RepeatUrgent.D()
 	if every <= 0 {
 		return nil
 	}
 	var due []*store.Record
+	anyDue := false
 	for _, r := range v.Open {
 		if !r.Urgent || r.Severity != model.Error || r.Server == "" || r.Stale || !r.Open() || r.PingedAt.IsZero() {
 			continue
@@ -613,9 +726,13 @@ func repeatDue(cfg *config.Config, v *engine.View, now time.Time) []*store.Recor
 		if _, z := v.Snoozed(r.ID, now); z {
 			continue
 		}
-		if now.Sub(announcedAt(r)) >= every {
+		if age := now.Sub(announcedAt(r)); age > every/2 {
 			due = append(due, r)
+			anyDue = anyDue || age >= every
 		}
+	}
+	if !anyDue {
+		return nil
 	}
 	return due
 }
@@ -972,7 +1089,8 @@ func (n *Notifier) gapLines(now time.Time) ([]string, time.Time) {
 		if g.Reported {
 			continue
 		}
-		lines = append(lines, "syncwatch did not run from "+clockOn(g.From, now, loc)+" to "+clockOn(g.To, now, loc)+".")
+		from, to := zoned(clockOn(g.From, now, loc), g.From, clockOn(g.To, now, loc), g.To, loc)
+		lines = append(lines, "syncwatch did not run from "+from+" to "+to+".")
 		if g.To.After(upTo) {
 			upTo = g.To
 		}
@@ -1001,6 +1119,19 @@ func clockOn(t, ref time.Time, loc *time.Location) string {
 		return t.Format("2006-01-02 15:04")
 	}
 	return t.Format("15:04")
+}
+
+// zoned adds the zone to the clock texts a (of t1) and b (of t2) when their
+// UTC offsets in loc differ. In the night of a clock change, 1 hour can
+// start and end at the same clock time: "02:30 CEST" and "02:30 CET", not
+// "02:30" and "02:30".
+func zoned(a string, t1 time.Time, b string, t2 time.Time, loc *time.Location) (string, string) {
+	z1, off1 := t1.In(loc).Zone()
+	z2, off2 := t2.In(loc).Zone()
+	if off1 == off2 {
+		return a, b
+	}
+	return a + " " + z1, b + " " + z2
 }
 
 // sendTo delivers to the given channels. record says whether they are the
@@ -1300,12 +1431,7 @@ func MissedMessage(cfg *config.Config, rs []*store.Record, missed []store.Histor
 	if len(missed) == 0 {
 		return m
 	}
-	from, to := since.In(cfg.Location()), now.In(cfg.Location())
-	span := from.Format("15:04") + "–" + to.Format("15:04")
-	if from.Format("2006-01-02") != to.Format("2006-01-02") {
-		span = from.Format("2006-01-02 15:04") + "–" + to.Format("15:04")
-	}
-	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span + ")", Lines: limitLines(blipLines(cfg, missed), 20)})
+	m.Sections = append(m.Sections, Section{Title: "Opened and resolved while the notifications failed (" + span(since, now, cfg.Location()) + ")", Lines: limitLines(blipLines(cfg, missed), 20)})
 	return m
 }
 

@@ -145,7 +145,7 @@ notifications: {discord_webhook: "https://discord.com/api/webhooks/1/old", disco
 		resp, body := e.postPage("/settings/notifications", f)
 		return resp.StatusCode, body
 	}
-	// A refused save shows the form again with the error (W-016).
+	// A refused save shows the form again with the error.
 	if code, body := notify(url.Values{"discord_webhook": {"http://10.0.0.5:8080/api/webhooks/1/x"}, "discord_role_id": {"420000000000000000"}}); code != http.StatusUnprocessableEntity || !strings.Contains(body, "discord.com/api/webhooks/…).") {
 		t.Fatalf("internal webhook URL: %d", code)
 	}
@@ -200,7 +200,7 @@ func TestImportCannotRedirectKeys(t *testing.T) {
 	e := adminEnv(t, twoServers)
 	csrf := e.csrf("/settings")
 	// The imports below remove servers: the checkbox and the administrator
-	// password confirm it in step 2 (W-055).
+	// password confirm it in step 2.
 	imp := func(yaml string) string {
 		msg, _ := impFile(e, csrf, yaml, url.Values{"delete_servers": {"on"}, "confirm": {"correct horse battery"}})
 		return msg
@@ -279,7 +279,7 @@ func TestWeakeningAccessNeedsAdminPassword(t *testing.T) {
 	}
 
 	// Import: refused before anything from the file is stored. The preview
-	// asks for the password; step 2 checks it (W-055).
+	// asks for the password; step 2 checks it.
 	imp := func(confirm, yaml string) (string, bool) {
 		return impFile(e, csrf, yaml, url.Values{"confirm": {confirm}})
 	}

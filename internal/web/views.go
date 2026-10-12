@@ -30,6 +30,8 @@ type problemRow struct {
 	Link                                                       string
 	Sites                                                      []string // the sites of its servers, for the site filter of the Overview (findingSites)
 	Over                                                       bool     // past the limit of the Overview list until the site filter selects it
+	Scan                                                       lastScan // structure findings: the last structure scan of the server
+	ScanServer                                                 string   // structure findings: the server that "Scan now" scans
 }
 
 func (s *Server) fmtTime(t time.Time) string {
@@ -40,7 +42,7 @@ func (s *Server) fmtTime(t time.Time) string {
 }
 
 // fmtClock writes a time of today (in the configured zone) as 21:52, and
-// another time as fmtTime does. The rule of the gap line (C6): the date shows
+// another time as fmtTime does. The rule of the gap line: the date shows
 // only when it is not today.
 func (s *Server) fmtClock(t time.Time) string {
 	if t.IsZero() {
@@ -54,8 +56,7 @@ func (s *Server) fmtClock(t time.Time) string {
 }
 
 // problemRows builds the rows of findings. For a viewer (admin false) the
-// device IDs in the details are short and there is no link to Syncthing
-// (C12, W-048).
+// device IDs in the details are short and there is no link to Syncthing.
 func (s *Server) problemRows(v *engine.View, recs []*store.Record, admin bool) []problemRow {
 	now := s.now()
 	var out []problemRow
@@ -73,6 +74,9 @@ func (s *Server) problemRows(v *engine.View, recs []*store.Record, admin bool) [
 		}
 		if sv := v.Snapshot.Server(r.Server); sv != nil {
 			row.ServerName = showControls(sv.Name)
+			if r.Category == model.CatStructure {
+				row.Scan, row.ScanServer = s.lastScanOf(sv, &r.Finding), sv.ID
+			}
 		}
 		since := r.Since
 		if since.IsZero() || since.After(r.OpenedAt) {
@@ -121,7 +125,7 @@ type serverTile struct {
 type overviewVM struct {
 	Health                   string
 	Servers                  []serverTile
-	Links                    []linkRow // the Connections section (C11)
+	Links                    []linkRow // the Connections section
 	Sites                    []string  // the choices of the site filter; nil with fewer than 2 sites
 	PCTotal, PCOnline, PCOff int
 	PCUnknown                int // not connected, but a server that knows the PC is not up: maybe online
@@ -138,8 +142,8 @@ type overviewVM struct {
 const topLimit = 8
 
 // filterSites returns the sites of the configured servers, in the order of
-// their first server, when 2 or more are set: the choices of the site filter
-// (C11). With fewer sites there is no filter, and it returns nil.
+// their first server, when 2 or more are set: the choices of the site filter.
+// With fewer sites there is no filter, and it returns nil.
 func filterSites(cfg *config.Config) []string {
 	var out []string
 	for _, sc := range cfg.Servers {
@@ -182,7 +186,7 @@ func siteMatch(sites []string, site string) bool {
 	return len(sites) == 0 || slices.Contains(sites, site)
 }
 
-// linkRow is one row of the Connections section of the Overview (C11): the
+// linkRow is one row of the Connections section of the Overview: the
 // connection between 2 sites, or between 2 servers when fewer than 2 sites
 // are set.
 type linkRow struct {
@@ -194,7 +198,7 @@ type linkRow struct {
 	State string // "connected from 08:12", "not connected from 21:04", "state unknown: SOL is unreachable"
 }
 
-// Text is the row in one line, as the lobby page shows it (C11):
+// Text is the row in one line, as the lobby page shows it:
 // "IVAR Office ↔ Branch office: connected from 08:12".
 func (r linkRow) Text() string { return r.A + " ↔ " + r.B + ": " + r.State }
 
@@ -372,7 +376,11 @@ func (s *Server) overview(v *engine.View) overviewVM {
 		}
 		if sv.Structure != nil {
 			t.Shares = len(sv.Structure.Shares)
-			t.LastScan = s.fmtTime(sv.Structure.ScannedAt)
+			// The end of the last scan that listed a share, as on the
+			// structure findings. Empty before the first one.
+			if !sv.LastStructureScan.IsZero() {
+				t.LastScan = s.fmtClock(sv.LastStructureScan)
+			}
 			if n := sv.Structure.ScanListings; n > 0 {
 				t.ScanCost = fmt.Sprintf("%s in %s", plural(n, "directory listing", "directory listings"), sv.Structure.ScanTook.Round(100*time.Millisecond))
 			}
@@ -496,10 +504,10 @@ func plural(n int, one, many string) string {
 }
 
 // grid builds the Folders grid. A viewer (role other than admin) gets the
-// device IDs of the column titles in their short form (C12, W-048).
+// device IDs of the column titles in their short form.
 func (s *Server) grid(v *engine.View, role string) gridVM {
 	snap := v.Snapshot
-	// A disabled server is a server (r1-3, contract C4), but syncwatch does
+	// A disabled server is a server, but syncwatch does
 	// not poll it: its column would have only "–" cells. The Overview shows
 	// it as a grey "Disabled" tile instead.
 	var devs []*model.DeviceView
@@ -745,7 +753,7 @@ var severityOptions = []severityOption{
 }
 
 // problems builds the Findings page. A viewer (role other than admin) gets
-// the short device IDs and no links to Syncthing (C12, W-048).
+// the short device IDs and no links to Syncthing.
 func (s *Server) problems(v *engine.View, f problemFilter, role string) problemsVM {
 	now := s.now()
 	vm := problemsVM{Filter: f, Query: f.query(), Checks: config.Catalog, Servers: v.Snapshot.Servers, Severities: severityOptions,
@@ -838,7 +846,7 @@ func (s *Server) serverSettings(v *engine.View) []serverSettings {
 		ss := serverSettings{Server: sc, HasKey: settings.KeyUsable(s.st, sc)}
 		if s.st.HasSecret(store.ServerAPIKeySecret(sc.ID)) && !ss.HasKey {
 			// Stored but not usable: either syncwatch cannot decrypt it (the
-			// secret key changed, W-030) or it was entered for another URL.
+			// secret key changed) or it was entered for another URL.
 			_, _, err := s.st.ServerKey(sc.ID)
 			ss.KeyLost = err != nil
 			ss.KeyForOtherURL = err == nil

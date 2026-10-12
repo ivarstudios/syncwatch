@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// The answer of /rest/db/remoteneed of Syncthing 2.1.5 and 2.1.6 (kit slot
-// s23, docs/changes/r2-3.md), shortened to 1 directory and 1 file.
+// The answer of /rest/db/remoteneed of Syncthing 2.1.5 and 2.1.6 (the test
+// kit), shortened to 1 directory and 1 file.
 const remoteNeedAnswer = `{
  "files": [
   {"blocksHash": null, "deleted": false, "ignored": false, "invalid": false, "localFlags": 0,
@@ -62,15 +62,18 @@ func TestRemoteNeed(t *testing.T) {
 	}
 }
 
-// An older gate refuses the new endpoint with 404 "endpoint not permitted".
-// Syncthing's own 404 (an unknown folder) and other gate refusals are not
-// that answer.
+// An older gate refuses the new endpoint with 404 "endpoint not permitted",
+// the gate of the published version 78ef2d8 with 404 "endpoint not
+// allowed". Syncthing's own 404 (an unknown folder) and other gate
+// refusals are not that answer.
 func TestGateRefusedEndpoint(t *testing.T) {
 	for _, c := range []struct {
 		err  error
 		want bool
 	}{
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 404, Body: "syncwatch gate: endpoint not permitted"}, true},
+		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 404, Body: "syncwatch gate: endpoint not allowed"}, true},
+		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 400, Body: "syncwatch gate: endpoint not allowed"}, false},
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 404, Body: "no such folder"}, false},
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 400, Body: "syncwatch gate: query not permitted: the parameter perpage must be between 1 and 100"}, false},
 		{&StatusError{Endpoint: "/rest/db/remoteneed", Code: 403, Body: "syncwatch gate: gate token missing or not correct"}, false},
@@ -83,8 +86,8 @@ func TestGateRefusedEndpoint(t *testing.T) {
 	}
 }
 
-// /rest/system/status of Syncthing 2.1.6 on AKKA in kit slot s23 with its
-// relay up (docs/changes/r2-3.md): a relay listener and a TCP listener.
+// /rest/system/status of Syncthing 2.1.6 on AKKA in the test kit with its
+// relay up: a relay listener and a TCP listener.
 const systemStatusAnswer = `{
  "alloc": 6597904,
  "connectionServiceStatus": {

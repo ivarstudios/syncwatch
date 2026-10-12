@@ -553,8 +553,8 @@ func (c *Client) Completion(ctx context.Context, folder, device string) (Complet
 
 // RemoteNeed calls /rest/db/remoteneed for one folder and remote device and
 // returns the first page of at most perPage files that the device still
-// needs. A gate from before this endpoint answers 404 "syncwatch gate:
-// endpoint not permitted" (see GateRefusedEndpoint).
+// needs. A gate from before this endpoint answers 404 (see
+// GateRefusedEndpoint).
 func (c *Client) RemoteNeed(ctx context.Context, folder, device string, perPage int) (RemoteNeed, error) {
 	var out RemoteNeed
 	q := url.Values{"folder": {folder}, "device": {device}, "page": {"1"}, "perpage": {strconv.Itoa(perPage)}}
@@ -564,10 +564,15 @@ func (c *Client) RemoteNeed(ctx context.Context, folder, device string, perPage 
 
 // GateRefusedEndpoint reports whether err is the answer of a syncwatch gate
 // that does not permit the endpoint, for example an older gate that does
-// not know a newer endpoint of the client.
+// not know a newer endpoint of the client. The gate of the published
+// version 78ef2d8 says "endpoint not allowed", later gates "endpoint not
+// permitted".
 func GateRefusedEndpoint(err error) bool {
 	var se *StatusError
-	return errors.As(err, &se) && se.Code == http.StatusNotFound && strings.HasPrefix(se.Body, gatePrefix+" endpoint not permitted")
+	if !errors.As(err, &se) || se.Code != http.StatusNotFound {
+		return false
+	}
+	return strings.HasPrefix(se.Body, gatePrefix+" endpoint not permitted") || strings.HasPrefix(se.Body, gatePrefix+" endpoint not allowed")
 }
 
 // PendingDevices calls /rest/cluster/pending/devices.

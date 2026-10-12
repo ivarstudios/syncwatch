@@ -24,6 +24,8 @@ type Manager struct {
 	// OnPin, when set, is called after the collector pinned the certificate
 	// of a server without an administrator: at the first contact (renewal
 	// false) or for a CA-signed renewal for the same host name (renewal true).
+	// A certificate that the collector pinned in the last 24 hours gives no
+	// call (2 front ends that alternate their certificates, see pinQuiet).
 	// It runs in its own goroutine, after the pin is saved. Set it before Run.
 	OnPin func(serverID, fingerprint string, renewal bool)
 
@@ -212,6 +214,19 @@ func (m *Manager) ResetPin(serverID string) error {
 	}
 	m.log.Info("pinned certificate removed", "server", serverID)
 	return nil
+}
+
+// ScanNow starts a structure scan of one server for an administrator (see
+// Collector.ScanNow). A server without a running collector (disabled, no
+// API key, a key for another URL) is not up.
+func (m *Manager) ScanNow(serverID string) ScanStart {
+	m.mu.Lock()
+	r := m.running[serverID]
+	m.mu.Unlock()
+	if r == nil {
+		return ScanStart{State: ScanNotUp}
+	}
+	return r.c.ScanNow()
 }
 
 // RescanNow asks every collector for a full re-check (used after settings changes).

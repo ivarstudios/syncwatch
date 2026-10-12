@@ -14,7 +14,7 @@ import (
 )
 
 // apiTime is a time in /api/v1: UTC with whole seconds, for example
-// "2026-10-11T15:29:17Z" (W-049). A *apiTime is null when the time is not
+// "2026-10-11T15:29:17Z". A *apiTime is null when the time is not
 // known.
 type apiTime time.Time
 
@@ -40,8 +40,12 @@ type apiServer struct {
 	UptimeS     *int64   `json:"uptime_s"` // null while the server is not up
 	LastContact *apiTime `json:"last_contact"`
 	CertExpires *apiTime `json:"cert_expires"`
-	Error       string   `json:"error,omitempty"`
-	Folders     struct {
+	// The end of the last structure scan that listed a share of the server,
+	// or that found no share; null before the first such scan after
+	// the start of syncwatch, and for a disabled server.
+	LastStructureScan *apiTime `json:"last_structure_scan"`
+	Error             string   `json:"error,omitempty"`
+	Folders           struct {
 		Total      int  `json:"total"`
 		Idle       int  `json:"idle"`
 		Syncing    int  `json:"syncing"`
@@ -170,14 +174,15 @@ func scopeCovers(have, need string) bool {
 // /api/v1/status, store.ScopeHA for /api/v1/ha. A request with an API token
 // passes when the scope of the API token covers need. A request without one
 // passes only with a logged-in session (administrator or viewer) or in proxy
-// mode: open access shows the dashboard pages, not the API (W-048). The
+// mode: open access shows the dashboard pages, not the API. The
 // scheme name is not case sensitive (RFC 7235): "bearer" is the same as
 // "Bearer".
 func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request, need string) (apiCaller, bool) {
 	info := s.resolve(r)
 	caller := apiCaller{admin: info.Role == RoleAdmin}
 	if scheme, tok, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok && strings.EqualFold(scheme, "Bearer") {
-		t, err := s.st.APITokenByValue(strings.TrimSpace(tok))
+		tok = strings.TrimSpace(tok)
+		t, err := s.st.APITokenByValue(tok)
 		if err != nil {
 			s.log.Error("cannot read the API tokens", "err", err)
 			apiError(w, http.StatusInternalServerError, "internal error")
@@ -193,7 +198,7 @@ func (s *Server) apiAuthorized(w http.ResponseWriter, r *http.Request, need stri
 			return caller, false
 		}
 		// The API token is in use, also when its scope refuses the address.
-		s.touchAPIToken(t)
+		s.touchAPIToken(t, tok)
 		if !scopeCovers(t.Scope, need) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="syncwatch", error="insufficient_scope", scope="`+need+`"`)
 			apiError(w, http.StatusForbidden, "the API token permits only /api/v1/ha")
@@ -242,7 +247,7 @@ func (s *Server) apiStatusOf(v *engine.View, admin bool) apiStatus {
 	}
 	for _, sv := range v.Snapshot.Servers {
 		a := apiServer{ID: sv.ID, Name: sv.Name, Site: cfg.SiteOf(sv.ID), Status: string(sv.Status), Version: sv.Version,
-			LastContact: atime(sv.LastContact), CertExpires: atime(sv.Cert.NotAfter), Error: sv.LastError}
+			LastContact: atime(sv.LastContact), CertExpires: atime(sv.Cert.NotAfter), LastStructureScan: atime(sv.LastStructureScan), Error: sv.LastError}
 		if sv.Status == model.StatusUp {
 			out.HealthCounts.ServersUp++
 			if !sv.StartTime.IsZero() {

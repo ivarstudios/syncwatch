@@ -25,11 +25,15 @@ import (
 //   - or have a subject and a message that are the same apart from the name
 //     of their own server: an S3 for a directory that both servers sync.
 // A finding about a server itself (H1: the subject is the server name), and
-// a finding of no server or of several (H2, X1), has its own line.
+// a finding of no server or of several (H2, X1), has its own line. Syncthing
+// does not make device names unique: findings about a device (its device ID
+// in the details) share a line only when it is the same device. An
+// occurrence in the history has no device ID.
 
 // mergeItem is what the merge rule compares of a finding or an occurrence.
 type mergeItem struct {
 	checks, server, subject, message string
+	device                           string // the device ID of the details, if any
 	severity                         model.Severity
 	stale                            bool
 }
@@ -38,6 +42,11 @@ func recordItems(rs []*store.Record) []mergeItem {
 	out := make([]mergeItem, len(rs))
 	for i, r := range rs {
 		out[i] = mergeItem{checks: strings.Join(r.Checks, "+"), server: r.Server, subject: r.Subject, message: r.Message, severity: r.Severity, stale: r.Stale}
+		for _, d := range r.Details {
+			if d.Key == "Device ID" || d.Key == "Offered by" {
+				out[i].device = d.Value
+			}
+		}
 	}
 	return out
 }
@@ -103,7 +112,7 @@ func mergeKey(cfg *config.Config, it mergeItem) (key string, seen bool) {
 	if strings.TrimSpace(strings.ReplaceAll(subject, "\x01", "")) == "" {
 		return "", false // about the server itself
 	}
-	head := fmt.Sprint(it.checks, "\x00", int(it.severity), "\x00", it.stale, "\x00")
+	head := fmt.Sprint(it.checks, "\x00", int(it.severity), "\x00", it.stale, "\x00", it.device, "\x00")
 	if subject == it.subject {
 		return head + "same\x00" + it.subject, true
 	}
@@ -165,7 +174,8 @@ func blipLines(cfg *config.Config, hs []store.HistoryEntry) []string {
 	var out []string
 	for _, g := range mergeLines(cfg, historyItems(hs)) {
 		h := hs[g.first]
-		out = append(out, historyLine(h, true)+g.suffix()+fmt.Sprintf(" (%s–%s)", h.OpenedAt.In(loc).Format("15:04"), h.ResolvedAt.In(loc).Format("15:04")))
+		from, to := zoned(h.OpenedAt.In(loc).Format("15:04"), h.OpenedAt, h.ResolvedAt.In(loc).Format("15:04"), h.ResolvedAt, loc)
+		out = append(out, historyLine(h, true)+g.suffix()+" ("+from+"–"+to+")")
 	}
 	return out
 }
@@ -201,7 +211,7 @@ const resolveAfterGap = 5 * time.Minute
 // 21:10–21:17". When the fault ended while syncwatch did not run, the end
 // is not known: "the fault started at 21:00 and was resolved while
 // syncwatch did not run, 21:04–21:24". A fault that syncwatch saw open
-// after its start did not end in that time (W-038): its LastSeen is after
+// after its start did not end in that time: its LastSeen is after
 // the end of the gap.
 func lasted(cfg *config.Config, r *store.Record, gaps []store.Gap) string {
 	loc := cfg.Location()
@@ -215,9 +225,11 @@ func lasted(cfg *config.Config, r *store.Record, gaps []store.Gap) string {
 }
 
 // span writes a time range in loc: "21:10–21:17", or with the date of the
-// start when it is on another day: "2026-10-06 21:10–08:17".
+// start when it is on another day: "2026-10-06 21:10–08:17", and with the
+// zones in the night of a clock change: "02:15 CEST–02:15 CET".
 func span(from, to time.Time, loc *time.Location) string {
-	return clockOn(from, to, loc) + "–" + to.In(loc).Format("15:04")
+	a, b := zoned(clockOn(from, to, loc), from, to.In(loc).Format("15:04"), to, loc)
+	return a + "–" + b
 }
 
 // adviceKeys are the detail keys of advice (the rules put advice only

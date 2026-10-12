@@ -184,7 +184,7 @@ func TestOverlapAndShareRoot(t *testing.T) {
 	fs := run(t, c, akka)
 	s2 := mustFind(t, fs, "S2", "AKKA-LIVE-2PROJECTFILES on AKKA")
 	mustFind(t, fs, "S1", "LIVE-P sub inside LIVE-P")
-	// r2 (W-046): the folders inside the share-root folder are rows of S2.
+	// r2: the folders inside the share-root folder are rows of S2.
 	mustNot(t, fs, "S1", "inside whole share")
 	if !strings.Contains(s2.Message, "It contains 2 other Syncthing folders") {
 		t.Fatalf("S2: %s", s2.Message)
@@ -577,7 +577,7 @@ func TestInactiveProjectBasis(t *testing.T) {
 	fs := run(t, c, akka)
 	mustNot(t, fs, "C1", "LIVE-EDITED")
 	l := mustFind(t, fs, "C1", "LIVE-LOCAL")
-	// r2 (W-021, W-038): Since is zero; the time without a change is in the message.
+	// r2: Since is zero; the time without a change is in the message.
 	if !strings.Contains(l.Message, "200 days") || !strings.Contains(l.Message, "local change") || !l.Since.IsZero() {
 		t.Fatalf("local: %s", l.Message)
 	}

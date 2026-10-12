@@ -14,7 +14,8 @@ import (
 // A gate answers 502 when Syncthing is unreachable or refused the gate's
 // API key, and 429 when this client has too many parallel requests. Such an
 // answer on a per-folder request is the server's problem, not the folder's
-// (integration of r1-1 and r1-2). Syncthing's own 5xx stays with the folder.
+// (the client and the collector together). Syncthing's own 5xx stays with
+// the folder.
 func TestGateFailureIsServerLevel(t *testing.T) {
 	cases := []struct {
 		name string

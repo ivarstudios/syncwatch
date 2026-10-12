@@ -1,11 +1,12 @@
 # What the review of October 2026 changed
 
-This is the plain-language list of the changes from the review of October 2026. The review had 3 rounds, and the branch `review/sim-2026-10` has the changes of all rounds. This list tells what you will see and what you must do after the update. The technical reports are in [docs/changes/](changes/), with one file for each branch.
+This is the plain-language list of the changes from the review of October 2026. The review had 3 rounds and a check before the test release. This list tells what you will see and what you must do after the update.
 
 - [What you must do after the update](#what-you-must-do-after-the-update)
-- [First round (r0)](#first-round-r0): 13 branches, `sim/r0-a` to `sim/r0-s`, and the text rewrite (`ste/text`, `ste/docs`)
-- [Second round (r1)](#second-round-r1): 8 branches, `sim/r1-1` to `sim/r1-8`
-- [Third round (r2)](#third-round-r2): a foundation branch, 8 branches and a repair branch, `sim/r2-0` to `sim/r2-repair-2`
+- [First round (r0)](#first-round-r0): the corrections of the code review and the security checks, and the text rewrite
+- [Second round (r1)](#second-round-r1): the corrections after the tests in a simulated installation
+- [Third round (r2)](#third-round-r2): the decisions of the team
+- [Before the test release](#before-the-test-release): the corrections of a last review, and the decisions of the team about the structure scan
 - [Integrations: changes to /api/v1 after 78ef2d8](#integrations-changes-to-apiv1-after-78ef2d8)
 
 ## What you must do after the update
@@ -22,17 +23,23 @@ These items apply to an update from the version `78ef2d8` (before the review).
 8. **Integrations:** read [Integrations: changes to /api/v1 after 78ef2d8](#integrations-changes-to-apiv1-after-78ef2d8) at the end of this file. Scripts must use the stable values (`check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`), not the health line or the finding messages.
 9. **Findings on Linux servers:** the IDs of S3 to S7 findings keep the case of the path now. After the update, such findings resolve and open again one time (one resolved message and one urgent message for S3). Snoozes and ignores on the old IDs do not apply to the new IDs.
 10. **Watcher errors:** an open H4 finding with only a file watcher error resolves at the update. It opens again as a WARNING after 1 hour.
-11. **Reverse proxy (r1):** if you use nginx, use `proxy_set_header Host $http_host;`. With `$host`, nginx removes the port, and the login and each save fail with "cross-origin request refused".
-12. **Gate and API key (r1):** the gate reads the Syncthing API key only at the start. After a change of the API key in Syncthing, restart the gate. Until then, the gate answers `502`, and H1 shows the instruction.
-13. **Gate image (r2):** update the gate on each NAS together with syncwatch, to the same version. The new gate permits the request for the files that a PC still needs (H5). An older gate refuses it: then H5 shows no file names, and the log of syncwatch tells it.
-14. **Login over HTTPS (r2):** log in again after the update. Over HTTPS, the cookies have new names, and syncwatch does not read the cookies of the older version. A lobby screen with the viewer password also needs one login.
-15. **Reverse proxy with HTTPS (r2):** set `SYNCWATCH_TRUSTED_PROXIES` to the address of the proxy, for example `172.18.0.2`. Without it, syncwatch ignores `X-Forwarded-Proto`. The login works, but the cookies have no `Secure` flag.
-16. **Scripts and open access (r2):** with open access, a request to `/api/v1/status` or `/api/v1/ha` without an API token gets `401` now. Make an API token in Settings → API for each script.
-17. **Home Assistant (r1 and r2):** compare your configuration with [examples/home-assistant.yaml](../examples/home-assistant.yaml). Change each template and automation that compares the status with `up to date`, `watch error` or `unknown`. The new values are `up_to_date`, `watch_error`, `unreachable`, `certificate_changed` and `not_contacted`. The status `error` now needs an open H4 finding, thus an automation on `error` starts later. Each entity has an `availability` template (r1). Thus a missing server or a refused API token shows as not available.
-18. **Imports from a script (r2):** `POST /settings/import` has 2 steps now: a preview, then the import of the previewed file. For an import from the command line, use `syncwatch import-config`.
-19. **Health check (r2):** `/healthz` and the healthcheck of the image now fail when notifications fail for more than 15 minutes. An outside check of `/healthz` then reports it. To change the 15 minutes, set `SYNCWATCH_HEALTH_NOTIFY_LIMIT`.
+11. **Findings that this version joins:** one cause now gives one finding (see the third round). At the update, the open findings below close, but the faults continue in other findings. Tell the persons who read the Discord channel before the update.
+    - An S1 finding for a Syncthing folder inside a share root closes without a resolved message. The S2 finding of the share root stays open and lists the folder. While S2 is snoozed or ignored, the S1 finding stays open.
+    - When a full disk of the Syncthing database stopped the folders of a server, the H4 finding of each folder resolves with a resolved message. Then 1 urgent H4 finding `Syncthing database on <server>` opens for the server. Its urgent message and the resolved message come at approximately the same time.
+12. **Reverse proxy (r1):** if you use nginx, use `proxy_set_header Host $http_host;`. With `$host`, nginx removes the port, and the login and each save fail with "cross-origin request refused".
+13. **Gate and API key (r1):** the gate reads the Syncthing API key only at the start. After a change of the API key in Syncthing, restart the gate. Until then, the gate answers `502`, and H1 shows the instruction.
+14. **Gate image (r2):** update the gate on each NAS together with syncwatch, to the same version. The new gate permits the request for the files that a PC still needs (H5). An older gate refuses it: then H5 shows no file names, and the log of syncwatch tells it.
+15. **Login over HTTPS (r2):** log in again after the update. Over HTTPS, the cookies have new names, and syncwatch does not read the cookies of the older version. A lobby screen with the viewer password also needs one login.
+16. **Reverse proxy with HTTPS (r2):** set `SYNCWATCH_TRUSTED_PROXIES` to the address of the proxy, for example `172.18.0.2`. Without it, syncwatch ignores `X-Forwarded-Proto`. The login works, but the cookies have no `Secure` flag.
+17. **Scripts and open access (r2):** with open access, a request to `/api/v1/status` or `/api/v1/ha` without an API token gets `401` now. Make an API token in Settings → API for each script.
+18. **Home Assistant (r1 and r2):** compare your configuration with [examples/home-assistant.yaml](../examples/home-assistant.yaml). Change each template and automation that compares the status with `up to date`, `watch error` or `unknown`. The new values are `up_to_date`, `watch_error`, `unreachable`, `certificate_changed` and `not_contacted`. The status `error` now needs an open H4 finding, thus an automation on `error` starts later. Each entity has an `availability` template (r1). Thus a missing server or a refused API token shows as not available.
+19. **Imports from a script (r2):** `POST /settings/import` has 2 steps now: a preview, then the import of the previewed file. For an import from the command line, use `syncwatch import-config`.
+20. **Health check (r2):** `/healthz` and the healthcheck of the image now fail when notifications fail for more than 15 minutes. An outside check of `/healthz` then reports it. To change the 15 minutes, set `SYNCWATCH_HEALTH_NOTIFY_LIMIT`.
+21. **Viewer password:** if the viewer password and the administrator password are the same, change one of them in Settings → Access. syncwatch cannot find this case, because it keeps only hashes of the passwords. With the same password, each person with the viewer password gets an administrator session.
+22. **Helper folders:** if a share has helper folders such as `_archive` or `_templates`, add `'_*'` to `ignore_dirs` in Settings → Structure, as in [examples/ivar.yaml](../examples/ivar.yaml). Their S4 and S6 findings resolve when you save the structure rules.
+23. **S7 on again:** the README of the older version had `S7: { enabled: false }` in its example settings. If you copied it, set S7 to on in Settings → Checks. S7 reports a new project folder that a person did not add to Syncthing.
 
-**Good to know before a downgrade.** An older version opens the database of this version. But it does not know the API tokens of this version: make a new API token in it. An older version also refuses to import an export of this version, because of the new keys (for example `thresholds.relay_lost`).
+**Good to know before a downgrade.** An older version opens the database of this version. But it does not know the API tokens of this version: make a new API token in it. At the next update, the API token that you made in the older version is the API token "API token" of this version. The value from before the downgrade then gets `401`. An older version also refuses to import an export of this version, because of the new keys (for example `thresholds.relay_lost`).
 
 ### Recommended after the update
 
@@ -42,6 +49,7 @@ These items apply to an update from the version `78ef2d8` (before the review).
 - Add an outside check: set `SYNCWATCH_DEADMAN_URL` for a monitor service, or check `/healthz` from a different computer.
 - If necessary, add a second Discord webhook only for settings notices (Settings → Notifications).
 - Use `nested_scan_depth: 6` in the structure rules of IVAR Studios, as in [examples/ivar.yaml](../examples/ivar.yaml).
+- Log in to a lobby screen with the viewer password. An administrator session ends after 30 days at most.
 
 ## First round (r0)
 
@@ -156,13 +164,11 @@ These items apply to an update from the version `78ef2d8` (before the review).
 
 ### Documentation
 
-- The README, plan.md, the examples and the comments in the Dockerfile and the workflows follow the STE style guide of the review.
+- The README, plan.md, the examples and the comments in the Dockerfile and the workflows follow ASD-STE100 (Simplified Technical English).
 - The check titles, the page names and the labels are the names of the product text rewrite. Examples are Findings page, administrator, urgent message, settings notice, full check, structure scan and pinned certificate.
 - The severities are ERROR, WARNING and INFO.
 
 ## Second round (r1)
-
-The second round has 8 branches (`sim/r1-1` to `sim/r1-8`). The technical reports are in [docs/changes/](changes/) (`r1-*.md`).
 
 ### Findings
 
@@ -206,7 +212,7 @@ The second round has 8 branches (`sim/r1-1` to `sim/r1-8`). The technical report
 
 ## Third round (r2)
 
-The third round has a foundation branch and 8 branches (`sim/r2-0` to `sim/r2-8`). A repair branch (`sim/r2-repair-2`) corrected 2 small faults that the live check found. The team agreed each change on the decision cards of the review report. The technical reports are in [docs/changes/](changes/) (`r2-*.md`).
+The team agreed each change of the third round. After the live check, a repair corrected 2 small faults (see [Repairs after the live check](#repairs-after-the-live-check)).
 
 ### Sites and connections
 
@@ -286,6 +292,87 @@ The third round has a foundation branch and 8 branches (`sim/r2-0` to `sim/r2-8`
 - A resolved message after a restart of syncwatch gives the correct end of the fault.
 - The speed of H5 is steady. A PC that does not receive data gets no time left.
 
+## Before the test release
+
+A last review before the test release found more faults. This version corrects all of them. Each item tells the fault and what changed. An item that needs an action after the update tells it. The team also made decisions about the structure scan (see [Structure scan and helper folders](#structure-scan-and-helper-folders)).
+
+### Login and sessions
+
+- **Viewer password.** Before, syncwatch accepted the same password as the viewer password and as the administrator password. Then each login with the viewer password gave an administrator session. Now syncwatch refuses the same password in Settings → Access and in "Change administrator password". It also refuses it on the first start, in `reset-admin-password` and in `SYNCWATCH_ADMIN_PASSWORD`. A new viewer password now always needs the administrator password. After the update, do item 21 of [What you must do after the update](#what-you-must-do-after-the-update).
+- **Login limit.** Before, after 30 failures from all addresses in 10 minutes, each try waited up to 5 seconds. But the tries from different addresses waited at the same time. Thus a device with 250 addresses on the LAN made 1000 guesses in approximately 10 seconds. Now, after 30 failures from all addresses in 10 minutes, each address can have only 1 failure in 10 minutes. An address without a failure, for example the address of the administrator, can still log in. The password confirmations of each session have the same limit.
+- **Administrator sessions.** Before, `access.session_ttl` applied to each session. The README tells you to set 365 days for a lobby screen. Then an administrator session on a shared PC also lasted 365 days. Now an administrator session ends after 30 days at most, also with a longer `access.session_ttl`. A viewer session keeps `access.session_ttl`. After the update, an administrator session that is older than 30 days ends. Log in again.
+- **Administrator login in a browser with a viewer session.** Before, an administrator page in such a browser showed the error page "Not permitted", and the login page sent the browser back to it. The only way was to log out the lobby screen. Now the administrator page shows the login form with the message "This page needs the administrator password." After the administrator login, the browser shows the page. With open access and no administrator password, an administrator page now opens the First start page.
+
+### API tokens
+
+- **Last use of an API token.** Before, a request with the old value during a replace sometimes gave the new value a time in "Last used". Now "Last used" in Settings → API is only the time of a request with the current value.
+- **API token after a downgrade.** Before, syncwatch moved the API token of an older version only 1 time. After an update, a downgrade and a new API token in the older version, the next update refused that new API token. The value from before the downgrade worked again. Now syncwatch moves the API token of an older version at each start. The new value replaces the value of the API token "API token", and the value from before the downgrade gets `401`. The log of the start tells what syncwatch did with the API token of the older version.
+- **A refused API token of an older version.** Before, Settings → API showed such an API token as refused. When an administrator revoked all API tokens and syncwatch started again, the refused value became an API token with the scope Full. Now a refused value stays refused until you select **Revoke old API token**. syncwatch refuses the value of an older version only when there are 5 API tokens and none has the name "API token". The log then has a warning.
+- **Imported API token.** Before, a bootstrap file, `import-config` and an import in the dashboard accepted each `api.token`, also `x`. The value became an API token with the scope Full. The API has no limit for the tries of API tokens, thus a short value was easy to guess. Now the value must have at least 10 characters and no spaces or control characters. syncwatch removes spaces at the ends. The import preview and the settings notice give the scope of the API token "API token". After the update, if a file for an import has a shorter `api.token`, remove the key from the file. Then make an API token in Settings → API.
+
+### Settings and import
+
+- **Sites.** Before, syncwatch compared the site names exactly. "IVAR Office" with a no-break space, or "IVAR office", was a second site. Then H1 named "the VPN between IVAR Office and IVAR Office", and the Overview showed 2 sites. Now syncwatch makes each group of spaces in a site name one space. Names that differ only in capital letters are one site, and syncwatch uses one form of the name. syncwatch refuses invisible characters. After the update, syncwatch uses the first form of each name: first the site of syncwatch, then the sites of the servers in their order. To use a different form, type it in Settings → Servers.
+- **Import on the command line in proxy mode.** Before, `syncwatch import-config` accepted a file without an `access:` section in proxy mode without an administrator password. Such a file sets built-in login to on. Then each page asked for a setup token, but syncwatch did not log one. Now the command refuses such a file, and the message tells the 2 ways out. Add `access: {mode: proxy}` to the file, or first set an administrator password with `syncwatch reset-admin-password`.
+- **Direction characters in the import preview and the notification log.** Before, the import preview and the table "Recent notifications" showed the names with their direction characters. A PC name with U+202E then showed the rest of the line in reverse. Now these pages show the character as `‹U+202E›`, as the other pages do.
+
+### Notifications
+
+- **Names in settings notices.** Before, syncwatch did not escape the names from Syncthing in settings notices. A PC sets its own device name. Thus a device name put an extra line, a link or bold text into a settings notice, for example "Devices changed". Folder labels and error texts in the settings notice about a snoozed urgent finding did the same. Now syncwatch escapes each line of a settings notice for Discord. A URL in a settings notice is not a link.
+- **2 PCs with the same name.** Before, 2 PCs with the same name shared 1 line in the messages. The state and the link of the second PC were not in the message. Now each PC has its own line. The list "New this week" of the weekly report still has 1 line for both PCs, because the history does not keep the device ID.
+- **End of a notification failure.** Before, only a message that Discord accepted ended the state "notifications fail". When no message was due, the state stayed. Examples are a failed test message and a failure immediately before the quiet hours. Then `/healthz` answered 503 and the dead-man URL stopped until the next message, for up to 7 days. Now, while notifications fail, syncwatch also checks the webhook without a message (a `GET` of the webhook URL), also in the quiet hours. When Discord answers, the failure ends.
+- **Notification failure and a restart.** Before, syncwatch kept the state "notifications fail" only in memory. After each restart, `/healthz` answered `ok`, and syncwatch called the dead-man URL again for 15 minutes. Thus an automatic restart of the container hid the failure from the monitor service. Now syncwatch stores the start of the failure. After a restart, the banner, `/api/v1/ha` and `/healthz` continue from that start. The section "Opened and resolved while the notifications failed" also comes after a restart.
+- **Settings notices about security behind an older settings notice.** Before, an older settings notice that waited for the webhook for settings notices stopped the settings notices about security behind it. A settings notice about security then came approximately 24 hours later, not after 1 hour to the first webhook. Now each settings notice about security goes to the first webhook 1 hour after the webhook for settings notices started to fail.
+- **Repeat of urgent messages.** Before, each finding had its own repeat time. Thus 2 urgent findings that opened at different times gave 2 mentions of the role in each interval. Now a repeat names all urgent findings that syncwatch announced more than half an interval before. Thus the role gets 1 mention in each interval.
+- **Settings notice about security and a stop.** Before, syncwatch stored a settings notice about security only after its first send failed. When syncwatch stopped during the first send, no channel got the settings notice. Now syncwatch stores it before the first send, and it arrives after the restart. If Discord accepted the first send before the stop, the channel gets the settings notice 2 times.
+- **Clock change.** Before, the messages gave clock times without the zone. In the night of a clock change, a time of 60 minutes read "from 02:30 to 02:30". Now, when the 2 times of a range have different UTC offsets, each time has its zone, for example "from 02:30 CEST to 02:30 CET".
+
+### Time when syncwatch did not run
+
+- **Restart loop.** Before, a start that failed, for example because of a TLS file that is missing, also wrote a heartbeat. After a restart loop of Docker, the next message gave only the first minutes of the time when syncwatch did not run, or no time. Now syncwatch writes the first heartbeat only after it opens its listen address. The next message gives the full time, from the last heartbeat to the start that works.
+- **A clock that is behind at the start.** A host without a battery clock can start syncwatch before NTP sets the clock. Before, syncwatch then recorded no time when it did not run. Now syncwatch checks the clock every second in the first 10 minutes after the start. When the clock moves forward by more than the time after the start, syncwatch records the correct time, and the next message gives it.
+
+### Findings
+
+- **Needed files of H5.** Before, the row "Needed files" also listed the files that the PC must delete. Syncthing does not count these files in the remaining items. Thus the row had up to 20 such files and no needed file. Now the row shows only the files that the device needs, and it agrees with "Remaining items". syncwatch reads the first 100 entries of the list.
+- **Hidden characters in file names.** Some file names have a space at the start or the end, or a control character. Before, H5 "Needed files" and the failed items of H4 did not show these characters. Windows frequently refuses such names. Now these names show in quotes, for example `"brief "`. This also applies to `/api/v1/status`.
+- **H1 in polled mode.** Before, the H1 row "What AKKA sees" sometimes used data of AKKA from before the failure. The row then told that the server SOL runs while SOL was off. Now, in polled mode, the row uses only a full check of the other server 10 minutes or more after the first failed request. Thus the row shows 10 to 25 minutes after the first failure.
+- **H12 for a paused device.** Before, H12 opened for a device that always connects through a relay when each server paused it. Now that device gets no H12. H6 reports the pause.
+- **Absence findings after a start.** Before, a PC with a connection only to the slower server got an H7 or H12 for some seconds at each start of syncwatch. Now H7, C2 and H12 for a device wait until each server finished its first full check after the start. While syncwatch cannot reach a server from the start, no new H7, C2 or H12 opens.
+- **S1 while S2 is hidden.** In this version, S2 lists the Syncthing folders inside a share root, and these folders get no S1. Before, a snoozed or ignored S2 thus hid these folders, also new folders. When S2 was not urgent and S1 was urgent, these folders got no urgent message. Now, in these cases, each Syncthing folder inside the share root gets its S1 with an urgent message. When S2 lists the folders again, their S1 findings close without a resolved message.
+
+### Gate and collector
+
+- **Relay pool password in H12.** Before, the detail "Relay" of H12 showed the address of a private relay pool with its user name and password. Viewers and the API saw it. Now the detail shows the address without the user name and the password.
+- **2 certificates for one server URL.** Before, 2 front ends with their own CA-signed certificate for the same server URL gave a settings notice for each new connection. During a Discord outage, these settings notices filled the list of kept settings notices. Now syncwatch sends a settings notice only for a certificate that it did not pin in the last 24 hours.
+- **Needed files through the gate.** Before, the gate permitted 1000 pages of `/rest/db/remoteneed`, also for a device that does not share the folder. For such a device, Syncthing answers with all files of the folder. Now the gate permits only page 1, with at most 100 entries, and only for a device that shares the folder. Update the gate on each NAS (item 14 of [What you must do after the update](#what-you-must-do-after-the-update)).
+- **Event long-polls through the gate.** Before, the gate sent a long-poll without the event mask of the collector to Syncthing. Syncthing then sent events that syncwatch does not ask for, for example the login tries on the GUI. Now the gate refuses such a long-poll with `400`.
+- **Gate of the version 78ef2d8.** Before, syncwatch did not recognize the refusal of the gate of `78ef2d8` for the needed files of H5. syncwatch asked again at each full check, and the log had no line about it. Now the log has 1 line for each connection to the server, as item 14 tells.
+
+### Structure scan and helper folders
+
+The team decided on these changes for the test release.
+
+- Each structure finding shows the time of the last structure scan that listed its share, for example "last scan 09:05 (3 minutes ago)". The Overview tile of the server shows the same time. All users see it.
+- When syncwatch cannot list a share, its findings show the time of the last listing of the share and the error.
+- An administrator can select **Scan now** on a structure finding or in Settings → Structure. syncwatch then scans the shares of the server immediately. A corrected mistake resolves immediately, and not up to 1 hour later.
+- syncwatch makes 1 scan of a server at a time, and an administrator can start 1 scan of a server in 30 seconds. The scan only reads, the same as the timed scan.
+- The example settings of IVAR Studios ([examples/ivar.yaml](../examples/ivar.yaml)) skip helper folders such as `_archive` and `_templates`. The default list of syncwatch does not change. See item 22 of [What you must do after the update](#what-you-must-do-after-the-update).
+- The example settings in the README keep S7 (Not in Syncthing) on. S7 reports a new project folder that a person did not add to Syncthing. See item 23.
+- `/api/v1/status` has the new key `servers[].last_structure_scan` (item 27 of the integrations list).
+
+### Release and build
+
+- The `linux/arm64` image contains the program for arm64. Before, the `Dockerfile` put the amd64 program into the arm64 image, and that image cannot start on an ARM NAS. The `linux/amd64` image and a plain `docker build` do not change.
+- Before the release workflow makes the image available, it checks that the image of each platform contains the program for that platform.
+- The image of the release workflow has provenance, a record of the build. The image index then has 1 more entry for each platform, with the platform `unknown/unknown`. The test release shows how the container interfaces of NAS products show these entries.
+- A test of the notifier failed on each Monday, because it used the clock of the computer. It stopped the test job of CI and of the release workflow. The test now uses 4 times of the week that do not change.
+
+### Documentation
+
+- The README example for Home Assistant on the same Docker network is `https://syncwatch:8080` with `verify_ssl: false`. The example `http://syncwatch:8080` gets the answer HTTP 400 from the image, because the image serves HTTPS.
+- The README and this list tell which open findings resolve one time after the update (item 11 of [What you must do after the update](#what-you-must-do-after-the-update)).
+
 ## Integrations: changes to /api/v1 after 78ef2d8
 
 This list is for scripts, Home Assistant and other programs that read `GET /api/v1/status` or `GET /api/v1/ha`. `78ef2d8` is the version before the review. Use the stable values: `check`, `id`, `severity`, `details[].key`, the keys of `counts` and `health_counts`, and the status values. The texts for persons (the health line, `findings[].message`) can change in each version. The README has the [field reference](../README.md#field-reference) of both answers.
@@ -327,12 +414,19 @@ Changes of the second round (r1):
 
 Changes of the third round (r2):
 
-18. **Access (W-048).** Without an API token, only a logged-in session (administrator or viewer) or proxy mode reads the API. With open access, a request without an API token gets `401 {"error":"token required"}` on both addresses.
-19. **API tokens (W-053).** There are up to 5 named API tokens with the scope `ha` (only `/api/v1/ha`) or `full` (both addresses). An `ha` API token gets `403 {"error":"the API token permits only /api/v1/ha"}` from `/api/v1/status`, with `WWW-Authenticate: Bearer realm="syncwatch", error="insufficient_scope", scope="full"`. The API token of the older version is now the API token "API token" with the scope `full`.
-20. **Times (W-049).** Each time is UTC without fractions of a second, for example `2026-10-11T15:29:17Z`. Before, `servers[].last_contact` and `devices[].last_seen` had the local offset and fractions of a second. A time that syncwatch does not know is `null`, and the key is always in the answer. Before, the keys `last_contact`, `cert_expires`, `last_seen` and `notifications.since` were not in the answer when the time was not known.
-21. **Status values of Home Assistant (W-049).** `up to date` is now `up_to_date`, and `watch error` is now `watch_error`. `unknown` is now `unreachable` (the server is down), `certificate_changed` (a changed certificate) or `not_contacted` (no full check after the start). These values do not change: `syncing`, `scanning`, `error`, `paused`, `disabled`.
-22. **Status `error` of Home Assistant (W-054).** The status is `error` only while an H4 finding with the severity ERROR is open for the server, snoozed or not. For failed items without H4, the status is `syncing`. `folders_error` does not change.
+18. **Access.** Without an API token, only a logged-in session (administrator or viewer) or proxy mode reads the API. With open access, a request without an API token gets `401 {"error":"token required"}` on both addresses.
+19. **API tokens.** There are up to 5 named API tokens with the scope `ha` (only `/api/v1/ha`) or `full` (both addresses). An `ha` API token gets `403 {"error":"the API token permits only /api/v1/ha"}` from `/api/v1/status`, with `WWW-Authenticate: Bearer realm="syncwatch", error="insufficient_scope", scope="full"`. The API token of the older version is now the API token "API token" with the scope `full`.
+20. **Times.** Each time is UTC without fractions of a second, for example `2026-10-11T15:29:17Z`. Before, `servers[].last_contact` and `devices[].last_seen` had the local offset and fractions of a second. A time that syncwatch does not know is `null`, and the key is always in the answer. Before, the keys `last_contact`, `cert_expires`, `last_seen` and `notifications.since` were not in the answer when the time was not known.
+21. **Status values of Home Assistant.** `up to date` is now `up_to_date`, and `watch error` is now `watch_error`. `unknown` is now `unreachable` (the server is down), `certificate_changed` (a changed certificate) or `not_contacted` (no full check after the start). These values do not change: `syncing`, `scanning`, `error`, `paused`, `disabled`.
+22. **Status `error` of Home Assistant.** The status is `error` only while an H4 finding with the severity ERROR is open for the server, snoozed or not. For failed items without H4, the status is `syncing`. `folders_error` does not change.
 23. **New in /api/v1/status:** `servers[].site`, `notifications.next_try`, `findings[].snooze_until`, `findings[].snooze_reason`, `links[]` and `site_links[]`. `servers[]` and `devices[]` are `[]` when they are empty (before: `null`).
-24. **New in /api/v1/ha (W-052, W-057):** at the top `findings_open`, `findings_urgent`, `findings_error`, `findings_warn`, `findings_info`, `notifications_failing`, `notifications_failing_since`, `links` and `site_links`. For each server: `site`, `last_contact`, `findings_open` and `findings_urgent`.
+24. **New in /api/v1/ha:** at the top `findings_open`, `findings_urgent`, `findings_error`, `findings_warn`, `findings_info`, `notifications_failing`, `notifications_failing_since`, `links` and `site_links`. For each server: `site`, `last_contact`, `findings_open` and `findings_urgent`.
 25. **`findings[].since`** is `null` for C1 and H13. The age of these findings counts from `opened_at`. The C1 message gives the time of the last change. Before, `since` of C1 was the time of the last change.
-26. **Findings in the answer.** `findings[].check` has the new values `H12` and `H13`. A share root that is a Syncthing folder gives 1 S2 finding with a row `Syncthing folder inside` for each folder in it. These folders get no S1. A full disk of the Syncthing database gives 1 H4 finding for the server (subject "Syncthing database on SOL") and no H4 for each folder. A device that always connects through a relay gets no H11. The new detail keys are in the README (field reference). The keys of 78ef2d8 do not change.
+26. **Findings in the answer.** `findings[].check` has the new values `H12` and `H13`. A share root that is a Syncthing folder gives 1 S2 finding with a row `Syncthing folder inside` for each folder in it. These folders get no S1 while S2 is not snoozed or ignored. A full disk of the Syncthing database gives 1 H4 finding for the server (subject "Syncthing database on SOL") and no H4 for each folder. A device that always connects through a relay gets no H11. The new detail keys are in the README (field reference). The keys of 78ef2d8 do not change.
+
+Changes before the test release:
+
+27. **`servers[].last_structure_scan`** (new) is the end of the last structure scan that listed at least 1 share of the server, in UTC. A scan that lists none of the shares does not change it. It is `null` before the first scan after a start of syncwatch, and for a disabled server.
+28. **File names in quotes.** Some file names have a space at the start or the end, or a control character. The detail `Needed files` of H5 and `findings[].paths[]` of H4 show these names as quoted strings. An example is `"brief "`. Other file names do not change.
+29. **S1 inside a share root.** S2 can be snoozed or ignored, or not urgent while S1 is urgent. Then each Syncthing folder inside the share root has an S1 finding again.
+30. **`Relay` of H12.** The detail `Relay` of a relay listener has the address without a user name and a password.

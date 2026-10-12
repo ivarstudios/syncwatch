@@ -94,3 +94,30 @@ func TestGaps(t *testing.T) {
 		t.Fatalf("%d gaps, first %v, last %v", len(got), got[0].From, got[len(got)-1].From)
 	}
 }
+
+// A gap from the same heartbeat replaces the gap that was recorded before:
+// its end was corrected (a clock that was behind at the start). A message
+// did not name the corrected gap yet.
+func TestGapFromTheSameHeartbeatReplaces(t *testing.T) {
+	s := testStore(t)
+	friday := time.Date(2026, 10, 9, 18, 0, 0, 0, time.UTC)
+	older := Gap{From: friday.Add(-48 * time.Hour), To: friday.Add(-47 * time.Hour)}
+	short := Gap{From: friday, To: friday.Add(3 * time.Minute)}
+	for _, g := range []Gap{older, short} {
+		if err := s.AddGap(g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkGapsReported(short.To); err != nil {
+		t.Fatal(err)
+	}
+	full := Gap{From: friday, To: friday.Add(62 * time.Hour)}
+	if err := s.AddGap(full); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Gaps(time.Time{})
+	if err != nil || len(got) != 2 || !got[0].To.Equal(older.To) || !got[0].Reported ||
+		!got[1].From.Equal(full.From) || !got[1].To.Equal(full.To) || got[1].Reported {
+		t.Fatalf("gaps %+v %v", got, err)
+	}
+}

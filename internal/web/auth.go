@@ -110,6 +110,12 @@ func CheckPassword(pw, encoded string) bool {
 // MinPasswordLength for admin and viewer passwords.
 const MinPasswordLength = 10
 
+// maxAdminSession is the longest administrator session, also with a longer
+// access.session_ttl: a long session is for a lobby screen with the viewer
+// password. A browser on a shared PC that an administrator did not log out
+// is an administrator for at most this time.
+const maxAdminSession = 30 * 24 * time.Hour
+
 func checkNewPassword(pw string) error {
 	if len([]rune(pw)) < MinPasswordLength {
 		return fmt.Errorf("The password must have at least %d characters.", MinPasswordLength)
@@ -157,7 +163,10 @@ func (s *Server) resolve(r *http.Request) requestInfo {
 		return info
 	}
 	if c, err := r.Cookie(cookieName(info.HTTPS, sessionCookie)); err == nil && c.Value != "" {
-		if z, err := s.st.Session(hashToken(c.Value), s.now()); err == nil && z != nil {
+		// An administrator session ends after maxAdminSession, also a
+		// session that an older version made with a longer session_ttl.
+		now := s.now()
+		if z, err := s.st.Session(hashToken(c.Value), now); err == nil && z != nil && (z.Role != RoleAdmin || now.Sub(z.CreatedAt) < maxAdminSession) {
 			info.Role, info.Session = z.Role, z
 			// A session from before the CSRF token of the session (older
 			// version) uses the cookie, as before.
@@ -303,6 +312,9 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, role strin
 	tok, csrf := randomToken(32), randomToken(24)
 	now := s.now()
 	ttl := s.cfg.Get().Access.SessionTTL.D()
+	if role == RoleAdmin {
+		ttl = min(ttl, maxAdminSession)
+	}
 	if err := s.st.CreateSession(store.Session{TokenHash: hashToken(tok), Role: role, CSRF: csrf, CreatedAt: now, ExpiresAt: now.Add(ttl)}); err != nil {
 		return err
 	}
@@ -348,7 +360,8 @@ func clearCookies(w http.ResponseWriter, prefixed, secure bool, names ...string)
 
 // limiter rate-limits failed password attempts. Failures from one client IP
 // are capped hard. Failures from everywhere together only slow attempts down,
-// so nobody can lock the admin out by failing logins from a few addresses.
+// so nobody can lock the admin out by failing logins from a few addresses:
+// a delay for each attempt, and 1 attempt for each address (see limit).
 // Logins count by client address; a password that an administrator session
 // types to confirm a change counts by session (see confirmKey), so failed
 // logins at a shared address do not block the confirmations.
@@ -356,9 +369,10 @@ type limiter struct {
 	mu       sync.Mutex
 	perIP    map[string]*attempts
 	global   []time.Time
+	inflight int // attempts of all addresses still being checked
 	window   time.Duration
 	maxIP    int
-	slowAll  int           // failures from everywhere before attempts are slowed down
+	slowAll  int           // failures from everywhere before attempts are slowed down (for limit, with the attempts still being checked)
 	step     time.Duration // extra delay per failure above slowAll
 	maxDelay time.Duration
 }
@@ -393,24 +407,40 @@ func (l *limiter) check(ip string, now time.Time) (ok bool, delay time.Duration)
 	cut := now.Add(-l.window)
 	l.global = prune(l.global, cut)
 	a := l.attempts(ip)
+	limit := l.limit()
 	for role, ts := range a.failed {
 		if ts = prune(ts, cut); len(ts) == 0 {
 			delete(a.failed, role)
 			continue
 		}
 		a.failed[role] = ts
-		if len(ts)+a.inflight >= l.maxIP {
+		if len(ts)+a.inflight >= limit {
 			return false, 0
 		}
 	}
-	if a.inflight >= l.maxIP {
+	if a.inflight >= limit {
 		return false, 0
 	}
 	a.inflight++
+	l.inflight++
 	if over := len(l.global) - l.slowAll; over >= 0 {
 		delay = min(time.Duration(over+1)*l.step, l.maxDelay)
 	}
 	return true, delay
+}
+
+// limit returns how many failures and attempts still being checked an
+// address can have: maxIP, or 1 while the failures in the window and the
+// attempts still being checked from everywhere reach slowAll. Attempts from
+// many addresses wait their delays at the same time, thus only this lower
+// limit slows them down. The attempts still being checked count, because a
+// burst after a quiet window has no failures yet. An address without a
+// failure, for example the administrator's, still gets its attempt.
+func (l *limiter) limit() int {
+	if len(l.global)+l.inflight >= l.slowAll {
+		return 1
+	}
+	return l.maxIP
 }
 
 func (l *limiter) attempts(ip string) *attempts {
@@ -428,6 +458,7 @@ func (l *limiter) end(ip string, edit func(*attempts)) {
 	a := l.attempts(ip)
 	if a.inflight > 0 {
 		a.inflight--
+		l.inflight--
 	}
 	edit(a)
 	if a.inflight == 0 && len(a.failed) == 0 {
@@ -452,7 +483,8 @@ func (l *limiter) fail(ip string, now time.Time, roles ...string) bool {
 		l.global = l.global[len(l.global)-limit:]
 	}
 	if len(l.perIP) > 10000 {
-		l.perIP = map[string]*attempts{}
+		// The attempts of the forgotten addresses end without a count.
+		l.perIP, l.inflight = map[string]*attempts{}, 0
 	}
 	return len(l.global) == l.slowAll
 }
@@ -467,11 +499,13 @@ func (l *limiter) retryAfter(ip string, now time.Time) time.Duration {
 		return 0
 	}
 	cut := now.Add(-l.window)
+	l.global = prune(l.global, cut)
+	limit := l.limit()
 	var d time.Duration
 	for _, ts := range a.failed {
 		ts = prune(ts, cut)
-		// The failure at i must expire for len(ts)+inflight to drop below maxIP.
-		if i := len(ts) + a.inflight - l.maxIP; i >= 0 && i < len(ts) {
+		// The failure at i must expire for len(ts)+inflight to drop below the limit.
+		if i := len(ts) + a.inflight - limit; i >= 0 && i < len(ts) {
 			d = max(d, ts[i].Add(l.window).Sub(now))
 		}
 	}

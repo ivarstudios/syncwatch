@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,18 +38,20 @@ type fakeST struct {
 	requests map[string]int
 	paused   map[string]bool
 
-	dropEvents int    // close this many event long-polls without an answer
-	dropped    int    // event long-polls closed so far
-	startTime  string // overrides the fixture's startTime (a "restart")
-	inBytes    int64  // traffic totals since "start"
+	dropEvents int           // close this many event long-polls without an answer
+	dropped    int           // event long-polls closed so far
+	longPoll   time.Duration // how long an event long-poll waits for events; 0 is 2 seconds
+	startTime  string        // overrides the fixture's startTime (a "restart")
+	inBytes    int64         // traffic totals since "start"
 	outBytes   int64
 	conflicts  map[string]int // overrides the fixture's conflict counters
 
-	listeners  map[string]stclient.ListenerStatus // connectionServiceStatus in system/status; nil: none
-	need       map[string]int64                   // need items by "folder/device"; overrides the fixture's completion
-	needNames  []string                           // what /rest/db/remoteneed lists
-	needStatus int                                // when not 0, /rest/db/remoteneed answers this status with needBody
-	needBody   string
+	listeners   map[string]stclient.ListenerStatus // connectionServiceStatus in system/status; nil: none
+	need        map[string]int64                   // need items by "folder/device"; overrides the fixture's completion
+	needNames   []string                           // what /rest/db/remoteneed lists
+	needDeleted []string                           // what /rest/db/remoteneed lists as deleted, in the order of the names with needNames
+	needStatus  int                                // when not 0, /rest/db/remoteneed answers this status with needBody
+	needBody    string
 }
 
 func newFakeST(t *testing.T) *fakeST {
@@ -169,22 +172,26 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"completion":100,"remoteState":"unknown"}`))
 	case "/rest/db/remoteneed":
 		f.mu.Lock()
-		names, status, body := f.needNames, f.needStatus, f.needBody
+		names, deleted, status, body := f.needNames, f.needDeleted, f.needStatus, f.needBody
 		f.mu.Unlock()
 		if status != 0 {
 			http.Error(w, body, status)
 			return
 		}
-		if q.Get("page") != "1" || q.Get("perpage") != "20" || q.Get("folder") == "" || q.Get("device") == "" {
+		if q.Get("page") != "1" || q.Get("perpage") != "100" || q.Get("folder") == "" || q.Get("device") == "" {
 			f.t.Errorf("remoteneed query %q", r.URL.RawQuery)
 		}
-		rn := stclient.RemoteNeed{Page: 1, PerPage: 20, Files: []stclient.NeedFile{}}
-		for i, n := range names {
-			if i == 20 {
-				break
-			}
+		// Like Syncthing 2.1.5: the files and the deletions that the device
+		// did not do yet, in the order of the names, cut to the page.
+		rn := stclient.RemoteNeed{Page: 1, PerPage: 100, Files: []stclient.NeedFile{}}
+		for _, n := range names {
 			rn.Files = append(rn.Files, stclient.NeedFile{Name: n, Size: 10})
 		}
+		for _, n := range deleted {
+			rn.Files = append(rn.Files, stclient.NeedFile{Name: n, Deleted: true})
+		}
+		sort.Slice(rn.Files, func(i, j int) bool { return rn.Files[i].Name < rn.Files[j].Name })
+		rn.Files = rn.Files[:min(len(rn.Files), 100)]
 		_ = json.NewEncoder(w).Encode(rn)
 	case "/rest/folder/errors":
 		_, _ = w.Write([]byte(`{"errors":[{"path":"bad.txt","error":"permission denied"}]}`))
@@ -225,7 +232,13 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var since int64
 		fmt.Sscan(q.Get("since"), &since)
-		deadline := time.After(2 * time.Second)
+		f.mu.Lock()
+		wait := f.longPoll
+		f.mu.Unlock()
+		if wait == 0 {
+			wait = 2 * time.Second
+		}
+		deadline := time.After(wait)
 		for {
 			f.mu.Lock()
 			var out []stclient.Event

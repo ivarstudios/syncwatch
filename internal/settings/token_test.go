@@ -20,12 +20,12 @@ func fileWithToken(t *testing.T, token string) *config.Config {
 	return c
 }
 
-// W-053: the API token of a file (api.token) is the value of the API token
+// The API token of a file (api.token) is the value of the API token
 // named "API token". An import adds it with the scope full, or gives it the
 // new value and keeps its scope. The old value stops working.
 func TestImportAPIToken(t *testing.T) {
 	st := memStore(t)
-	n, err := ImportSecrets(st, fileWithToken(t, "swt_first"))
+	n, err := ImportSecrets(st, fileWithToken(t, "swt_first_value"))
 	if err != nil || n != 2 {
 		t.Fatalf("imported %d: %v", n, err)
 	}
@@ -36,7 +36,7 @@ func TestImportAPIToken(t *testing.T) {
 	if len(list) != 1 || list[0].Name != store.LegacyTokenName || list[0].Scope != store.ScopeFull {
 		t.Fatalf("API tokens after the first import: %+v", list)
 	}
-	if tok, _ := st.APITokenByValue("swt_first"); tok == nil || tok.ID != list[0].ID {
+	if tok, _ := st.APITokenByValue("swt_first_value"); tok == nil || tok.ID != list[0].ID {
 		t.Fatal("the imported value does not work")
 	}
 
@@ -45,7 +45,7 @@ func TestImportAPIToken(t *testing.T) {
 	if err := st.DeleteAPIToken(ha.ID); err != nil {
 		t.Fatal(err)
 	}
-	if ha, err = st.AddAPIToken("api TOKEN", store.ScopeHA, "swt_first", time.Now()); err != nil {
+	if ha, err = st.AddAPIToken("api TOKEN", store.ScopeHA, "swt_first_value", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.AddAPIToken("Scripts", store.ScopeFull, "swt_scripts", time.Now()); err != nil {
@@ -54,7 +54,7 @@ func TestImportAPIToken(t *testing.T) {
 	if n, err := ImportSecrets(st, fileWithToken(t, "swt_second")); err != nil || n != 2 {
 		t.Fatalf("second import %d: %v", n, err)
 	}
-	if tok, _ := st.APITokenByValue("swt_first"); tok != nil {
+	if tok, _ := st.APITokenByValue("swt_first_value"); tok != nil {
 		t.Fatal("the old value still works after the import")
 	}
 	tok, _ := st.APITokenByValue("swt_second")
@@ -84,7 +84,7 @@ func TestImportAPIToken(t *testing.T) {
 	}
 }
 
-// W-053: with 5 API tokens and none named "API token", an import with an API
+// With 5 API tokens and none named "API token", an import with an API
 // token is refused with a message that names the limit, and nothing of the
 // file is stored. With an API token named "API token" among the 5, the import
 // replaces its value.
@@ -95,7 +95,7 @@ func TestImportAPITokenLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c := fileWithToken(t, "swt_new")
+	c := fileWithToken(t, "swt_new_value")
 	n, err := ImportSecrets(st, c)
 	if err == nil || n != 0 || err.Error() != "There are 5 API tokens. syncwatch cannot add the API token of the file (api.token). Revoke an API token first." {
 		t.Fatalf("a sixth API token: %d %v", n, err)
@@ -103,7 +103,7 @@ func TestImportAPITokenLimit(t *testing.T) {
 	if st.HasSecret(store.SecretDiscordWebhook) {
 		t.Fatal("a refused import stored the webhook")
 	}
-	if tok, _ := st.APITokenByValue("swt_new"); tok != nil {
+	if tok, _ := st.APITokenByValue("swt_new_value"); tok != nil {
 		t.Fatal("a refused import stored the API token")
 	}
 
@@ -114,10 +114,10 @@ func TestImportAPITokenLimit(t *testing.T) {
 	if _, err := st.AddAPIToken(store.LegacyTokenName, store.ScopeFull, "swt_old", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := ImportSecrets(st, fileWithToken(t, "swt_new")); err != nil || n != 2 {
+	if n, err := ImportSecrets(st, fileWithToken(t, "swt_new_value")); err != nil || n != 2 {
 		t.Fatalf("5 API tokens with the API token named %q: %d %v", store.LegacyTokenName, n, err)
 	}
-	if tok, _ := st.APITokenByValue("swt_new"); tok == nil || tok.Name != store.LegacyTokenName {
+	if tok, _ := st.APITokenByValue("swt_new_value"); tok == nil || tok.Name != store.LegacyTokenName {
 		t.Fatalf("the value did not go to the API token %q: %+v", store.LegacyTokenName, tok)
 	}
 }

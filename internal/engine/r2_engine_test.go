@@ -65,7 +65,7 @@ func (r *rig) withConfig(t *testing.T, yaml string) {
 	r.restart(t)
 }
 
-// W-047: H12 for a device that always connects through a relay opens after
+// H12 for a device that always connects through a relay opens after
 // relay_lost without a connection. Like H7, it is judged only while every
 // server that has the device configured is reachable: no new H12 while one
 // is not, and an open H12 stays as it is (stale).
@@ -124,7 +124,7 @@ thresholds: {relay_lost: 2m}
 	}
 }
 
-// W-057: each evaluation sets the links between the servers and, with 2
+// Each evaluation sets the links between the servers and, with 2
 // sites, between the sites in the snapshot of the view.
 func TestEvaluateSetsLinks(t *testing.T) {
 	r := newRig(t)
@@ -164,7 +164,7 @@ servers: [{name: A, url: "https://a:1", site: IVAR Office}, {name: B, url: "http
 	}
 }
 
-// W-038: the record of a finding keeps the sentence of its resolved message
+// The record of a finding keeps the sentence of its resolved message
 // (the notifier reads it after the finding resolved), and a change of only
 // that sentence is a change of the record.
 func TestRecordKeepsResolvedText(t *testing.T) {
@@ -189,7 +189,7 @@ func TestRecordKeepsResolvedText(t *testing.T) {
 	}
 }
 
-// W-038 (live re-test of wave 3, P1): a resolved finding keeps in LastSeen
+// A resolved finding keeps in LastSeen
 // the time of the last evaluation that saw it open, not the time of the
 // resolution, also across a restart. The resolved message tells from it
 // whether the fault ended while syncwatch did not run.

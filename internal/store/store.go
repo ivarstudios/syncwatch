@@ -20,8 +20,9 @@ import (
 
 // Store is the SQLite database.
 type Store struct {
-	db  *sql.DB
-	key []byte // AES-256 key for secrets
+	db       *sql.DB
+	key      []byte       // AES-256 key for secrets
+	oldToken OldTokenMove // what Open did with the API token of an older version
 }
 
 const schemaVersion = 1
@@ -185,19 +186,16 @@ func (s *Store) migrate() error {
 }
 
 // migrateAPIToken moves the single API token of an older version (the secret
-// api.token) into api_tokens, as the token "API token" with the scope full,
-// in one transaction. It changes nothing when api_tokens has a row. A secret
-// that the secret key cannot decrypt stays where it is: Settings shows it.
+// api.token) into api_tokens in one transaction, at each Open: also after a
+// downgrade, when the older version made a new API token. moveOldAPIToken
+// has the rule. A secret that the secret key cannot decrypt stays where it
+// is: Settings shows it.
 func (s *Store) migrateAPIToken() error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	var n int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM api_tokens`).Scan(&n); err != nil || n > 0 {
-		return err
-	}
 	var nonce, ct []byte
 	var updated int64
 	err = tx.QueryRow(`SELECT nonce, ciphertext, updated_at FROM secrets WHERE name=?`, SecretAPIToken).Scan(&nonce, &ct, &updated)
@@ -211,19 +209,25 @@ func (s *Store) migrateAPIToken() error {
 	if err != nil || token == "" {
 		return nil
 	}
-	id, err := newTokenID(tx)
+	moved, res, err := moveOldAPIToken(tx, token, updated)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO api_tokens(id, name, scope, hash, created_at, last_used) VALUES(?,?,?,?,?,0)`,
-		id, LegacyTokenName, ScopeFull, HashAPIToken(token), updated); err != nil {
+	if moved {
+		if _, err := tx.Exec(`DELETE FROM secrets WHERE name=?`, SecretAPIToken); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM secrets WHERE name=?`, SecretAPIToken); err != nil {
-		return err
-	}
-	return tx.Commit()
+	s.oldToken = res
+	return nil
 }
+
+// OldAPITokenMove is what Open did with the single API token of an older
+// version. The serve command writes it in the log.
+func (s *Store) OldAPITokenMove() OldTokenMove { return s.oldToken }
 
 func ms(t time.Time) int64 {
 	if t.IsZero() {

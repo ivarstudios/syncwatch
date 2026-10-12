@@ -124,7 +124,7 @@ type Server struct {
 	Loaded            bool // at least one full re-check completed
 	LastFullCheck     time.Time
 	LastEvent         time.Time
-	LastStructureScan time.Time
+	LastStructureScan time.Time // the end of the last structure scan that listed a share (or found none); zero before the first one
 
 	Folders        map[string]*Folder     // by folder ID
 	Devices        map[string]*Device     // configured devices, including itself
@@ -166,7 +166,7 @@ const (
 
 // AddProgress records a progress sample of a folder for a device ("" for the
 // server's own copy). The newest sample always has the newest need, thus
-// the end of a change is not lost (W-059: a PC that received its files in
+// the end of a change is not lost (a PC that received its files in
 // 10 seconds and then stopped): a sample less than 1 minute after the
 // sample before the newest one replaces the newest one. A sample with the
 // need of the newest one does not replace it: the newest sample keeps the
@@ -493,6 +493,10 @@ type Share struct {
 	Dirs      []*Dir
 	Error     string
 	ScannedAt time.Time
+	// ListedAt is the end of the last structure scan that listed the share.
+	// A share that a scan cannot list keeps the Dirs, ScannedAt
+	// and ListedAt of its last listing. Zero before the first listing.
+	ListedAt time.Time
 }
 
 // Dir is a top-level directory in a share.

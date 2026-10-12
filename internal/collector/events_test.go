@@ -152,7 +152,7 @@ func openRecord(eng *engine.Engine, check, subject string) *store.Record {
 }
 
 // A Syncthing that stops reports its folders in error as idle and then
-// closes its API (W-001). The folder used to lose its error at once: H4
+// closes its API. The folder used to lose its error at once: H4
 // resolved while the server still counted as up, a "resolved" message
 // followed, and a second urgent message when Syncthing started again. Now
 // the folder keeps its error, H4 stays open (stale while the server is
@@ -340,7 +340,7 @@ func TestClearWait(t *testing.T) {
 }
 
 // A conflict copy that another device made reaches the server as an
-// ordinary file (W-012). Syncthing counts it only on the device that made
+// ordinary file. Syncthing counts it only on the device that made
 // it, so H10 counts it from RemoteChangeDetected: once per copy. A copy
 // that the server made itself comes as LocalChangeDetected and is in the
 // server's own counter.

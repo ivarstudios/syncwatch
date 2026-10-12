@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -46,10 +47,13 @@ func (s *Store) SetAliveAt(t time.Time) error {
 	return s.SetSetting(keyAliveAt, strconv.FormatInt(ms(t), 10))
 }
 
-// AddGap records a gap. The list keeps the gaps that ended in the 30 days
+// AddGap records a gap. A gap from the same heartbeat (From) replaces the gap
+// that was recorded before: its end was corrected (app: a clock that was
+// behind at the start). The list keeps the gaps that ended in the 30 days
 // before the end of the newest gap, at most 50, oldest first.
 func (s *Store) AddGap(g Gap) error {
 	return s.updateGaps(func(gaps []Gap) []Gap {
+		gaps = slices.DeleteFunc(gaps, func(x Gap) bool { return x.From.Equal(g.From) })
 		gaps = append(gaps, g)
 		sort.SliceStable(gaps, func(i, j int) bool { return gaps[i].To.Before(gaps[j].To) })
 		cut := gaps[len(gaps)-1].To.Add(-gapKeep)

@@ -9,7 +9,7 @@ import (
 
 // A finding that flaps back before its "resolved" message went out carries
 // on as the same, announced problem: it keeps PingedAt and also the time of
-// its last repeat (W-050, r2-4 request 1). Without RepeatedAt, the notifier
+// its last repeat. Without RepeatedAt, the notifier
 // counts the repeat interval from the old urgent message and repeats the
 // urgent message again at once after the re-open.
 func TestReopenKeepsTheTimeOfTheLastRepeat(t *testing.T) {

@@ -17,7 +17,7 @@ func polled(id, name, myID string) *Server {
 		Devices: map[string]*Device{}, Connections: map[string]*Connection{}}
 }
 
-// W-057: the links between the polled servers that have each other
+// The links between the polled servers that have each other
 // configured. Connected from the earlier start of the 2 sides; disconnected
 // from the latest time they saw each other; unreachable when a server of
 // the pair is not up or not loaded.
@@ -68,7 +68,7 @@ func TestServerLinks(t *testing.T) {
 	}
 }
 
-// W-057: the server links between 2 sites make 1 site link: connected when
+// The server links between 2 sites make 1 site link: connected when
 // 1 is connected (from the earliest start), else unreachable when 1 is
 // unreachable, else disconnected (from the latest time). Links inside a
 // site and servers without a site are not included.

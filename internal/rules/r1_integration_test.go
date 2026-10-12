@@ -8,8 +8,8 @@ import (
 	"github.com/ivarstudios/syncwatch/internal/stclient"
 )
 
-// Contract C2 end to end: the texts that r1-1's stclient makes for each
-// refusal go into Server.LastError (collector.shortErr), and r1-3's H1
+// End to end: the texts that the stclient makes for each refusal go into
+// Server.LastError (collector.shortErr), and H1
 // tells a refused key or gate token from a gate whose own key Syncthing
 // refused (502: the gate must be restarted; H1 keeps "unreachable" and the
 // gate's instruction).

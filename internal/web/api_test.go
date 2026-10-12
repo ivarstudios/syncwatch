@@ -183,7 +183,7 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 
 	// Unreachable, and never contacted (sol): the tile, the grid and the
 	// status API show the last known state as such, and HA says
-	// unreachable and not_contacted (W-049; before: unknown for both).
+	// unreachable and not_contacted (before: unknown for both).
 	e.hub.Update("akka", func(s *model.Server) { s.Status, s.LastContact = model.StatusDown, time.Now() })
 	e.hub.Update("sol", func(s *model.Server) { s.Status = model.StatusUnknown })
 	e.eng.Evaluate()
@@ -497,7 +497,7 @@ func TestAPIHygieneAndRefusalLogs(t *testing.T) {
 
 // The delivery error text can quote the channel's answer, so the API shows
 // it to admins only; viewer sessions and token holders get failing and
-// since. (Open viewing without a token gets no answer at all: W-048.)
+// since. (Open viewing without a token gets no answer at all.)
 func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
 	e := adminEnv(t, twoServers+"access: {viewer: password}\n")
 	viewer := e.loginClient("viewer password 1", RoleViewer)
@@ -539,7 +539,7 @@ func TestAPIDeliveryErrorForAdminsOnly(t *testing.T) {
 	}
 }
 
-// W-032, for each API token (W-053): Replace and Revoke ask first, in the
+// For each API token, Replace and Revoke ask first, in the
 // form of their own button, with the name of the API token. The API text
 // names both endpoints and what the answer contains. The replace notice says
 // that the old value stops working. Add API token asks nothing.
@@ -598,8 +598,8 @@ func TestAPITokenGenerateForm(t *testing.T) {
 }
 
 // Each change of an API token sends one settings notice about security
-// (C5: Security true), with the name of the API token (the API token part of
-// TestEverySettingsChangeIsAnnounced; W-053).
+// (Security true), with the name of the API token (the API token part of
+// TestEverySettingsChangeIsAnnounced).
 func TestAPITokenChangesAreAnnounced(t *testing.T) {
 	e := adminEnv(t, twoServers)
 	csrf := e.csrf("/settings")
@@ -641,11 +641,11 @@ func TestAPITokenChangesAreAnnounced(t *testing.T) {
 	}
 }
 
-// W-030 for the API token: after the secret key changed, Settings showed the
+// The API token after a change of the secret key: Settings showed the
 // API token as "set" although syncwatch could not decrypt it (the API token
 // part of TestUndecryptableSecretsAreNotShownAsSet). The store keeps an API
 // token of an older version that it cannot decrypt (it cannot move it into
-// api_tokens): the API card says so and has a button that deletes it (W-053).
+// api_tokens): the API card says so and has a button that deletes it.
 func TestUndecryptableAPITokenIsNotShownAsSet(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syncwatch.db")
 	keyA, keyB := make([]byte, 32), make([]byte, 32)
