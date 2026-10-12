@@ -7,8 +7,8 @@ on:
 # Each job gets only the permissions that it needs. The actions have commit
 # SHAs (the comment names the release) because this workflow can make images
 # available. The checkouts keep no secrets, and the jobs that make the
-# release use no build cache. Thus data from other runs cannot get into a
-# release.
+# release use no build cache of other runs. Thus data from other runs cannot
+# get into a release.
 permissions:
   contents: read
 
@@ -42,6 +42,32 @@ jobs:
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # The check build is the same build as the last step of this job. It
+      # writes the files of each image into a local directory, with 1
+      # subdirectory for each platform (linux_amd64, linux_arm64).
+      - name: Build the image for the architecture check
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ github.ref_name }}
+          provenance: false
+          outputs: type=local,dest=${{ runner.temp }}/image
+      - name: Check the architecture of each image
+        # Each image must contain the program for its platform. A default
+        # value of TARGETARCH in the Dockerfile put the amd64 program into the
+        # arm64 image before. "file" reads the header of the program and does
+        # not start it. Thus the check needs no emulation.
+        run: |
+          for pair in "linux_amd64=, x86-64," "linux_arm64=, ARM aarch64,"; do
+            dir=${pair%%=*}; want=${pair#*=}
+            got=$(file -b "$RUNNER_TEMP/image/$dir/usr/local/bin/syncwatch")
+            echo "$dir: $got"
+            case "$got" in
+              *"$want"*) ;;
+              *) echo "::error::The $dir image does not contain the program for its platform."; exit 1 ;;
+            esac
+          done
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
@@ -58,7 +84,10 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      # This step uses the layers of the check build from the cache of this
+      # builder. Thus the registry gets the programs that the check examined.
+      - name: Build and publish the image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -66,7 +95,17 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ github.ref_name }}
-          provenance: false
+          # Provenance is a record of the build: the commit, the Dockerfile,
+          # the base images and the build arguments. It contains no secrets.
+          # It is on for the test release v0.9.0-rc1. Look at how the
+          # container interfaces of NAS products (for example QNAP Container
+          # Station) show the image. Keep provenance if the result is
+          # satisfactory (plan.md, section 2, step 1). With provenance, the
+          # image index has 1 more manifest for each platform, with the
+          # platform unknown/unknown. To set provenance to off, set
+          # "provenance: false". The image has no SBOM and no signature at
+          # this time.
+          provenance: mode=max
 
   binaries:
     runs-on: ubuntu-latest
