@@ -38,11 +38,11 @@ type Collector struct {
 	certFails     int       // failed sessions in a row because the certificate changed
 	certWarned    time.Time // when the certificate change was last logged at WARN
 	lastFull      time.Time
-	needFull      bool // the next session starts with a full check: one did not complete, or see dropClears
-	configDue     bool // a ConfigSaved event in the current batch; see applyBatch
-	pendingDue    bool // a Pending*Changed event in the current batch
-	pendingWarned bool // the pending re-read failed and was logged this session
-	lastScan      time.Time
+	needFull      bool      // the next session starts with a full check: one did not complete, or see dropClears
+	configDue     bool      // a ConfigSaved event in the current batch; see applyBatch
+	pendingDue    bool      // a Pending*Changed event in the current batch
+	pendingWarned bool      // the pending re-read failed and was logged this session
+	lastScan      time.Time // the start of the last structure scan; it and the fields to baseChoice need scanMu
 	lastBase      time.Time
 	scanMu        sync.Mutex
 	scanning      bool
@@ -469,13 +469,14 @@ func (c *Collector) pollLoop(ctx context.Context) error {
 // the next structure scan, whichever comes first, but at least a second. A
 // scan that is still running when the next one is due doesn't count,
 // because maybeScan does nothing while one runs: the loop waits for the
-// next poll instead of spinning until the scan ends.
+// next poll instead of spinning until the scan ends. lastScan is read under
+// scanMu: ScanNow sets it from a request of the dashboard (W-056).
 func (c *Collector) pollWait(cfg config.Collector) time.Duration {
 	wait := time.Until(c.lastFull.Add(cfg.PollInterval.D()))
 	c.scanMu.Lock()
-	scanning := c.scanning
+	scanning, lastScan := c.scanning, c.lastScan
 	c.scanMu.Unlock()
-	if w := time.Until(c.lastScan.Add(cfg.StructureInterval.D())); !scanning && w < wait {
+	if w := time.Until(lastScan.Add(cfg.StructureInterval.D())); !scanning && w < wait {
 		wait = w
 	}
 	return max(wait, time.Second)
