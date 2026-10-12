@@ -33,6 +33,7 @@ const (
 	keyWeekly    = "notify.last_weekly"
 	keyAnnounced = "notify.announced"    // see announcedRun
 	keyKept      = "notify.kept_notices" // see pendingNotice
+	keyFailing   = "notify.failing"      // see storedFailure
 )
 
 // Notifier decides what to send and when.
@@ -148,6 +149,9 @@ func (n *Notifier) ChannelsChanged() {
 	n.gen++
 	n.failures, n.retryAt = 0, time.Time{}
 	n.probes, n.probeAt = 0, time.Time{}
+	if n.state.Failing {
+		n.saveFailure(nil)
+	}
 	n.state = Delivery{}
 	n.lastErr = map[string]string{}
 	n.own = ownChannel{}
@@ -169,6 +173,9 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	n.dmu.Lock()
 	defer n.dmu.Unlock()
 	if err == nil {
+		if n.state.Failing {
+			n.saveFailure(nil)
+		}
 		n.state = Delivery{}
 		n.failures, n.retryAt = 0, time.Time{}
 		n.probes, n.probeAt = 0, time.Time{}
@@ -180,7 +187,10 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	if !n.state.Failing {
 		n.state.Failing, n.state.Since = true, now
 	}
-	n.state.Error = err.Error()
+	if e := err.Error(); e != n.state.Error {
+		n.state.Error = e
+		n.saveFailure(&storedFailure{Since: n.state.Since, Error: e})
+	}
 	// Kept until the catch-up went out: a new webhook or a successful test
 	// message clears the banner, not what the channel missed.
 	if n.missed.IsZero() {
@@ -188,7 +198,31 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	}
 }
 
+// storedFailure is the state "notifications fail", stored in the settings
+// (keyFailing): a restart keeps it. Else each start of syncwatch says "ok" in
+// /healthz and calls the dead-man URL until the limit passes again, also
+// while Discord refuses every message.
+type storedFailure struct {
+	Since time.Time `json:"since"`
+	Error string    `json:"error"`
+}
+
+// saveFailure stores the failure, or deletes it (nil). The caller holds dmu.
+func (n *Notifier) saveFailure(f *storedFailure) {
+	var err error
+	if f == nil {
+		err = n.st.DeleteSetting(keyFailing)
+	} else {
+		err = n.st.SetJSONSetting(keyFailing, f)
+	}
+	if err != nil {
+		n.log.Warn("cannot save the state of the notifications", "err", err)
+	}
+}
+
 // New creates a notifier that builds its senders from the stored secrets.
+// A failure stored before the start continues: the first tick checks the
+// channel (see probe), and what the channel missed goes out in the catch-up.
 func New(src Source, st *store.Store, cfg *config.Holder, log *slog.Logger) *Notifier {
 	if log == nil {
 		log = slog.Default()
@@ -197,6 +231,14 @@ func New(src Source, st *store.Store, cfg *config.Holder, log *slog.Logger) *Not
 		delivered: map[string]map[string]bool{}, lastErr: map[string]string{}}
 	n.senders = n.defaultSenders
 	n.noticeSenders = n.defaultNoticeSenders
+	var f storedFailure
+	if found, err := st.JSONSetting(keyFailing, &f); err != nil {
+		log.Warn("cannot read the state of the notifications", "err", err)
+	} else if found && !f.Since.IsZero() {
+		n.state = Delivery{Failing: true, Since: f.Since, Error: f.Error}
+		n.missed = f.Since
+		log.Warn("notifications fail from before the start", "since", f.Since, "err", f.Error)
+	}
 	return n
 }
 

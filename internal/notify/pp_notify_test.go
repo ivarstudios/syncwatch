@@ -3,6 +3,8 @@ package notify
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,9 +119,9 @@ func (p *probeSender) Probe(context.Context) error {
 	return p.err
 }
 
-// unhealthyFrom is the first time from which /healthz answers 503 for the
-// state of the notifications (the rule of web/health.go with the default
-// limit of 15 minutes), zero when it never does.
+// unhealthyFrom says whether /healthz answers 503 at now for the state of
+// the notifications (the rule of web/health.go with the default limit of 15
+// minutes).
 func unhealthyFrom(d Delivery, now time.Time) bool {
 	return d.Failing && !d.Since.IsZero() && now.Sub(d.Since) > 15*time.Minute
 }
@@ -311,5 +313,54 @@ func TestDiscordProbe(t *testing.T) {
 	srv.Close()
 	if err := d.Probe(context.Background()); err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Errorf("no connection: %v", err)
+	}
+}
+
+// syncwatch restarts while Discord refuses every message. The new process
+// continues the failure from its start, thus /healthz answers 503 at once
+// and the dead-man URL is not called (exposure-1). A send that works and a
+// new webhook end the failure, also for the next start.
+func TestRestartKeepsTheFailure(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.sender.fail(&httpError{code: 404, text: "Unknown Webhook"})
+	r.setDown("AKKA", true)
+	for m := 0; m <= 30; m++ {
+		r.at(start.Add(time.Duration(m) * time.Minute))
+	}
+	before := r.n.Delivery()
+	if !before.Failing || !unhealthyFrom(before, start.Add(30*time.Minute)) {
+		t.Fatalf("before the restart: %+v", before)
+	}
+	restart := func() *Notifier {
+		n := New(r.eng, r.st, r.n.cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		n.now = func() time.Time { return r.now }
+		n.SetSenders(func() []Sender { return []Sender{r.sender} })
+		return n
+	}
+	r.n = restart()
+	if d := r.n.Delivery(); !d.Failing || !d.Since.Equal(before.Since) || d.Error != before.Error || !unhealthyFrom(d, start.Add(31*time.Minute)) {
+		t.Fatalf("after the restart: %+v, before it: %+v", d, before)
+	}
+
+	// Discord works again: the urgent message goes out and ends the failure.
+	r.sender.fail(nil)
+	r.at(start.Add(31 * time.Minute))
+	if m := r.sender.take(); len(m) != 1 || m[0].Kind != KindUrgent {
+		t.Fatalf("after the restart, with Discord working: %+v", m)
+	}
+	if r.n.Delivery().Failing || restart().Delivery().Failing {
+		t.Fatalf("the failure did not end: %+v", r.n.Delivery())
+	}
+
+	// A new webhook ends the failure too.
+	r.sender.fail(&httpError{code: 404, text: "Unknown Webhook"})
+	_ = r.n.SendTest(context.Background())
+	if !restart().Delivery().Failing {
+		t.Fatal("the failure of the test message is not kept")
+	}
+	r.n.ChannelsChanged()
+	if d := restart().Delivery(); d.Failing {
+		t.Fatalf("after a new webhook and a restart: %+v", d)
 	}
 }
