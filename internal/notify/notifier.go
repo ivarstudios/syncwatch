@@ -69,6 +69,8 @@ type Notifier struct {
 	noticesErr bool       // the error of reading that webhook is in the log
 	hold       *time.Timer
 	holdUntil  time.Time // the end of the hold window of an urgent message; see holdUrgent
+	probes     int       // failed checks in a row of a failing channel; see probe
+	probeAt    time.Time // the time of the next check
 }
 
 // ownChannel is the delivery state of the webhook for settings notices. Its
@@ -112,7 +114,7 @@ type Delivery struct {
 	Failing     bool
 	Since       time.Time // first failure in the current run of failures
 	Error       string    // the latest error
-	NextTry     time.Time // while failing: the time of the next send; zero otherwise
+	NextTry     time.Time // while failing: the time of the next send or check (probe); zero otherwise
 	NoticesKept int       // settings notices that wait for a channel that accepts them
 }
 
@@ -145,6 +147,7 @@ func (n *Notifier) ChannelsChanged() {
 	n.dmu.Lock()
 	n.gen++
 	n.failures, n.retryAt = 0, time.Time{}
+	n.probes, n.probeAt = 0, time.Time{}
 	n.state = Delivery{}
 	n.lastErr = map[string]string{}
 	n.own = ownChannel{}
@@ -168,6 +171,7 @@ func (n *Notifier) recordDelivery(now time.Time, gen int, err error) {
 	if err == nil {
 		n.state = Delivery{}
 		n.failures, n.retryAt = 0, time.Time{}
+		n.probes, n.probeAt = 0, time.Time{}
 		return
 	}
 	if gen != n.gen {
@@ -264,6 +268,15 @@ func (b *brokenChannel) Name() string {
 
 func (b *brokenChannel) Send(context.Context, Message) error { return b.err }
 
+// Probe fails with the reason, as Send.
+func (b *brokenChannel) Probe(context.Context) error { return b.err }
+
+// prober is a channel that can check that it works without a message
+// (Discord.Probe).
+type prober interface {
+	Probe(ctx context.Context) error
+}
+
 // Wake asks for a tick soon (after an evaluation).
 func (n *Notifier) Wake() {
 	select {
@@ -354,7 +367,52 @@ func (n *Notifier) Tick(ctx context.Context, now time.Time) {
 	}
 	if nerr != nil {
 		n.fail(now, gen, nerr)
+		return
 	}
+	n.probe(ctx, now, gen)
+}
+
+// probe checks a failing channel of the findings when the tick sent nothing
+// to it and no try is due. Else a failure that nothing tries again (a test
+// message, a message whose finding is snoozed before the next try, the quiet
+// hours) stays in the banner and in /healthz until the next message, which
+// can be days later. The check posts nothing. A success ends the failure;
+// the catch-up of what the channel missed stays. The checks back off as the
+// sends do.
+func (n *Notifier) probe(ctx context.Context, now time.Time, gen int) {
+	n.dmu.Lock()
+	due := n.state.Failing && !now.Before(n.retryAt) && !now.Before(n.probeAt)
+	n.dmu.Unlock()
+	if !due {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	results := map[string]error{}
+	for _, s := range n.senders() {
+		if p, ok := s.(prober); ok {
+			results[s.Name()] = p.Probe(ctx)
+		}
+	}
+	if len(results) == 0 {
+		return
+	}
+	err := deliveryErr(results)
+	if err == nil {
+		n.log.Info("Discord webhook answers again")
+		n.recordDelivery(now, gen, nil)
+		return
+	}
+	n.recordDelivery(now, gen, err) // the latest error for the banner
+	n.dmu.Lock()
+	if gen == n.gen && n.state.Failing {
+		n.probes++
+		n.probeAt = now.Add(backoff(n.probes, err))
+		n.state.NextTry = n.probeAt
+	}
+	d := n.probeAt.Sub(now)
+	n.dmu.Unlock()
+	n.log.Warn("cannot reach the Discord webhook", "err", err, "retry_in", d)
 }
 
 // fail backs off after a failed send in a tick that started in generation

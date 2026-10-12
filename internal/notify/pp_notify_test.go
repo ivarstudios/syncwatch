@@ -1,8 +1,12 @@
 package notify
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,5 +100,216 @@ func TestTwoUnknownDevicesWithTheSameNameInTheUrgentMessage(t *testing.T) {
 	}
 	if lines := msgs[0].Sections[0].Lines; len(lines) != 2 || strings.Contains(strings.Join(lines, "\n"), "also on") {
 		t.Errorf("%s: %q", msgs[0].Title, lines)
+	}
+}
+
+// probeSender is a fake channel that can also check itself without a
+// message, as the Discord sender does (Probe).
+type probeSender struct {
+	*fakeSender
+	probes int
+}
+
+func (p *probeSender) Probe(context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.probes++
+	return p.err
+}
+
+// unhealthyFrom is the first time from which /healthz answers 503 for the
+// state of the notifications (the rule of web/health.go with the default
+// limit of 15 minutes), zero when it never does.
+func unhealthyFrom(d Delivery, now time.Time) bool {
+	return d.Failing && !d.Since.IsZero() && now.Sub(d.Since) > 15*time.Minute
+}
+
+// A test message fails during a short Discord outage, and no message is due
+// after it. syncwatch checks the webhook without a message and ends the
+// failure: /healthz does not answer 503 for days (notify-2, exposure-3).
+func TestFailedTestMessageEndsWhenDiscordWorksAgain(t *testing.T) {
+	start := local(2026, 10, 12, 9, 59) // a Monday, nothing is due
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	p := &probeSender{fakeSender: r.sender}
+	r.n.SetSenders(func() []Sender { return []Sender{p} })
+	r.at(start) // the weekly report of this Monday: the channel works
+	r.sender.take()
+	r.now = local(2026, 10, 12, 10, 0)
+	r.sender.fail(&httpError{code: 503})
+	if err := r.n.SendTest(context.Background()); err == nil {
+		t.Fatal("the test message did not fail")
+	}
+	if d := r.n.Delivery(); !d.Failing {
+		t.Fatalf("after the failed test message: %+v", d)
+	}
+	var cleared time.Time
+	for at := r.now.Add(30 * time.Second); !at.After(local(2026, 10, 13, 10, 0)); at = at.Add(30 * time.Second) {
+		if at.Equal(local(2026, 10, 12, 10, 1)) {
+			r.sender.fail(nil) // Discord works again
+		}
+		r.at(at)
+		d := r.n.Delivery()
+		if unhealthyFrom(d, at) {
+			t.Fatalf("%s: /healthz answers 503: %+v", at.Format("01-02 15:04:05"), d)
+		}
+		if !d.Failing && cleared.IsZero() {
+			cleared = at
+		}
+	}
+	if cleared.IsZero() || cleared.After(local(2026, 10, 12, 10, 3)) {
+		t.Errorf("the failure ended at %v, want by 10:03", cleared)
+	}
+	if m := r.sender.take(); len(m) != 0 {
+		t.Errorf("the check posted %d messages: %q", len(m), m[0].Title)
+	}
+	if p.probes == 0 || p.probes > 5 {
+		t.Errorf("%d checks of the webhook", p.probes)
+	}
+}
+
+// An urgent message fails just before the quiet hours, and Discord works
+// again in them. Nothing is sent in the quiet hours, but the check ends the
+// failure: no 503 for the night. The overnight summary still announces the
+// finding (exposure-3).
+func TestFailureBeforeQuietHoursEndsInThem(t *testing.T) {
+	start := local(2026, 10, 6, 21, 50)
+	r := newRig(t, start, "AKKA", "SOL")
+	setNotify(t, r, func(c *config.Config) { c.Notify.QuietHours = "22:00-07:00" })
+	p := &probeSender{fakeSender: r.sender}
+	r.n.SetSenders(func() []Sender { return []Sender{p} })
+	r.setDown("SOL", true)
+	r.sender.fail(&httpError{code: 503})
+	var failedAt, cleared time.Time
+	for at := start; at.Before(local(2026, 10, 7, 7, 0)); at = at.Add(30 * time.Second) {
+		if at.Equal(local(2026, 10, 6, 22, 3)) {
+			r.sender.fail(nil)
+		}
+		r.at(at)
+		d := r.n.Delivery()
+		if d.Failing && failedAt.IsZero() {
+			failedAt = at
+		}
+		if !failedAt.IsZero() && !d.Failing && cleared.IsZero() {
+			cleared = at
+		}
+		if unhealthyFrom(d, at) {
+			t.Fatalf("%s: /healthz answers 503: %+v", at.Format("15:04:05"), d)
+		}
+	}
+	if failedAt.IsZero() || !failedAt.Before(local(2026, 10, 6, 22, 0)) {
+		t.Fatalf("the urgent message did not fail before the quiet hours: %v", failedAt)
+	}
+	if cleared.IsZero() || cleared.After(local(2026, 10, 6, 22, 10)) {
+		t.Errorf("the failure ended at %v, want by 22:10", cleared)
+	}
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent in the quiet hours: %q", m[0].Title)
+	}
+	r.at(local(2026, 10, 7, 7, 0))
+	m := r.sender.take()
+	if len(m) != 1 || m[0].Kind != KindOvernight || !strings.Contains(messageText(m[0]), "SOL") {
+		t.Fatalf("at the end of the quiet hours: %+v", m)
+	}
+}
+
+// The urgent message fails and the administrator snoozes the finding before
+// the next try: nothing is due, but the check ends the failure (notify-2).
+func TestFailureEndsAfterTheFindingIsSnoozed(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	p := &probeSender{fakeSender: r.sender}
+	r.n.SetSenders(func() []Sender { return []Sender{p} })
+	r.setDown("AKKA", true)
+	r.sender.fail(&httpError{code: 503})
+	at := start
+	for ; !r.n.Delivery().Failing; at = at.Add(30 * time.Second) {
+		r.at(at)
+	}
+	if err := r.eng.Snooze(r.eng.View().Open[0].ID, at.Add(24*time.Hour), "maintenance", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	r.sender.fail(nil)
+	end := at.Add(10 * time.Minute)
+	for ; !at.After(end); at = at.Add(30 * time.Second) {
+		r.at(at)
+	}
+	if d := r.n.Delivery(); d.Failing {
+		t.Fatalf("10 minutes after the snooze, with Discord working: %+v", d)
+	}
+	if m := r.sender.take(); len(m) != 0 {
+		t.Fatalf("sent: %q", m[0].Title)
+	}
+}
+
+// A webhook that Discord deleted stays failing: the checks back off as the
+// sends do, and the banner shows the time of the next check.
+func TestCheckOfADeletedWebhookKeepsTheFailure(t *testing.T) {
+	start := local(2026, 10, 6, 10, 0)
+	r := newRig(t, start, "AKKA")
+	r.n.now = func() time.Time { return r.now }
+	p := &probeSender{fakeSender: r.sender}
+	r.n.SetSenders(func() []Sender { return []Sender{p} })
+	r.sender.fail(&httpError{code: 404, text: "Unknown Webhook"})
+	r.now = start
+	_ = r.n.SendTest(context.Background())
+	for m := 0; m <= 60; m++ {
+		r.at(start.Add(time.Duration(m) * time.Minute))
+	}
+	d := r.n.Delivery()
+	if !d.Failing || !d.Since.Equal(start) || !strings.Contains(d.Error, "404") || !d.NextTry.After(start.Add(time.Hour)) {
+		t.Fatalf("after an hour: %+v", d)
+	}
+	// 10:00, :01, :03, :07, :15, :31 (1, 2, 4, 8, 16, 30 minutes).
+	if p.probes != 6 {
+		t.Errorf("%d checks in an hour, want 6", p.probes)
+	}
+}
+
+// Discord.Probe asks for the webhook with GET and posts nothing. It does not
+// follow a redirect, and a deleted webhook is refused (not transient).
+func TestDiscordProbe(t *testing.T) {
+	was := config.AllowAnyWebhook
+	config.AllowAnyWebhook = true
+	t.Cleanup(func() { config.AllowAnyWebhook = was })
+	status, posts := http.StatusOK, 0
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method != http.MethodGet {
+			posts++
+		}
+		if status == http.StatusMovedPermanently {
+			http.Redirect(w, r, "http://127.0.0.1:1/elsewhere", status)
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"type":1,"id":"1","token":"secret-token"}`))
+	}))
+	defer srv.Close()
+	d := &Discord{URL: srv.URL + "/api/webhooks/1/secret-token"}
+	set := func(s int) { mu.Lock(); status = s; mu.Unlock() }
+	if err := d.Probe(context.Background()); err != nil {
+		t.Fatalf("200: %v", err)
+	}
+	set(http.StatusNotFound)
+	if err := d.Probe(context.Background()); !rejected(err) || transient(err) {
+		t.Errorf("404: %v", err)
+	}
+	set(http.StatusServiceUnavailable)
+	if err := d.Probe(context.Background()); err == nil || !transient(err) {
+		t.Errorf("503: %v", err)
+	}
+	set(http.StatusMovedPermanently)
+	if err := d.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Errorf("301: %v", err)
+	}
+	if posts != 0 {
+		t.Errorf("%d posts", posts)
+	}
+	srv.Close()
+	if err := d.Probe(context.Background()); err == nil || strings.Contains(err.Error(), "secret-token") {
+		t.Errorf("no connection: %v", err)
 	}
 }

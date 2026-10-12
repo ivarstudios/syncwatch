@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -145,5 +146,60 @@ func TestFindingTextInSnoozeNoticeIsEscaped(t *testing.T) {
 	ppCheck(t, "🔧 Urgent finding snoozed", lines, 3)
 	if !strings.HasPrefix(lines[1], "The finding is snoozed until ") {
 		t.Errorf("second line: %q", lines[1])
+	}
+}
+
+// A test message fails during a short Discord outage, and no message is due
+// after it. The notifier checks the webhook without a message, thus /healthz
+// does not answer 503 after the limit (notify-2, exposure-3).
+func TestHealthzAfterAFailedTestMessage(t *testing.T) {
+	was := config.AllowAnyWebhook
+	config.AllowAnyWebhook = true // the fake Discord is on 127.0.0.1
+	t.Cleanup(func() { config.AllowAnyWebhook = was })
+	var mu sync.Mutex
+	down, posts := true, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost && !down {
+			posts++
+		}
+		switch {
+		case down:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"type":1,"id":"1","token":"x"}`))
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	e := adminEnv(t, twoServers)
+	// No scheduled message on any day: the test uses the real clock.
+	c := e.cfg.Get().Clone()
+	c.Notify.WeeklyDay, c.Notify.ReminderTime, c.Notify.QuietHours = "off", "off", "off"
+	if err := e.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	ntf := notify.New(e.eng, e.st, e.cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ntf.SetSenders(func() []notify.Sender { return []notify.Sender{&notify.Discord{URL: srv.URL + "/api/webhooks/1/x"}} })
+	e.web.hooks.SendTest, e.web.hooks.Delivery = ntf.SendTest, ntf.Delivery
+	t0 := time.Now()
+	e.web.SetHealth(HealthOptions{Started: t0, NotifyLimit: 15 * time.Minute})
+	if msg, isErr := flash(e.post("/settings/notifications/test", url.Values{"csrf": {e.csrf("/settings")}})); !isErr {
+		t.Fatalf("the test message did not fail: %s", msg)
+	}
+	mu.Lock()
+	down = false // Discord works again
+	mu.Unlock()
+	ntf.Tick(context.Background(), time.Now())
+	e.web.now = func() time.Time { return t0.Add(16 * time.Minute) }
+	if resp, body := e.get("/healthz"); resp.StatusCode != http.StatusOK {
+		t.Errorf("/healthz 16 minutes later: %d %q", resp.StatusCode, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 0 {
+		t.Errorf("the check posted %d messages", posts)
 	}
 }

@@ -234,6 +234,41 @@ func (d *Discord) Send(ctx context.Context, m Message) error {
 	return fmt.Errorf("Discord: too many requests (HTTP 429) after 3 tries")
 }
 
+// Probe checks the webhook without a message: Discord answers a GET of the
+// webhook URL with the webhook (HTTP 200), and with 404 when the webhook is
+// deleted. The answer has the token and is discarded.
+func (d *Discord) Probe(ctx context.Context) error {
+	if err := d.usable(); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.URL, nil)
+	if err != nil {
+		return unusableError("Discord: the webhook URL is not valid")
+	}
+	hc := &http.Client{Timeout: 20 * time.Second}
+	if d.HTTP != nil {
+		c := *d.HTTP
+		hc = &c
+	}
+	// As in Send: syncwatch does not follow a redirect with the token.
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("Discord: %v", redactURL(err.Error(), d.URL))
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	resp.Body.Close()
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return &httpError{code: resp.StatusCode, text: "the webhook answers with a redirect, which syncwatch does not follow"}
+	case !config.DiscordHost(d.URL):
+		return &httpError{code: resp.StatusCode}
+	}
+	return &httpError{code: resp.StatusCode, text: discordError(respBody)}
+}
+
 // httpError is a reply other than 2xx, with Discord's explanation when the
 // host is Discord's.
 type httpError struct {
