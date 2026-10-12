@@ -296,15 +296,15 @@ func TestOneSiteTypedInTwoSpellings(t *testing.T) {
 // "exe.png"). The names come from Syncthing (devices) and from the file
 // or the configuration (servers).
 func TestImportPreviewShowsDirectionControls(t *testing.T) {
-	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: secret-key-akka}, {name: "‮LOS", url: "https://b:1"}]`+"\n")
+	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: secret-key-akka}, {name: "\u202eLOS", url: "https://b:1"}]`+"\n")
 	e.hub.Update("akka", func(s *model.Server) {
 		s.Status, s.Loaded, s.MyID, s.LastContact = model.StatusUp, true, "AKKAAAA-1111111", time.Now()
-		s.Devices = map[string]*model.Device{relayPC: {ID: relayPC, Name: "‮gnp.exe‬"}}
+		s.Devices = map[string]*model.Device{relayPC: {ID: relayPC, Name: "\u202egnp.exe\u202c"}}
 		s.Connections = map[string]*model.Connection{relayPC: {Connected: true, Type: "relay-client", StartedAt: time.Now()}}
 	})
 	e.eng.Evaluate()
 	csrf := e.csrf("/settings")
-	file := `servers: [{name: AKKA, url: "https://a:1"}, {name: "‮KEY", url: "https://k:1", api_key: key-k}, {name: "‮NOKEY", url: "https://n:1"}]
+	file := `servers: [{name: AKKA, url: "https://a:1"}, {name: "\u202eKEY", url: "https://k:1", api_key: key-k}, {name: "\u202eNOKEY", url: "https://n:1"}]
 devices: [{id: ` + relayPC + `, relay: true}]
 `
 	_, page, id := impPreview(e, csrf, file)
@@ -339,10 +339,10 @@ devices: [{id: ` + relayPC + `, relay: true}]
 // device name from Syncthing; the error can have the answer of Discord.
 func TestNotificationLogShowsDirectionControls(t *testing.T) {
 	e := adminEnv(t, twoServers)
-	if err := e.st.LogNotification(time.Now(), "urgent", "discord", true, "", "🚨 Folder sync stopped: LIVE-‮ECRUOS1 on AKKA"); err != nil {
+	if err := e.st.LogNotification(time.Now(), "urgent", "discord", true, "", "🚨 Folder sync stopped: LIVE-\u202eECRUOS1 on AKKA"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.LogNotification(time.Now(), "urgent", "discord", false, "HTTP 400: ‮LIVE", "🚨 Server unreachable: ‮LOS"); err != nil {
+	if err := e.st.LogNotification(time.Now(), "urgent", "discord", false, "HTTP 400: \u202eLIVE", "🚨 Server unreachable: \u202eLOS"); err != nil {
 		t.Fatal(err)
 	}
 	_, page := e.get("/settings")
