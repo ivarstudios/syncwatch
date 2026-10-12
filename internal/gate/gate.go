@@ -95,9 +95,10 @@ var queryParams = map[string][]string{
 	pathFolderErrors: {"folder", "page", "perpage"},
 }
 
-// Limits of a remoteneed request: syncwatch asks for the first page of 20
-// file names. The answer has no secrets of Syncthing, but each file costs
-// Syncthing a database read, and an invalid device ID is a 500 there.
+// Limits of a remoteneed request: syncwatch asks for the first page of 100
+// entries and keeps 20 names (internal/collector/need.go). The answer has
+// no secrets of Syncthing, but each file costs Syncthing a database read,
+// and an invalid device ID is a 500 there.
 const (
 	maxNeedPerPage = 100
 	maxNeedPage    = 1000

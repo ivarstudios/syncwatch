@@ -13,6 +13,7 @@ import (
 
 	"github.com/ivarstudios/syncwatch/internal/config"
 	"github.com/ivarstudios/syncwatch/internal/model"
+	"github.com/ivarstudios/syncwatch/internal/rules"
 	"github.com/ivarstudios/syncwatch/internal/stclient"
 	"github.com/ivarstudios/syncwatch/internal/store"
 )
@@ -220,6 +221,43 @@ func TestNeedListsFromFullCheck(t *testing.T) {
 	sv = waitFor(t, hub, "the next full check", func(s *model.Server) bool { return s.LastFullCheck.After(last) })
 	if len(sv.NeedLists) != 0 || fake.count("/rest/db/remoteneed") != 1 {
 		t.Fatalf("need lists %+v after the sync, %d requests", sv.NeedLists, fake.count("/rest/db/remoteneed"))
+	}
+}
+
+// Syncthing lists the deletions that a device did not do yet in
+// /rest/db/remoteneed, in the order of the names, but counts them in
+// needDeletes and not in needItems: Syncthing 2.1.5 with a PC that cannot
+// delete 25 files and cannot replace 2 files gives needItems 2 and
+// needDeletes 25. A deletion is not a file that the device needs: the full
+// check reads 100 entries and keeps the first 20 names that are not
+// deletions, and H5 shows the 2 files and no "…and N more".
+func TestNeedListsWithoutDeletions(t *testing.T) {
+	fake := newFakeST(t)
+	fake.need = map[string]int64{"p-beta/" + devSirius: 2}
+	fake.needNames = []string{"busy.txt", "zz-late.txt"} // before and after the deletions
+	for i := 0; i < 25; i++ {
+		fake.needDeleted = append(fake.needDeleted, fmt.Sprintf("keep%02d.txt", i))
+	}
+	srv := httptest.NewTLSServer(fake)
+	defer srv.Close()
+	hub, _, _, stop := startManager(t, srv, "collector: {event_timeout: 5s}", nil, nil)
+	defer stop()
+	sv := waitFor(t, hub, "full check", func(s *model.Server) bool { return s.Loaded })
+	if nl := sv.NeedLists["p-beta"][devSirius]; fmt.Sprint(nl.Names) != "[busy.txt zz-late.txt]" || nl.Items != 2 {
+		t.Fatalf("need list %+v, want the 2 files and no deletion", nl)
+	}
+	cfg, err := config.ParseYAML([]byte(fmt.Sprintf("servers: [{name: AKKA, url: %q}]\n", srv.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	for _, f := range rules.Evaluate(rules.Input{Snapshot: hub.Snapshot(), Config: cfg, Now: time.Now()}) {
+		if f.Check == "H5" && f.DetailValue("Folder ID") == "p-beta" && f.DetailValue("Device ID") == devSirius {
+			row = f.DetailValue("Needed files")
+		}
+	}
+	if row != "busy.txt · zz-late.txt" {
+		t.Fatalf("H5 row \"Needed files\" %q", row)
 	}
 }
 
