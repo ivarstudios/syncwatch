@@ -486,11 +486,14 @@ func TestStructureFindingShowsTheLastScan(t *testing.T) {
 		t.Errorf("the H1 row has a last scan or Scan now:\n%s", h1)
 	}
 
-	yesterday := today(e, 0, 0, 0).Add(-10 * time.Minute) // 23:50 the day before
+	// 23:50 the day before, seen at 01:30: no change of daylight saving time
+	// is between these 2 times (it is at 02:00 or 03:00).
+	e.web.now = func() time.Time { return today(e, 1, 30, 0) }
+	yesterday := today(e, 0, 0, 0).Add(-10 * time.Minute)
 	e.hub.Update("akka", func(s *model.Server) { s.LastStructureScan = yesterday })
 	e.eng.Evaluate()
 	_, page = e.get("/problems")
-	if row := findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA"); !strings.Contains(row, "· last scan "+yesterday.Format("2006-01-02 15:04")+` (<span data-ago="33480">9 hours ago</span>)`) {
+	if row := findingRow(t, e, page, "S4", "AKKA-LIVE-1SOURCE/Wrong on AKKA"); !strings.Contains(row, "· last scan "+yesterday.Format("2006-01-02 15:04")+` (<span data-ago="6000">1 hour ago</span>)`) {
 		t.Errorf("a scan of yesterday must have its date:\n%s", row)
 	}
 
