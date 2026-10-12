@@ -3,6 +3,9 @@
 # all data. syncwatch only gets a gate token. The gate token reaches only
 # the read-only endpoints that syncwatch uses. Run one gate on each NAS
 # that syncwatch monitors.
+# Update the gate together with syncwatch, to the same version. A gate of an
+# older version refuses some requests of a new syncwatch. An example is the
+# list of the files that a PC still needs (H5).
 #
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data
 #    chown 1000:1000 /share/CACHEDEV1_DATA/Containers/syncwatch-gate/data

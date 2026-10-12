@@ -1,19 +1,28 @@
 # Home Assistant sensors from syncwatch, for the servers AKKA and SOL of
-# examples/ivar.yaml. The sensors of the third server SIRIUS are a comment at
-# the end. Remove the # signs there if you have that server.
+# examples/ivar.yaml. For a third server, copy the 6 entries of SOL and
+# change sol to the ID of the server.
 # Paste this block into configuration.yaml (or a package). Write the API
 # token in secrets.yaml:
 #
 #   syncwatch_auth: "Bearer swt_…"     # Settings → API in syncwatch
 #
-# One request each minute reads each server from /api/v1/ha of syncwatch.
+# Use an API token with the scope Home Assistant (Settings → API → Add API
+# token). It reads only /api/v1/ha, without device IDs, addresses and paths.
+# One request each minute reads /api/v1/ha of syncwatch.
 # The keys under value_json.servers are the server IDs of syncwatch
 # (Settings → Servers). Always write them as servers['<id>']. An ID can have
 # a hyphen (a server named "NAS 1" gets the ID nas-1), and servers.nas-1 is a
 # subtraction in a Jinja template. For each server you get 6 entities: a
 # binary sensor (the server answers) and the status. Also the data moved in
 # the last 24 hours and in 7 days, and the download and upload speed. The
-# data sensors have the attributes received and sent.
+# data sensors have the attributes received and sent. 3 more entities are
+# for all servers: the urgent findings, failed notifications and the
+# connection between the sites.
+# The status of a server is up_to_date, syncing, scanning, watch_error,
+# error, paused, unreachable, certificate_changed, not_contacted or disabled.
+# After a start of syncwatch, the status has the value not_contacted until the
+# first full check of the server. Thus an automation on unreachable does not
+# start.
 # Each entity has an availability template. When the answer has no data for
 # the server, the state of the entity is `unavailable`, not `off`. An example
 # is the answer HTTP 401 after a change of the API token. Use the sensors only
@@ -42,11 +51,22 @@ rest:
         device_class: running
         availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].running }}"
-      # - name: SIRIUS Syncthing running
-      #   unique_id: syncwatch_sirius_running
-      #   device_class: running
-      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
-      #   value_template: "{{ value_json.servers['sirius'].running }}"
+      # On while the notifications of syncwatch fail, for example after a
+      # person deleted the webhook in Discord.
+      - name: syncwatch notifications fail
+        unique_id: syncwatch_notifications_failing
+        device_class: problem
+        availability: "{{ value_json is mapping and 'notifications_failing' in value_json }}"
+        value_template: "{{ value_json.notifications_failing }}"
+      # On while the 2 sites are connected (the VPN between the sites). It
+      # needs the sites in syncwatch (site and servers[].site). Without 2
+      # sites, and while syncwatch cannot reach a server, Home Assistant shows
+      # the entity as not available.
+      - name: Sites connected
+        unique_id: syncwatch_sites_connected
+        device_class: connectivity
+        availability: "{{ value_json is mapping and (value_json.get('site_links') or []) | length > 0 and value_json.site_links[0].state != 'unreachable' }}"
+        value_template: "{{ value_json.site_links[0].state == 'connected' }}"
     sensor:
       # AKKA
       - name: AKKA Syncthing status
@@ -55,7 +75,7 @@ rest:
         availability: "{{ value_json is mapping and 'akka' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['akka'].status }}"
         json_attributes_path: "$.servers['akka']"
-        json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
+        json_attributes: [site, last_contact, findings_open, findings_urgent, folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
       - name: AKKA data moved 24 h
         unique_id: syncwatch_akka_moved_24h
         device_class: data_size
@@ -95,7 +115,7 @@ rest:
         availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].status }}"
         json_attributes_path: "$.servers['sol']"
-        json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
+        json_attributes: [site, last_contact, findings_open, findings_urgent, folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
       - name: SOL data moved 24 h
         unique_id: syncwatch_sol_moved_24h
         device_class: data_size
@@ -128,61 +148,13 @@ rest:
         unit_of_measurement: MB/s
         availability: "{{ value_json is mapping and 'sol' in value_json.get('servers', {}) }}"
         value_template: "{{ value_json.servers['sol'].upload_mb_s }}"
-      # SIRIUS
-      # - name: SIRIUS Syncthing status
-      #   unique_id: syncwatch_sirius_status
-      #   icon: mdi:sync
-      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
-      #   value_template: "{{ value_json.servers['sirius'].status }}"
-      #   json_attributes_path: "$.servers['sirius']"
-      #   json_attributes: [folders, folders_syncing, folders_scanning, folders_error, folders_watch_error, folders_paused]
-      # - name: SIRIUS data moved 24 h
-      #   unique_id: syncwatch_sirius_moved_24h
-      #   device_class: data_size
-      #   state_class: measurement
-      #   unit_of_measurement: GB
-      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
-      #   value_template: "{{ value_json.servers['sirius'].moved_24h_gb }}"
-      #   json_attributes_path: "$.servers['sirius']"
-      #   json_attributes: [received_24h_gb, sent_24h_gb]
-      # - name: SIRIUS data moved 7 days
-      #   unique_id: syncwatch_sirius_moved_7d
-      #   device_class: data_size
-      #   state_class: measurement
-      #   unit_of_measurement: GB
-      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
-      #   value_template: "{{ value_json.servers['sirius'].moved_7d_gb }}"
-      #   json_attributes_path: "$.servers['sirius']"
-      #   json_attributes: [received_7d_gb, sent_7d_gb]
-      # - name: SIRIUS download speed
-      #   unique_id: syncwatch_sirius_download
-      #   device_class: data_rate
-      #   state_class: measurement
-      #   unit_of_measurement: MB/s
-      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
-      #   value_template: "{{ value_json.servers['sirius'].download_mb_s }}"
-      # - name: SIRIUS upload speed
-      #   unique_id: syncwatch_sirius_upload
-      #   device_class: data_rate
-      #   state_class: measurement
-      #   unit_of_measurement: MB/s
-      #   availability: "{{ value_json is mapping and 'sirius' in value_json.get('servers', {}) }}"
-      #   value_template: "{{ value_json.servers['sirius'].upload_mb_s }}"
-
-  # The count of urgent findings that are open and not snoozed, from the
-  # status API. Use this sensor for automations. The status of a server can
-  # show "syncing" or "error" for a short time without a finding.
-  - resource: https://192.168.1.10:8080/api/v1/status
-    headers:
-      Authorization: !secret syncwatch_auth
-    verify_ssl: false
-    scan_interval: 60
-    timeout: 20
-    sensor:
+      # All servers: the urgent findings that are open and not snoozed or
+      # ignored. Use this sensor for automations. The status of a server can
+      # show "syncing" for a short time without a finding.
       - name: syncwatch urgent findings
         unique_id: syncwatch_urgent
         icon: mdi:alert
         state_class: measurement
-        availability: "{{ value_json is mapping and 'counts' in value_json }}"
-        value_template: "{{ value_json.counts.urgent }}"
-        json_attributes: [health, counts]
+        availability: "{{ value_json is mapping and 'findings_urgent' in value_json }}"
+        value_template: "{{ value_json.findings_urgent }}"
+        json_attributes: [findings_open, findings_error, findings_warn, findings_info, notifications_failing_since]
