@@ -15,7 +15,7 @@ syncwatch **never changes Syncthing**. It reads the REST API of each server with
 
 More screenshots: [Folders](docs/screenshots/grid.png) · [Findings](docs/screenshots/problems.png) · [Lobby page](docs/screenshots/lobby.png).
 
-**Status:** pre-release. There is no tagged version. The image and the binaries named below appear with the first release. Until then, [build syncwatch yourself](#build-it-yourself). syncwatch supports Syncthing 2.x only.
+**Status:** test release. The first test release is [`v0.9.0-rc1`](https://github.com/ivarstudios/syncwatch/releases/tag/v0.9.0-rc1), a pre-release (image tag `0.9.0-rc1`). The examples below name version 1.0.0, which follows after the test on real NAS hardware. Until then, use `0.9.0-rc1` or [build syncwatch yourself](#build-it-yourself). syncwatch supports Syncthing 2.x only.
 
 ## Contents
 

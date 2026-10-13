@@ -2,16 +2,16 @@
 
 The [README](README.md) describes what syncwatch does and how: install, configuration, checks, notifications, security. This plan has what remains before v1.0, the known gaps and the decisions behind the design. Update it when work lands.
 
-## 1. Current state (2026-10-12)
+## 1. Current state (2026-10-13)
 
 | Part | State |
 |---|---|
 | Built | The read-only client (one typed method for each `GET` of the allowlist). The collector (event stream, periodic full checks, polled mode, structure scan, baseline scan, traffic counters). The collector also reads the relay listeners and the files that a PC still needs. The checks H1 to H13, X1 to X2, S1 to S7, C1 to C3. The finding engine. The Discord notifier: urgent messages, repeats, resolved messages, daily reminder, quiet hours, weekly report, settings notices and a banner while a send fails. An optional second webhook gets only the settings notices. The SQLite store. The dashboard (Overview with the connections between the sites, Folders, Findings, the lobby page) and Settings (with the import preview and the devices). The JSON status API with named API tokens, and the Home Assistant endpoint. The health address `/healthz` and the optional dead-man URL. The CLI (`serve`, `probe`, `gate`, `reset-admin-password`, `import-config`, `export-config`, `healthcheck`, `--version`). The read-only gate. The Docker image. The CI and release workflows. |
 | Reviews | 2 security reviews and the review of October 2026. The review had 3 rounds (r0, r1, r2) and a check before the test release. A text rewrite brought the product text and the documentation to ASD-STE100 (Simplified Technical English). The review is complete and merged into `main`. See [docs/CHANGES-review.md](docs/CHANGES-review.md). |
-| Decisions | The team made decisions about the recommendations of the review. The third round (r2) implemented them. One item stays open: help for the person who keeps the project folders in order. The team still discusses it (section 2). |
+| Decisions | The team made decisions about the recommendations of the review. The third round (r2) implemented them. On 2026-10-12, the team also decided the help for the person who keeps the project folders in order. Its first part is in `v0.9.0-rc1` (section 2). |
 | Tests | Unit tests (with the race detector in CI). An integration suite against real Syncthing 2.1.5 and 2.1.6 processes (3 servers, 2 PCs, a fake Discord, 14 scenarios). A Docker Compose suite (the image, Syncthing containers, a gate, a fake Discord). A structure scan load simulation (Docker, started by hand). The Compose and load stacks run their Syncthing with discovery, relays, NAT traversal and reports off. Each round of the review ended with a live check in a simulation of 2 sites with a VPN, a relay and a Windows PC. |
 | CI | `gofmt`, `go vet`, `go mod tidy -diff`, govulncheck and the unit suite on each push to `main` and on each pull request, then the integration and Compose suites. CI checks the Syncthing download against the checksum list of the release. |
-| Release | No release until now: no tag, thus no image and no binaries on GitHub. The status note in the README reports it. The next step is the test release `v0.9.0-rc1` (section 2, step 1). |
+| Release | The test release `v0.9.0-rc1` (2026-10-12) is a pre-release on GitHub. It has 4 binaries with `SHA256SUMS`, and the image `ghcr.io/ivarstudios/syncwatch:0.9.0-rc1` for `linux/amd64` and `linux/arm64` with provenance. The image package on GHCR is private at this time (section 2, step 1). |
 | Real servers | Not run against real NAS hardware until now (section 2, step 2). |
 
 ## 2. Road to v1.0
@@ -20,7 +20,7 @@ The review of October 2026 did the first step of the plan before: a review of th
 
 | # | Step |
 |---|---|
-| 1 | A test release `v0.9.0-rc1` from the merged review, with provenance on (`provenance: mode=max` in the release workflow). Push the tag only after the team agrees. Look at how the container user interfaces of NAS products (QNAP Container Station) show the image. Keep provenance if the result is satisfactory. An rc tag is a pre-release on GitHub and does not move `latest`. |
+| 1 | Done on 2026-10-12: the test release `v0.9.0-rc1`, with provenance on (`provenance: mode=max` in the release workflow). An rc tag is a pre-release on GitHub and does not move `latest`. Still to do: make the GHCR package public, or each NAS must log in to `ghcr.io`. The owner of the organization changes the visibility in the settings of the package. Look at the image in the container user interface of each NAS, for example QNAP Container Station. Make sure that it shows the provenance entries (`unknown/unknown`) correctly. Keep provenance if the result is satisfactory. Else set `provenance: false` in the release workflow. |
 | 2 | The checks on the real NAS hardware. Install the test release and its gate on each NAS, the gate together with syncwatch. Run `syncwatch probe` on each server, with `--project-pattern`. Measure the browse time on the largest share and a long-poll through the VPN. Measure the load of a full check (monitor the CPU and the RAM of the NAS). Measure the duration of a baseline scan: less than 10 seconds gives the daily baseline scan. If the load is large, use the polled mode. |
 | 3 | Set the sites of the servers and of syncwatch, and the devices that always connect through a relay. Add an outside check (`/healthz` or the dead-man URL). Add what applies in general to `docs/api-findings.md`. Review a probe report before you commit it. Keep addresses and share paths out of it. |
 | 4 | One week on the real installation with the test release. Success is: no false urgent messages, the Monday report arrives, and a stopped server gives one H1 urgent message and its resolved message. |
@@ -30,13 +30,12 @@ The review of October 2026 did the first step of the plan before: a review of th
 
 ### Open for the team
 
-- **Help for the person who keeps the project folders in order.** The team still discusses it. The options are:
-  - A button "Scan now", and the time of the last scan on each structure finding.
-  - Accepted names for helper folders, for example names that start with `_`.
-  - A page for each share.
-  - S7 on in the example settings.
+- **Help for the person who keeps the project folders in order.** The team decided on 2026-10-12. These parts are in `v0.9.0-rc1`:
+  - A button "Scan now" for the administrator, and the time of the last scan on each structure finding.
+  - Accepted names for helper folders: `'_*'` in `ignore_dirs` of the studio example.
+  - S7 on in the example settings of the README.
 
-  syncwatch only reports. The registration of new project folders as Syncthing folders is not a part of syncwatch (section 5).
+  Still open: a page for each share (later), and a separate program that adds new project folders to Syncthing as paused folders. The team decides about this program after the test week (step 4). The program needs the full API key of Syncthing. Thus it cannot be a part of syncwatch, which only reports (section 5).
 
 ### Open items from the review of October 2026
 
@@ -73,6 +72,26 @@ The live check of the third round found these small items. They need no correcti
 - The database keeps the first-seen time of a folder that the server no longer has. When the folder ID is on the server again, it gets its old first-seen time.
 - A C1 finding that was open before the update keeps its old start until it resolves.
 - The review found more items of low priority for later. Examples are the layout of the Findings filters on a phone and the texts of the structure findings. Other examples are the gate token in the log of the gate, secrets in the container environment and the release supply chain. The image has no SBOM and no signature until now.
+
+### Open items from the check before the test release
+
+The last check before `v0.9.0-rc1` found these items. They need no correction before the test week.
+
+- The site check refuses invisible characters (for example U+3164), but its message gives only "no control characters" (`internal/config/config.go`).
+- In the failed items of H4, the error text of Syncthing follows the quoted file name. That text has the name again, with the raw characters CR and LF.
+- An import in the dashboard that has a secret starts the limit of `/healthz` for failed notifications again, the same as `import-config`.
+- A resolved message can show "resolved while syncwatch did not run" for a fault that ended some seconds after the start.
+- "Stop ignoring" answers "The snooze is removed."
+- A settings notice about security can arrive 2 times when Discord accepted it immediately before syncwatch stopped.
+- The API has no limit for the tries of unknown API tokens.
+- During an attack from many addresses, each address can still make 1 guess in 10 minutes. syncwatch counts each IPv6 address separately.
+- The gate gives the listen addresses of Syncthing (`/rest/system/status`) without a change. They can contain the password of a private relay pool. Only the holder of the gate token can read them.
+- 2 front ends with their own CA-signed certificate give 1 log line and 1 database write for each new connection.
+- Behind a gate, a share that is not mounted looks empty. Its S4 to S7 findings then resolve.
+- syncwatch cannot find an installation that uses the same password for viewers and administrators. A check at each administrator login needs a second password hash.
+- The list "New this week" of the weekly report has 1 line for 2 PCs with the same name.
+- CI: the pinned versions of `actions/checkout` and `actions/setup-go` use Node.js 20. GitHub runs them on Node.js 24 and shows a warning. Update the pins. `ubuntu-latest` changes to Ubuntu 26 from 2026-10-19.
+- The SHA-256 values of the release binaries differ from a local build of a `git archive` export. Go writes the version control data of the checkout into the program. To compare, build in a clone of the tag.
 
 ## 3. Decisions
 
