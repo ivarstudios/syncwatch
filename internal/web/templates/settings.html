@@ -37,7 +37,7 @@
       <label>To remove the pinned certificate: administrator password or this server's API key <input type="password" name="confirm" autocomplete="off"></label>
       <label class="check"><input type="checkbox" name="allow_http" {{if .AllowHTTP}}checked{{end}}> Permit a plain http:// URL (sends the API key unencrypted)</label>
       <label class="check"><input type="checkbox" name="disabled" {{if .Disabled}}checked{{end}}> Disabled (syncwatch does not poll this server)</label>
-      <div class="actions"><button type="submit">Save</button></div>
+      <div class="actions"><button type="submit" class="primary">Save</button></div>
     </form>
     <form method="post" action="/settings/servers/{{.ID}}/delete" data-confirm="Remove {{.Name}} from syncwatch? syncwatch deletes its API key and pinned certificate.">
       <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}"><button type="submit" class="danger link">Remove server</button>
@@ -54,7 +54,7 @@
       <label>Site (optional) <input name="site" list="site-names" placeholder="IVAR Office" autocomplete="off"></label>
       <label>API key <input type="password" name="api_key" required autocomplete="off"></label>
       <label class="check"><input type="checkbox" name="allow_http"> Permit a plain http:// URL (sends the API key unencrypted)</label>
-      <div class="actions"><button type="submit">Add server</button></div>
+      <div class="actions"><button type="submit" class="primary">Add server</button></div>
     </form>
   </details>
   <datalist id="site-names">{{range $d.Sites}}<option value="{{.}}">{{end}}</datalist>
@@ -77,7 +77,7 @@
       </tbody>
     </table>
     </div>
-    <div class="actions"><button type="submit">Save devices</button></div>
+    <div class="actions"><button type="submit" class="primary">Save devices</button></div>
   </form>
   {{else}}
   <p>There are no PCs. syncwatch shows the PCs after the first full check of a server.</p>
@@ -105,11 +105,11 @@
     <label{{if index $bad "weekly_time"}} class="c-err"{{end}}>Weekly report time <input name="weekly_time" value="{{index $f "weekly_time"}}"{{if index $bad "weekly_time"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "weekly_top"}} class="c-err"{{end}}>Findings listed in the weekly report <input type="number" name="weekly_top" min="1" max="50" value="{{index $f "weekly_top"}}"{{if index $bad "weekly_top"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "timezone"}} class="c-err"{{end}}>Time zone <input name="timezone" value="{{index $f "timezone"}}" placeholder="Europe/Stockholm"{{if index $bad "timezone"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
-    <label{{if index $bad "public_url"}} class="c-err"{{end}}>Dashboard URL for links in messages <input name="public_url" value="{{index $f "public_url"}}" placeholder="http://192.168.1.10:8080"{{if index $bad "public_url"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
+    <label{{if index $bad "public_url"}} class="c-err"{{end}}>Dashboard URL for links in messages <input name="public_url" value="{{index $f "public_url"}}" placeholder="https://192.168.1.10:8386"{{if index $bad "public_url"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <label{{if index $bad "site"}} class="c-err"{{end}}>Site where syncwatch runs (optional) <input name="site" value="{{index $f "site"}}" list="site-names" placeholder="IVAR Office" autocomplete="off"{{if index $bad "site"}} aria-invalid="true" aria-describedby="notifications-error"{{end}}></label>
     <p class="small muted">syncwatch names the sites in messages, for example: unreachable from IVAR Office.</p>
     {{with index $d.Errors "notifications"}}<p id="notifications-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
-    <div class="actions"><button type="submit">Save</button></div>
+    <div class="actions"><button type="submit" class="primary">Save</button></div>
   </form>
   <div class="actions">
     <form method="post" action="/settings/notifications/test" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Send test message</button></form>
@@ -159,7 +159,7 @@
     </div>
     <p class="small muted">Durations: 30s, 15m, 24h, 3d, 2w.</p>
     {{with index $d.Errors "checks"}}<p id="checks-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
-    <div class="actions"><button type="submit">Save checks</button></div>
+    <div class="actions"><button type="submit" class="primary">Save checks</button></div>
   </form>
 </section>
 
@@ -169,7 +169,7 @@
   <form method="post" action="/settings/structure">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="rev" value="{{$d.Rev}}">
     <textarea name="yaml" rows="22" class="mono" spellcheck="false" aria-label="Structure rules YAML">{{$d.StructureYAML}}</textarea>
-    <div class="actions"><button type="submit">Save rules</button></div>
+    <div class="actions"><button type="submit" class="primary">Save rules</button></div>
   </form>
   <form method="post" action="/structure/scan" class="inline">
     <input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="back" value="/settings#structure">
@@ -193,7 +193,7 @@
     <label{{if index $bad "request_timeout"}} class="c-err"{{end}}>Request timeout <span class="muted">(syncwatch stops a request to the server after this time.)</span> <input name="request_timeout" value="{{index $f "request_timeout"}}"{{if index $bad "request_timeout"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
     <label{{if index $bad "down_after_failures"}} class="c-err"{{end}}>Mark unreachable after failures <span class="muted">(A higher number gives fewer false H1 findings and a later H1.)</span> <input type="number" name="down_after_failures" min="1" max="20" value="{{index $f "down_after_failures"}}"{{if index $bad "down_after_failures"}} aria-invalid="true" aria-describedby="collector-error"{{end}}></label>
     {{with index $d.Errors "collector"}}<p id="collector-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
-    <div class="actions"><button type="submit">Save and restart collectors</button></div>
+    <div class="actions"><button type="submit" class="primary">Save and restart collectors</button></div>
   </form>
 </section>
 
@@ -214,7 +214,7 @@
     <p class="small muted">With open access, each person who can reach syncwatch sees the dashboard: the names of servers, PCs and folders, the folder paths and the findings. The JSON API needs an API token or a login.</p>
     <label>Viewer password {{if $d.HasViewerPW}}<span class="muted">(Set. Keep the field empty to keep the current value.)</span>{{end}} <input type="password" name="viewer_password" autocomplete="new-password"></label>
     <label>Administrator password <span class="muted">(this change permits access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>
-    <div class="actions"><button type="submit">Save access</button></div>
+    <div class="actions"><button type="submit" class="primary">Save access</button></div>
   </form>
   <h3>Change administrator password</h3>
   <form method="post" action="/settings/password" class="grid-form">
@@ -222,7 +222,7 @@
     <label>Current password <input type="password" name="current" autocomplete="current-password"></label>
     <label>New password <input type="password" name="password" minlength="10" autocomplete="new-password" required></label>
     <label>Repeat new password <input type="password" name="password2" minlength="10" autocomplete="new-password" required></label>
-    <div class="actions"><button type="submit">Change password</button></div>
+    <div class="actions"><button type="submit" class="primary">Change password</button></div>
   </form>
 </section>
 
@@ -251,7 +251,7 @@
     {{with .DeleteLabel}}<label class="check"><input type="checkbox" name="delete_servers"> {{.}}</label>{{end}}
     {{if .NeedPassword}}<label>Administrator password <span class="muted">(necessary to remove servers or to give access to more people)</span> <input type="password" name="confirm" autocomplete="current-password"></label>{{end}}
     {{with .Error}}<p id="import-error" class="flash err" role="alert" tabindex="-1" autofocus>✖ {{.}}</p>{{end}}
-    <div class="actions"><button type="submit">Import</button> <a href="/settings#import">Cancel</a></div>
+    <div class="actions"><button type="submit" class="primary">Import</button> <a href="/settings#import">Cancel</a></div>
   </form>
   {{else}}
   <p><a href="/settings/export">Download the configuration as YAML</a> (without the API keys, the webhook URLs and the API token).</p>
@@ -261,7 +261,7 @@
     <label>…or paste YAML <textarea name="yaml" rows="6" class="mono" spellcheck="false"></textarea></label>
     <p class="small muted">The import replaces the complete configuration. Sections that are not in the file get their default values. First, syncwatch shows a preview of the changes. The preview also shows the servers that the import removes.</p>
     <p class="small muted">syncwatch encrypts the secrets in the file (<code>api_key</code>, <code>discord_webhook</code>, <code>discord_notices_webhook</code>). The value of <code>api.token</code> becomes the value of the API token "API token". Secrets that are not in the file stay as they are. syncwatch uses a kept API key only while the URL of its server does not change.</p>
-    <div class="actions"><button type="submit">Show the preview</button></div>
+    <div class="actions"><button type="submit" class="primary">Show the preview</button></div>
   </form>
   {{end}}
 </section>

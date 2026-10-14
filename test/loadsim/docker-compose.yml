@@ -96,7 +96,7 @@ services:
       SYNCWATCH_ADMIN_PASSWORD: loadsim-admin-password
     volumes:
       - swdata:/data
-    ports: ["${SW_E2E_BIND:-127.0.0.1}:18781:8080"]
+    ports: ["${SW_E2E_BIND:-127.0.0.1}:18781:8386"]
     depends_on:
       init: { condition: service_completed_successfully }
 

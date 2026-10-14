@@ -2,7 +2,7 @@
 # check that needs no structure rules works without more configuration.
 # These are: health, Syncthing folders inside others, share roots as
 # Syncthing folders, duplicate names, project folders not in Syncthing, cleanup.
-public_url: https://monitor.lan:8080
+public_url: https://monitor.lan:8386
 timezone: Europe/Berlin
 servers:
   - name: nas1

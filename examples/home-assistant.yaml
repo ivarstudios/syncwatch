@@ -32,7 +32,7 @@
 # read-only. The request goes to an IP address. A request by a host name needs
 # that name in SYNCWATCH_TLS_HOSTS of syncwatch.
 rest:
-  - resource: https://192.168.1.10:8080/api/v1/ha
+  - resource: https://192.168.1.10:8386/api/v1/ha
     headers:
       Authorization: !secret syncwatch_auth
     # The self-signed certificate of syncwatch. Home Assistant does not check

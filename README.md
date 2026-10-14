@@ -42,7 +42,7 @@ services:
       - TZ=Europe/Stockholm
       - SYNCWATCH_TLS_HOSTS=192.168.1.10   # the address that you open: for the certificate and the Host check
     ports:
-      - "192.168.1.10:8080:8080"  # LAN address only
+      - "192.168.1.10:8386:8386"  # LAN address only
     volumes:
       - ./data:/data
 ```
@@ -63,7 +63,7 @@ If you lose `secret.key`, or change `SYNCWATCH_SECRET_KEY`, syncwatch cannot dec
 
 The log reports the secret key at the start. If syncwatch makes a new `secret.key` while the database contains secrets, the log shows an error: the old secret key is missing or replaced. If `SYNCWATCH_SECRET_KEY` is set and `/data/secret.key` also exists, the log shows a warning, because syncwatch uses only the variable. If the secret key cannot decrypt the stored secrets, the log also shows an error at the start.
 
-The binary `syncwatch` also runs without Docker, also on Windows: `syncwatch serve --data ./data`. See the [releases](https://github.com/ivarstudios/syncwatch/releases). The binary listens on `127.0.0.1:8080`. To listen on a LAN address, give `--listen 192.168.1.10:8080` or set `SYNCWATCH_LISTEN`. The image listens on `:8080` in the container. Thus the address in `ports:` decides who can reach the dashboard. Always give that address: a `-p 8080:8080` without an address opens the port on each interface of the host.
+The binary `syncwatch` also runs without Docker, also on Windows: `syncwatch serve --data ./data`. See the [releases](https://github.com/ivarstudios/syncwatch/releases). The binary listens on `127.0.0.1:8386`. To listen on a LAN address, give `--listen 192.168.1.10:8386` or set `SYNCWATCH_LISTEN`. The image listens on `:8386` in the container. Thus the address in `ports:` decides who can reach the dashboard. Always give that address: a `-p 8386:8386` without an address opens the port on each interface of the host. Port 8386 is next to the Syncthing GUI (8384) and the gate (8385). syncwatch does not use port 8080, because a QNAP NAS uses that port for its administration page.
 
 The data directory is `--data` or `SYNCWATCH_DATA`. The default is `/data` if that directory exists, or `./data` in the current directory. The start log shows the resolved path.
 
@@ -84,7 +84,7 @@ The image builds for `linux/amd64` and `linux/arm64` (`docker buildx build --pla
 syncwatch cannot report a failure of its own host. If that host is a monitored server and it loses power or stops, syncwatch does not send the H1 urgent message. Do one of these:
 
 - Run syncwatch on a host that it does not monitor. Examples: a different NAS, or a small computer that is on at all times. The host must reach the API URL of each server.
-- If syncwatch runs on a monitored server, add an outside check of `https://<host>:8080/healthz`, or set the [dead-man URL](#health-check-and-dead-man-url). The outside check (Uptime Kuma, healthchecks.io, Home Assistant, the router) must send its own notification.
+- If syncwatch runs on a monitored server, add an outside check of `https://<host>:8386/healthz`, or set the [dead-man URL](#health-check-and-dead-man-url). The outside check (Uptime Kuma, healthchecks.io, Home Assistant, the router) must send its own notification.
 
 Without one of these, a missed Monday report is the only sign that syncwatch or its host stopped.
 
@@ -109,9 +109,9 @@ After its checks, syncwatch sends `GET` to the URL at most every 30 seconds, whi
 
 ### HTTPS
 
-The image serves HTTPS by default. Thus the password and the session cookie never cross the LAN unencrypted. syncwatch makes a self-signed certificate in `/data` and logs the first 8 bytes of its SHA-256 fingerprint (for example `B6:CF:ED:46:0C:D4:10:AA`). Each browser asks one time to accept it. Compare the start of the fingerprint in the browser with the log. The certificate includes `localhost`, the host of `public_url`, a specific listen address and the names in `SYNCWATCH_TLS_HOSTS` (comma-separated). Set `SYNCWATCH_TLS_HOSTS` to the address that you open, because the container only sees `:8080`.
+The image serves HTTPS by default. Thus the password and the session cookie never cross the LAN unencrypted. syncwatch makes a self-signed certificate in `/data` and logs the first 8 bytes of its SHA-256 fingerprint (for example `B6:CF:ED:46:0C:D4:10:AA`). Each browser asks one time to accept it. Compare the start of the fingerprint in the browser with the log. The certificate includes `localhost`, the host of `public_url`, a specific listen address and the names in `SYNCWATCH_TLS_HOSTS` (comma-separated). Set `SYNCWATCH_TLS_HOSTS` to the address that you open, because the container only sees `:8386`.
 
-Entries in the form `[fd00::1]` or `nas:8080` are accepted: syncwatch removes the brackets and the port. syncwatch does not accept wildcards. An entry that is not an IP address or a DNS name gives a warning in the log, and syncwatch ignores it. When these names change, the next start makes a new certificate and the browsers ask again. syncwatch also makes a new self-signed certificate while it runs, when fewer than 30 days of validity remain. The browsers then ask again.
+Entries in the form `[fd00::1]` or `nas:8386` are accepted: syncwatch removes the brackets and the port. syncwatch does not accept wildcards. An entry that is not an IP address or a DNS name gives a warning in the log, and syncwatch ignores it. When these names change, the next start makes a new certificate and the browsers ask again. syncwatch also makes a new self-signed certificate while it runs, when fewer than 30 days of validity remain. The browsers then ask again.
 
 - Your own certificate: `SYNCWATCH_TLS_CERT` and `SYNCWATCH_TLS_KEY`. They have priority over the self-signed certificate. syncwatch reads the 2 files again when they change (it looks at the files at most one time each minute). Thus a new certificate from certbot needs no restart.
 - Plain HTTP: `SYNCWATCH_TLS_SELF_SIGNED=false`. The permitted values are `true`, `false`, `1`, `0`, `yes`, `no`, `on` and `off` (`t` and `f` also work). A different value stops the start with an error that names the variable.
@@ -125,7 +125,7 @@ The dashboard serves HTTP/2. Over HTTPS, the cookies are `__Host-sw_session` and
 
 | Variable | Command | Value |
 |---|---|---|
-| `SYNCWATCH_LISTEN` | serve | The listen address. The binary listens on `127.0.0.1:8080` by default, and the image sets `:8080`. |
+| `SYNCWATCH_LISTEN` | serve | The listen address. The binary listens on `127.0.0.1:8386` by default, and the image sets `:8386`. |
 | `SYNCWATCH_DATA` | all | The data directory. The default is `/data` if that directory exists, or `./data`. |
 | `SYNCWATCH_CONFIG` | serve | The [bootstrap file](#bootstrap-file). The default is `<data>/syncwatch.yaml`. |
 | `SYNCWATCH_SECRET_KEY` | serve, maintenance commands | A base64-encoded random key of 32 bytes. The default is `<data>/secret.key`. |
@@ -193,7 +193,7 @@ A restored backup has the findings and the notifications of its time. syncwatch 
 
 ## First start
 
-1. Open `https://<host>:8080` (`http://` if [HTTPS](#https) is off). Accept the self-signed certificate one time.
+1. Open `https://<host>:8386` (`http://` if [HTTPS](#https) is off). Accept the self-signed certificate one time.
 2. The dashboard shows the **First start** page while no administrator password is set. Type the **setup token** from the log (`docker logs syncwatch`). Then type a new administrator password. The setup token shows that you can read the log of the host. Thus the first visitor on the LAN cannot take the administrator account. If the log level hides warnings, syncwatch also prints the setup token on stderr. Or set `SYNCWATCH_ADMIN_PASSWORD` for the first start.
 3. Open **Settings → Servers**. Add each server that syncwatch must poll. Type a name, the API URL (for example `https://192.168.1.10:8384`) and its API key. The API key is in Syncthing under Actions → Settings → API Key. syncwatch pins the certificate of the server on first use, self-signed or CA-signed. syncwatch sends an API key only to the URL that you typed it for. When you change the URL of a server, type its API key again.
 4. Open **Settings → Notifications**. Paste a Discord webhook URL (Channel → Integrations → Webhooks) and the numeric ID of the role to mention in urgent messages. Select **Send test message** to check it. The test message mentions the role, the same as an urgent message. If your phone shows no notification, check the role ID and make sure that you have the role.
@@ -237,7 +237,7 @@ The maintenance commands (`import-config`, `export-config`, `reset-admin-passwor
 Each setting is available on the Settings page. The YAML format (export and import) is this. Each key is optional, except the servers:
 
 ```yaml
-public_url: https://192.168.1.10:8080  # dashboard links in Discord messages
+public_url: https://192.168.1.10:8386  # dashboard links in Discord messages
 timezone: Europe/Stockholm
 site: IVAR Office                      # optional: the site where syncwatch runs, for messages such as "unreachable from IVAR Office"
 servers:
@@ -516,7 +516,7 @@ To show the lobby page on a screen:
 
 1. In Settings → Access, set the viewer access. With "open, without login", the screen needs no login. With "with the viewer password", type the viewer password on the screen one time.
 2. For a screen that stays logged in, set `access.session_ttl` to a long time, for example `365d` (the maximum). An administrator session ends after 30 days at most, also with a longer `access.session_ttl`. Thus use the viewer password on the screen.
-3. Open `https://<host>:8080/lobby` in the browser of the screen, in full-screen mode.
+3. Open `https://<host>:8386/lobby` in the browser of the screen, in full-screen mode.
 
 The lobby page needs no API token. When the login ends, the screen shows the login page. After the next login, the screen shows the same lobby page again.
 
@@ -572,7 +572,7 @@ The proxy must forward the original `Host` header of the browser, with the port.
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:8080;
+    proxy_pass http://127.0.0.1:8386;
     proxy_set_header Host $http_host;          # the Host header of the browser, with the port ($host removes the port)
     proxy_set_header X-Forwarded-Proto $scheme;
 }
@@ -609,10 +609,10 @@ syncwatch keeps the keys to your Syncthing servers. Report a vulnerability in pr
 - With 5 API tokens and none with the name "API token", syncwatch does not accept the API token of the older version. The log has a warning, and Settings → API shows the old API token. Revoke it there. Then add an API token for the program.
 
 ```sh
-curl -k -H "Authorization: Bearer $TOKEN" https://192.168.1.10:8080/api/v1/status   # -k: the self-signed certificate
+curl -k -H "Authorization: Bearer $TOKEN" https://192.168.1.10:8386/api/v1/status   # -k: the self-signed certificate
 ```
 
-A request by a container name needs that name in `SYNCWATCH_TLS_HOSTS` (see the [Host check](#https)). Example: `https://syncwatch:8080` from Home Assistant on the same Docker network, with `verify_ssl: false`.
+A request by a container name needs that name in `SYNCWATCH_TLS_HOSTS` (see the [Host check](#https)). Example: `https://syncwatch:8386` from Home Assistant on the same Docker network, with `verify_ssl: false`.
 
 ### Stable values
 
@@ -808,6 +808,6 @@ Layout: `cmd/syncwatch` (CLI) · `internal/stclient` (the client with the allowl
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The dashboard includes [htmx](https://htmx.org) (0BSD) and its [SSE extension](https://github.com/bigskysoftware/htmx-extensions).
+MIT. See [LICENSE](LICENSE). The dashboard includes [htmx](https://htmx.org) (0BSD), its [SSE extension](https://github.com/bigskysoftware/htmx-extensions) and the heading font Raleway Medium from the Syncthing GUI (SIL Open Font License 1.1, see [OFL.txt](internal/web/assets/fonts/OFL.txt)).
 
 IVAR Studios made syncwatch to monitor its own Syncthing servers.

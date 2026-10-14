@@ -62,10 +62,13 @@ func main() {
 			log.Fatalf("building syncwatch: %v\n%s", err, out)
 		}
 	}
+	// The Syncthing instances are new on each start, thus a kept database
+	// would report a changed certificate (H3) for each server.
 	data := filepath.Join(*dir, "data")
+	_ = os.RemoveAll(data)
 	_ = os.MkdirAll(data, 0o755)
 	token := "swt_simulation_token_0123456789"
-	if err := harness.WriteConfig(filepath.Join(data, "syncwatch.yaml"), env, fd.URL(), "424242", token, ""); err != nil {
+	if err := harness.WriteConfig(filepath.Join(data, "syncwatch.yaml"), env, fd.URL(), "777000111000000000", token, ""); err != nil {
 		log.Fatal(err)
 	}
 	s, err := harness.StartSyncwatch(*sw, data, *listen, "simulation-admin", token)

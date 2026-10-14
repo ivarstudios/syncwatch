@@ -49,7 +49,7 @@
       <option value="ha" {{if eq $api.Scope "ha"}}selected{{end}}>Home Assistant: /api/v1/ha only</option>
       <option value="full" {{if eq $api.Scope "full"}}selected{{end}}>Full: /api/v1/status and /api/v1/ha</option>
     </select></label>
-    <div class="actions"><button type="submit" name="op" value="add">Add API token</button></div>
+    <div class="actions"><button type="submit" name="op" value="add" class="primary">Add API token</button></div>
   </form>
   {{else}}
   <p class="muted">There are {{$api.Max}} API tokens. Revoke an API token before you add an API token.</p>

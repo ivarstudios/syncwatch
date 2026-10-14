@@ -33,9 +33,9 @@ import (
 var version = "dev"
 
 // defaultListen is loopback only, so a plain "syncwatch serve" isn't reachable
-// from other machines by accident. The Docker image sets SYNCWATCH_LISTEN=:8080
+// from other machines by accident. The Docker image sets SYNCWATCH_LISTEN=:8386
 // and the published port decides who can reach it.
-const defaultListen = "127.0.0.1:8080"
+const defaultListen = "127.0.0.1:8386"
 
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -277,7 +277,7 @@ func serve(args []string) error {
 	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	data, key := dataFlags(fs)
-	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, for example 192.168.1.10:8080 (env SYNCWATCH_LISTEN, default loopback only)")
+	listen := fs.String("listen", env("SYNCWATCH_LISTEN", defaultListen), "listen address, for example 192.168.1.10:8386 (env SYNCWATCH_LISTEN, default loopback only)")
 	cfgFile := fs.String("config", env("SYNCWATCH_CONFIG", ""), "bootstrap file that syncwatch imports on first start (env SYNCWATCH_CONFIG, default <data>/syncwatch.yaml)")
 	level := fs.String("log-level", env("SYNCWATCH_LOG_LEVEL", "info"), "debug, info, warn or error (env SYNCWATCH_LOG_LEVEL)")
 	format := fs.String("log-format", env("SYNCWATCH_LOG_FORMAT", "text"), "text or json (env SYNCWATCH_LOG_FORMAT)")
@@ -476,7 +476,7 @@ func healthURL() string {
 	}
 	host, port, err := net.SplitHostPort(env("SYNCWATCH_LISTEN", defaultListen))
 	if err != nil {
-		host, port = "127.0.0.1", "8080"
+		host, port, _ = net.SplitHostPort(defaultListen)
 	}
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		host = "127.0.0.1"
