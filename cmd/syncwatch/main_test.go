@@ -15,9 +15,9 @@ import (
 )
 
 // The gate has its own listen variable, so a gate container doesn't inherit
-// the image's SYNCWATCH_LISTEN=:8080 meant for serve.
+// the image's SYNCWATCH_LISTEN=:8386 meant for serve.
 func TestGateListen(t *testing.T) {
-	t.Setenv("SYNCWATCH_LISTEN", ":8080")
+	t.Setenv("SYNCWATCH_LISTEN", ":8386")
 	t.Setenv("SYNCWATCH_GATE_LISTEN", "")
 	t.Setenv("SYNCWATCH_GATE_BROWSE_ROOTS", "")
 	if o, _ := gateOptions(nil); o.Listen != "127.0.0.1:8385" || o.BrowseRoots != nil {
@@ -37,13 +37,13 @@ func TestHealthURL(t *testing.T) {
 	cases := []struct {
 		listen, tls, want string
 	}{
-		{"", "", "http://127.0.0.1:8080/healthz"},
-		{":8080", "", "http://127.0.0.1:8080/healthz"},
+		{"", "", "http://127.0.0.1:8386/healthz"},
+		{":8386", "", "http://127.0.0.1:8386/healthz"},
 		{"0.0.0.0:9000", "", "http://127.0.0.1:9000/healthz"},
 		{"[::]:9000", "", "http://127.0.0.1:9000/healthz"},
-		{"192.168.1.10:8080", "", "http://192.168.1.10:8080/healthz"},
-		{":8080", "true", "https://127.0.0.1:8080/healthz"},
-		{":8080", "yes", "https://127.0.0.1:8080/healthz"},
+		{"192.168.1.10:8386", "", "http://192.168.1.10:8386/healthz"},
+		{":8386", "true", "https://127.0.0.1:8386/healthz"},
+		{":8386", "yes", "https://127.0.0.1:8386/healthz"},
 	}
 	for _, c := range cases {
 		t.Setenv("SYNCWATCH_LISTEN", c.listen)
@@ -53,7 +53,7 @@ func TestHealthURL(t *testing.T) {
 			t.Errorf("listen %q tls %q: got %s, want %s", c.listen, c.tls, got, c.want)
 		}
 	}
-	if defaultListen != "127.0.0.1:8080" {
+	if defaultListen != "127.0.0.1:8386" {
 		t.Fatal("the binary must listen on loopback by default")
 	}
 }

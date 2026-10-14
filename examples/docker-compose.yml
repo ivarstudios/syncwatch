@@ -4,7 +4,7 @@
 # stops, syncwatch does not send the H1 urgent message. Use a host that
 # syncwatch does not monitor. If syncwatch remains on a monitored NAS, set an
 # outside check (Uptime Kuma, healthchecks.io, the router) to
-# https://<nas>:8080/healthz. Or set SYNCWATCH_DEADMAN_URL below. See "Where
+# https://<nas>:8386/healthz. Or set SYNCWATCH_DEADMAN_URL below. See "Where
 # to run syncwatch" and "Health check and dead-man URL" in the README.
 #
 # 1. mkdir -p /share/CACHEDEV1_DATA/Containers/syncwatch/data
@@ -18,7 +18,7 @@
 # 2. If necessary, copy examples/ivar.yaml to data/syncwatch.yaml. syncwatch
 #    imports it one time and removes the secrets from the file.
 # 3. docker compose up -d
-#    Open https://<nas>:8080. The browser asks one time to accept the
+#    Open https://<nas>:8386. The browser asks one time to accept the
 #    self-signed certificate. The fingerprint is in the log.
 # 4. Type the setup token from `docker logs syncwatch`. Then type the
 #    administrator password.
@@ -38,13 +38,13 @@ services:
       - TZ=Europe/Stockholm
       # The image serves HTTPS with a self-signed certificate. This line puts
       # the LAN address of the NAS in the certificate (the container only sees
-      # :8080). The dashboard also answers only to these names and to IP addresses.
+      # :8386). The dashboard also answers only to these names and to IP addresses.
       - SYNCWATCH_TLS_HOSTS=192.168.1.10
       # Optional: syncwatch calls this URL of an outside monitor service while
       # it is healthy. When the calls stop, the service sends an alarm.
       # - SYNCWATCH_DEADMAN_URL=https://monitor.example.invalid/ping/…
     ports:
-      - "192.168.1.10:8080:8080"     # LAN only. Never connect the port to the internet
+      - "192.168.1.10:8386:8386"     # LAN only. Never connect the port to the internet
     volumes:
       - /share/CACHEDEV1_DATA/Containers/syncwatch/data:/data
     labels:

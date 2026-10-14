@@ -90,7 +90,7 @@ The last check before `v0.9.0-rc1` found these items. They need no correction be
 - Behind a gate, a share that is not mounted looks empty. Its S4 to S7 findings then resolve.
 - syncwatch cannot find an installation that uses the same password for viewers and administrators. A check at each administrator login needs a second password hash.
 - The list "New this week" of the weekly report has 1 line for 2 PCs with the same name.
-- CI: the pinned versions of `actions/checkout` and `actions/setup-go` use Node.js 20. GitHub runs them on Node.js 24 and shows a warning. Update the pins. `ubuntu-latest` changes to Ubuntu 26 from 2026-10-19.
+- CI: `ubuntu-latest` changes to Ubuntu 26 from 2026-10-19. The pinned actions use Node.js 24 since 2026-10-14.
 - The SHA-256 values of the release binaries differ from a local build of a `git archive` export. Go writes the version control data of the checkout into the program. To compare, build in a clone of the tag.
 
 ## 3. Decisions
@@ -99,6 +99,7 @@ The last check before `v0.9.0-rc1` found these items. They need no correction be
 
 - Read-only by construction: the Syncthing client can only send the `GET` requests of the allowlist, and a unit test fails if not. The client discards `ConfigSaved` payloads. syncwatch never writes to Syncthing.
 - One Go binary with htmx and server-sent events. SQLite. English only. MIT.
+- The dashboard port is 8386, next to the Syncthing GUI (8384) and the gate (8385). Before `v0.9.0-rc2` it was 8080, but a QNAP NAS uses 8080 for its administration page.
 - The dashboard and the lobby page use the design of the Syncthing GUI. Thus the persons who use Syncthing know the pages immediately. The pages have the light navbar, panels with a grey heading and Raleway for the headings (the font file of Syncthing). They use the colors of Syncthing for each state: green is up to date, blue is syncing, red is an error, orange is waiting, purple is offline or unknown, grey is paused. The dark theme uses the colors of the dark theme of Syncthing. The text colors are darker than in Syncthing (lighter in the dark theme), for a contrast of 4.5:1.
 - Events plus periodic full checks, with a polled mode for servers where a full check is slow. After a lost connection, the event stream resumes. A Syncthing restart or missed events start a full check, at most one full check every 10 minutes for missed events.
 - syncwatch pins each server certificate on first use (trust on first use), self-signed or CA-signed, by SHA-256. A changed certificate opens H3 until an administrator accepts it. A new CA-signed certificate for the host name is accepted without H3. syncwatch sends a settings notice for each certificate that it pins without an administrator.

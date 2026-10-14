@@ -152,7 +152,7 @@ func fingerprint(cert *tls.Certificate) string {
 // tlsHosts are the names a self-signed certificate is made for: loopback,
 // the host of public_url, the listen address when it is a specific one, and
 // any extra names (SYNCWATCH_TLS_HOSTS, e.g. the NAS's LAN address, which a
-// container listening on :8080 can't know).
+// container listening on :8386 can't know).
 func tlsHosts(cfg *config.Config, listen string, extra []string, log *slog.Logger) []string {
 	hosts := []string{"localhost", "127.0.0.1", "::1"}
 	add := func(h string) {

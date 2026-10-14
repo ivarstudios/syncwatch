@@ -35,11 +35,11 @@ COPY --from=build --chown=65532:65532 --chmod=0700 /out/data /data
 # includes it and the dashboard answers to it.
 # The gate (command: gate) has its own listen address, 8385.
 ENV SYNCWATCH_DATA=/data \
-    SYNCWATCH_LISTEN=:8080 \
+    SYNCWATCH_LISTEN=:8386 \
     SYNCWATCH_GATE_LISTEN=:8385 \
     SYNCWATCH_TLS_SELF_SIGNED=true
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 8386
 USER 65532:65532
 # The healthcheck asks /healthz. It fails when the database does not answer,
 # or when syncwatch did not evaluate the checks for more than 5 minutes. It
