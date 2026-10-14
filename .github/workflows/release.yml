@@ -46,7 +46,7 @@ jobs:
       # writes the files of each image into a local directory, with 1
       # subdirectory for each platform (linux_amd64, linux_arm64).
       - name: Build the image for the architecture check
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -87,7 +87,7 @@ jobs:
       # This step uses the layers of the check build from the cache of this
       # builder. Thus the registry gets the programs that the check examined.
       - name: Build and publish the image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
