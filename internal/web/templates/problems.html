@@ -26,7 +26,7 @@
     </select>
   </label>
   <label class="check"><input type="checkbox" name="snoozed" value="1" {{if $vm.Filter.ShowSnoozed}}checked{{end}}> Show snoozed and ignored findings</label>
-  <button type="submit">Filter</button>
+  <button type="submit" class="primary">Filter</button>
 </form>
 {{template "problems-body" .}}
 {{template "foot" .}}{{end}}

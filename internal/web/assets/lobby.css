@@ -1,34 +1,50 @@
 /* syncwatch lobby page (lobby.html): a read-only full-screen view for a
    screen in the office. The type grows with the width of the screen, thus a
    screen at 3 m shows the same layout at 1280x720 and at 1920x1080. A light
-   and a dark theme: the preference of the browser, or ?theme=dark / light. */
+   and a dark theme: the preference of the browser, or ?theme=dark / light.
+   The colors and the heading font are the same as in the dashboard (app.css)
+   and in the Syncthing GUI. */
+@font-face {
+  font-family: "Raleway"; font-style: normal; font-weight: 500; font-display: swap;
+  src: local("Raleway Medium"), local("Raleway-Medium"), url(fonts/raleway-500.woff) format("woff");
+}
 :root {
-  --bg: #f4f5f7; --card: #ffffff; --text: #161b26; --muted: #556170; --line: #d5dae1;
-  --ok: #137333; --ok-bg: #e3f3e8; --sync: #1a5fb4; --err: #b3261e; --err-bg: #fce8e6;
-  --warn: #8a5300; --warn-bg: #fef3d6; --paused: #6b4fa0; --off: #556170; --off-bg: #eceff3;
+  /* The body font of Syncthing without its emoji fonts: the state symbols (✔ ✖ ⏸ ⚠ ○) stay text in the color of the state. */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-head: "Raleway", var(--font);
+  --bg: #ffffff; --card: #ffffff; --head: #f5f5f5; --text: #222222; --strong: #333333; --muted: #6f6f6f; --line: #dddddd; --bw: 1px;
+  --ok: #1c7c45; --ok-bg: #e4f8ed; --ok-fill: #2ecc71; --sync: #2670a2; --sync-fill: #3498db;
+  --err: #c0392b; --err-bg: #fce8e6; --err-fill: #e74c3c; --warn: #946109; --warn-bg: #faf0e0; --warn-fill: #f39c12;
+  --info: #8e44ad; --info-bg: #f2e9f6; --info-fill: #9b59b6; --paused: #6f6f6f; --off: #6f6f6f; --off-bg: #eeeeee; --off-fill: #6f6f6f;
+  --tag-warn-bg: #f1c40f; --tag-warn-text: #000000; --danger: #d62c1a;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not(.theme-light) {
-    --bg: #0f1115; --card: #181b22; --text: #e8eaf0; --muted: #a2abba; --line: #2b313c;
-    --ok: #6dd58c; --ok-bg: #143021; --sync: #8ab4f8; --err: #f28b82; --err-bg: #3d1d1c;
-    --warn: #fdd663; --warn-bg: #393016; --paused: #c3a6f5; --off: #a2abba; --off-bg: #232832;
+    --bg: #272727; --card: #323232; --head: #3b3b3b; --text: #c0c0c0; --strong: #e0e0e0; --muted: #9e9e9e; --line: #424242; --bw: 2px;
+    --ok: #62d994; --ok-bg: #315741; --ok-fill: #198754; --sync: #80c6f5; --sync-fill: #217dbb;
+    --err: #f19990; --err-bg: #5d3834; --err-fill: #d62c1a; --warn: #e6b45d; --warn-bg: #5a4829; --warn-fill: #c29d0b;
+    --info: #c3a9da; --info-bg: #4b4054; --info-fill: #9b59b6; --paused: #9e9e9e; --off: #9e9e9e; --off-bg: #424242; --off-fill: #555555;
+    --tag-warn-bg: #806700; --tag-warn-text: #ffffff;
     color-scheme: dark;
   }
 }
 :root.theme-dark {
-  --bg: #0f1115; --card: #181b22; --text: #e8eaf0; --muted: #a2abba; --line: #2b313c;
-  --ok: #6dd58c; --ok-bg: #143021; --sync: #8ab4f8; --err: #f28b82; --err-bg: #3d1d1c;
-  --warn: #fdd663; --warn-bg: #393016; --paused: #c3a6f5; --off: #a2abba; --off-bg: #232832;
+  --bg: #272727; --card: #323232; --head: #3b3b3b; --text: #c0c0c0; --strong: #e0e0e0; --muted: #9e9e9e; --line: #424242; --bw: 2px;
+  --ok: #62d994; --ok-bg: #315741; --ok-fill: #198754; --sync: #80c6f5; --sync-fill: #217dbb;
+  --err: #f19990; --err-bg: #5d3834; --err-fill: #d62c1a; --warn: #e6b45d; --warn-bg: #5a4829; --warn-fill: #c29d0b;
+  --info: #c3a9da; --info-bg: #4b4054; --info-fill: #9b59b6; --paused: #9e9e9e; --off: #9e9e9e; --off-bg: #424242; --off-fill: #555555;
+  --tag-warn-bg: #806700; --tag-warn-text: #ffffff;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
 /* The first value is for an old browser of a TV that does not know max(). */
 html { font-size: 20px; font-size: max(16px, 1.45vw); -webkit-text-size-adjust: 100%; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 1rem/1.35 var(--font); }
 [hidden] { display: none !important; }
 main { padding: .8rem 1.2rem 1.2rem; }
 h1, h2, h3, p { margin: 0; }
+h1, h2, h3 { font-family: var(--font-head); font-weight: 500; font-variant-numeric: lining-nums; color: var(--strong); }
 .muted { color: var(--muted); } .nowrap { white-space: nowrap; }
 .c-ok { color: var(--ok); } .c-err { color: var(--err); } .c-warn { color: var(--warn); } .c-sync { color: var(--sync); } .c-paused { color: var(--paused); }
 
@@ -40,17 +56,18 @@ h1, h2, h3, p { margin: 0; }
 .lobby-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem 1.2rem; margin-bottom: .7rem; }
 .brand { display: inline-flex; align-items: center; gap: .4rem; font-size: 1.5rem; }
 .brand .logo { display: block; height: 1em; width: auto; }
-.health { flex: 1 1 24rem; font-size: 1.1rem; font-weight: 600; }
+.health { flex: 1 1 24rem; font-family: var(--font-head); font-weight: 500; font-variant-numeric: lining-nums; font-size: 1.15rem; color: var(--strong); }
 .changed { color: var(--muted); }
-.alert, .conn-lost { background: var(--err-bg); color: var(--err); border-radius: .4rem; padding: .4rem .7rem; margin-bottom: .7rem; font-weight: 600; }
-.nosite { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: .6rem .9rem; }
+.alert, .conn-lost { background: var(--err-bg); color: var(--err); border: 1px solid var(--err-fill); border-radius: 2px; padding: .4rem .7rem; margin-bottom: .7rem; font-weight: 600; }
+.nosite { background: var(--card); border: var(--bw) solid var(--line); border-radius: 2px; padding: .6rem .9rem; }
 .nosite p + p { margin-top: .3rem; }
 
-/* The connections between the sites (or the servers): green, red or grey. */
+/* The connections between the sites (or the servers): green, red, or purple
+   for an unknown state (Syncthing: a device that is not connected). */
 .links { list-style: none; margin: 0 0 .8rem; padding: 0; display: grid; gap: .4rem; }
-.links li { padding: .4rem .8rem; border-radius: .4rem; border-left: .35rem solid var(--off); background: var(--off-bg); color: var(--off); font-size: 1.15rem; font-weight: 600; }
-.links li.link-connected { border-left-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
-.links li.link-disconnected { border-left-color: var(--err); background: var(--err-bg); color: var(--err); }
+.links li { padding: .4rem .8rem; border-radius: 2px; border-left: .35rem solid var(--info-fill); background: var(--info-bg); color: var(--info); font-size: 1.15rem; font-weight: 600; }
+.links li.link-connected { border-left-color: var(--ok-fill); background: var(--ok-bg); color: var(--ok); }
+.links li.link-disconnected { border-left-color: var(--err-fill); background: var(--err-bg); color: var(--err); }
 
 /* One column for each site. The servers of a site side by side when there is
    space; a card keeps the width of its column (auto-fill), also when it is alone. */
@@ -60,9 +77,11 @@ h1, h2, h3, p { margin: 0; }
 .pcs { color: var(--muted); margin-bottom: .4rem; }
 .pcs strong { color: var(--text); }
 .servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr)); grid-template-columns: repeat(auto-fill, minmax(min(100%, 24rem), 1fr)); gap: .5rem; }
-.srv { min-width: 0; background: var(--card); border: 1px solid var(--line); border-left: .4rem solid var(--off); border-radius: .5rem; padding: .5rem .8rem; }
-.srv.st-ok { border-left-color: var(--ok); } .srv.st-err { border-left-color: var(--err); }
-.srv header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .2rem .8rem; margin-bottom: .3rem; }
+/* A server is a panel with a grey heading (Syncthing: panel-default). The
+   stripe at the left shows the state from a distance. */
+.srv { min-width: 0; background: var(--card); border: var(--bw) solid var(--line); border-left: .4rem solid var(--off-fill); border-radius: 2px; padding: 0 .8rem .5rem; }
+.srv.st-ok { border-left-color: var(--ok-fill); } .srv.st-err { border-left-color: var(--err-fill); }
+.srv header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .2rem .8rem; margin: 0 -.8rem .4rem; padding: .35rem .8rem; background: var(--head); border-bottom: 1px solid var(--line); }
 .srv h3 { font-size: 1.4rem; min-width: 0; }
 .badge { font-size: 1.1rem; font-weight: 700; padding: .05rem .55rem; border-radius: 99px; background: var(--off-bg); color: var(--off); white-space: nowrap; }
 .badge.st-ok { background: var(--ok-bg); color: var(--ok); } .badge.st-err { background: var(--err-bg); color: var(--err); }
@@ -72,13 +91,13 @@ h1, h2, h3, p { margin: 0; }
 /* The open urgent and ERROR findings. */
 .lobby-findings h2 { font-size: 1.3rem; margin-bottom: .3rem; }
 .flist { list-style: none; margin: 0; padding: 0; }
-.flist li { background: var(--card); border: 1px solid var(--line); border-left: .35rem solid var(--line); border-radius: .4rem; padding: .25rem .6rem; margin-bottom: .3rem; }
-.flist li.sev-row-error { border-left-color: var(--err); } .flist li.sev-row-warn { border-left-color: var(--warn); } .flist li.sev-row-info { border-left-color: var(--sync); }
+.flist li { background: var(--card); border: var(--bw) solid var(--line); border-left: .35rem solid var(--line); border-radius: 2px; padding: .25rem .6rem; margin-bottom: .3rem; }
+.flist li.sev-row-error { border-left-color: var(--err-fill); } .flist li.sev-row-warn { border-left-color: var(--warn-fill); } .flist li.sev-row-info { border-left-color: var(--sync-fill); }
 .sev { font-weight: 700; white-space: nowrap; }
 .sev-error { color: var(--err); } .sev-warn { color: var(--warn); } .sev-info { color: var(--sync); }
-.chk { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; border: 1px solid var(--line); border-radius: .25rem; padding: 0 .3rem; white-space: nowrap; }
-.tag { font-size: .85em; border-radius: .25rem; padding: 0 .35rem; background: var(--off-bg); color: var(--off); white-space: nowrap; }
-.tag.urgent { background: var(--err-bg); color: var(--err); } .tag.stale { background: var(--warn-bg); color: var(--warn); }
+.chk { display: inline-block; padding: .15em .5em .2em; font-size: .8em; font-weight: 700; line-height: 1; color: #fff; background: var(--off-fill); border-radius: .25em; vertical-align: .1em; white-space: nowrap; }
+.tag { display: inline-block; padding: .15em .5em .2em; font-size: .8em; font-weight: 700; line-height: 1; border-radius: .25em; vertical-align: .1em; background: var(--off-fill); color: #fff; white-space: nowrap; }
+.tag.urgent { background: var(--danger); color: #fff; } .tag.stale { background: var(--tag-warn-bg); color: var(--tag-warn-text); }
 
 /* No connection to syncwatch (app.js): the banner shows, the data is grey. */
 .live-off { display: none; }

@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -32,6 +33,10 @@ var templateFS embed.FS
 
 //go:embed assets
 var assetFS embed.FS
+
+// The asset server gets the content type from the file extension. Go has no
+// type for .woff (the heading font), and the image has no system list of types.
+func init() { _ = mime.AddExtensionType(".woff", "font/woff") }
 
 // Hooks are actions the web layer asks the application to perform.
 type Hooks struct {

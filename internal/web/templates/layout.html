@@ -80,7 +80,7 @@
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <input type="hidden" name="next" value="{{.Data.Next}}">
     <label>Password <input type="password" name="password" autocomplete="current-password" required autofocus></label>
-    <button type="submit">Log in</button>
+    <button type="submit" class="primary">Log in</button>
   </form>
   <p class="muted">Type the administrator password. If a viewer password is set, the viewer password is also correct.</p>
 </section>
@@ -97,7 +97,7 @@
     <label>Setup token <input name="token" value="{{.Data.Token}}" autocomplete="off" required></label>
     <label>Administrator password (at least 10 characters) <input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
     <label>Repeat password <input type="password" name="password2" autocomplete="new-password" minlength="10" required></label>
-    <button type="submit">Save and continue</button>
+    <button type="submit" class="primary">Save and continue</button>
   </form>
 </section>
 {{template "foot" .}}{{end}}

@@ -808,6 +808,6 @@ Layout: `cmd/syncwatch` (CLI) · `internal/stclient` (the client with the allowl
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The dashboard includes [htmx](https://htmx.org) (0BSD) and its [SSE extension](https://github.com/bigskysoftware/htmx-extensions).
+MIT. See [LICENSE](LICENSE). The dashboard includes [htmx](https://htmx.org) (0BSD), its [SSE extension](https://github.com/bigskysoftware/htmx-extensions) and the heading font Raleway Medium from the Syncthing GUI (SIL Open Font License 1.1, see [OFL.txt](internal/web/assets/fonts/OFL.txt)).
 
 IVAR Studios made syncwatch to monitor its own Syncthing servers.
