@@ -864,8 +864,11 @@ func (s *Server) serverSettings(v *engine.View) []serverSettings {
 			if sv.Cert.CASigned && ss.PinShort != "" {
 				ss.PinShort += " (CA-signed)"
 			}
-		} else {
+		} else if sc.Disabled {
 			ss.StatusLabel, ss.Status = "Disabled", "wait"
+		} else {
+			// Added a moment ago: the view is older than the server.
+			ss.StatusLabel, _, ss.Status = statusLabel(model.StatusUnknown)
 		}
 		out = append(out, ss)
 	}

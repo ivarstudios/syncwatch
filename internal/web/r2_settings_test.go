@@ -1029,3 +1029,27 @@ func TestAccessCardSaysWhatOpenAccessShows(t *testing.T) {
 		t.Fatal("no sentence about open access")
 	}
 }
+
+// A server that syncwatch has not contacted yet, for example one added a
+// moment ago, is "Connecting…" in Settings. Only a disabled server is
+// "Disabled".
+func TestSettingsServerNotContactedYet(t *testing.T) {
+	e := adminEnv(t, `servers: [{name: AKKA, url: "https://a:1", api_key: k1}]`)
+	c, err := config.ParseYAML([]byte(`servers: [{name: AKKA, url: "https://a:1"}, {name: SOL, url: "https://b:1"}, {name: SIRIUS, url: "https://c:1", disabled: true}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.cfg.Set(c); err != nil {
+		t.Fatal(err)
+	}
+	_, page := e.get("/settings")
+	servers := section(t, page, "servers")
+	for _, want := range []string{
+		`<strong>SOL</strong> <span class="badge st-wait">Connecting…</span>`,
+		`<strong>SIRIUS</strong> <span class="badge st-wait">Disabled</span>`,
+	} {
+		if !strings.Contains(servers, want) {
+			t.Errorf("no %q in the servers section", want)
+		}
+	}
+}
