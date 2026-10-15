@@ -36,6 +36,7 @@ func (c *Collector) maybeScan(ctx context.Context) {
 		if cfg.Mode == config.ModeEvents {
 			go c.scanTimer(ctx)
 		}
+		go c.sizeLoop(ctx)
 	}
 	if c.scanning || time.Since(c.lastScan) < cfg.StructureInterval.D() {
 		return

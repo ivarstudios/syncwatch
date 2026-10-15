@@ -171,6 +171,9 @@ type Collector struct {
 	Concurrency       int      `yaml:"concurrency" json:"concurrency"`
 	RequestTimeout    Duration `yaml:"request_timeout" json:"request_timeout"`
 	DownAfter         int      `yaml:"down_after_failures" json:"down_after_failures"`
+	// SizeTime is when the gates measure the size of the project folders
+	// that are not in Syncthing, each night: "02:00", or "off".
+	SizeTime string `yaml:"size_time" json:"size_time"`
 }
 
 // Check overrides the defaults of one check.
@@ -298,6 +301,9 @@ func (c *Config) ApplyDefaults() {
 	if col.DownAfter <= 0 {
 		col.DownAfter = 2
 	}
+	if col.SizeTime == "" {
+		col.SizeTime = "02:00"
+	}
 	t := &c.Thresholds
 	setDur(&t.FailingFiles, time.Hour)
 	setDur(&t.StuckSync, 24*time.Hour)
@@ -347,7 +353,7 @@ func (c *Config) ApplyDefaults() {
 		c.Shares.Exclude = map[string][]string{}
 	}
 	// "off" is accepted in any case; the notifier compares the lower-case form.
-	for _, f := range []*string{&n.QuietHours, &n.ReminderTime, &n.WeeklyDay} {
+	for _, f := range []*string{&n.QuietHours, &n.ReminderTime, &n.WeeklyDay, &col.SizeTime} {
 		if strings.EqualFold(strings.TrimSpace(*f), "off") {
 			*f = "off"
 		}
@@ -531,6 +537,11 @@ func (c *Config) Validate() error {
 	add(durRange("collector.request_timeout", col.RequestTimeout, time.Second, 10*time.Minute))
 	add(intRange("collector.concurrency", col.Concurrency, 1, 16))
 	add(intRange("collector.down_after_failures", col.DownAfter, 1, 20))
+	if col.SizeTime != "" && col.SizeTime != "off" {
+		if _, err := ParseClock(col.SizeTime); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %v", FieldLabel("collector.size_time"), err))
+		}
+	}
 	for id, ch := range c.Checks {
 		if _, ok := CatalogByID[id]; !ok {
 			errs = append(errs, fmt.Errorf("Checks: %q is not a check ID. Use an ID from the Checks table.", id))
@@ -942,6 +953,7 @@ var fieldLabels = map[string]string{
 	"collector.request_timeout":     "Request timeout",
 	"collector.concurrency":         "Parallel requests for each server",
 	"collector.down_after_failures": "Mark unreachable after failures",
+	"collector.size_time":           "Measure folder sizes each night at",
 	"notifications.weekly_top":      "Findings listed in the weekly report",
 	"notifications.repeat_urgent":   "Repeat urgent messages every",
 	"site":                          "Site where syncwatch runs",

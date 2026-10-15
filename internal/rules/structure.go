@@ -182,6 +182,14 @@ func (e *evaluator) nested(sv *model.Server) {
 	}
 }
 
+// NotInSyncthing reports whether d, a top-level directory of a share, is a
+// project folder that no Syncthing folder holds: the directory of an S7
+// finding. The Folders page and the folder sizes use it too, so the three
+// agree.
+func NotInSyncthing(cs *config.CompiledStructure, d *model.Dir) bool {
+	return !cs.Ignored(d.Name) && cs.IsProject(d.Name) && len(d.FolderIDs) == 0
+}
+
 type dirReason struct {
 	check string
 	text  string
@@ -230,7 +238,7 @@ func (e *evaluator) directories(sv *model.Server) {
 				sort.Strings(elsewhere)
 				reasons = append(reasons, dirReason{"S6", "same name also in " + strings.Join(elsewhere, ", ")})
 			}
-			if isProject && len(d.FolderIDs) == 0 {
+			if NotInSyncthing(cs, d) {
 				reasons = append(reasons, dirReason{"S7", "not in any Syncthing folder"})
 			}
 			if len(reasons) == 0 {

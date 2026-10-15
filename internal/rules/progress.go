@@ -226,3 +226,22 @@ func (e *evaluator) clock(t time.Time) string {
 	}
 	return lt.Format("2006-01-02 15:04")
 }
+
+// Size writes the size of a folder for the Folders page: 1 decimal below
+// 10 of the unit, else whole units: "1.3 TB", "412 GB", "85 MB". 1 GB is
+// 1,000,000,000 bytes, as in Syncthing.
+func Size(b int64) string {
+	for _, u := range []struct {
+		v float64
+		n string
+	}{{1e12, "TB"}, {1e9, "GB"}, {1e6, "MB"}, {1e3, "kB"}} {
+		if float64(b) >= 0.9995*u.v { // 999.6 GB is 1.0 TB, not 1000 GB
+			x := float64(b) / u.v
+			if x < 9.95 {
+				return strconv.FormatFloat(x, 'f', 1, 64) + " " + u.n
+			}
+			return strconv.FormatFloat(math.Round(x), 'f', 0, 64) + " " + u.n
+		}
+	}
+	return Plural(int(b), "byte", "bytes")
+}
