@@ -72,6 +72,7 @@ func callAll(t *testing.T, c *Client) {
 		"Browse":           func() error { _, err := c.Browse(ctx, "/a", "/"); return err },
 		"Events":           func() error { _, err := c.Events(ctx, 0, time.Second, EventMask); return err },
 		"ConflictCounters": func() error { _, err := c.ConflictCounters(ctx); return err },
+		"Size":             func() error { _, err := c.Size(ctx, "/a/b", true); return err },
 	}
 	// Every exported method that talks to the server must be listed above, so a
 	// new method can't be added without this test exercising it.
@@ -139,7 +140,7 @@ func TestAllowlistIsExactly(t *testing.T) {
 		"/rest/config/devices", "/rest/config/folders", "/rest/db/completion", "/rest/db/remoteneed", "/rest/db/status",
 		"/rest/events", "/rest/folder/errors", "/rest/noauth/health", "/rest/stats/device",
 		"/rest/stats/folder", "/rest/system/browse", "/rest/system/connections",
-		"/rest/system/status", "/rest/system/version",
+		"/rest/system/status", "/rest/system/version", "/syncwatch/size",
 	}
 	got := Allowlist()
 	sort.Strings(got)
@@ -305,3 +306,49 @@ func TestShortFP(t *testing.T) {
 }
 
 var _ = tls.VersionTLS12
+
+// Size: a gate answers with JSON. Syncthing without a gate answers 404 (or
+// its web page with 200), and an older gate refuses the endpoint with 404:
+// that is ErrNoSize, not an error of the server.
+func TestSize(t *testing.T) {
+	answer := ""
+	code := http.StatusOK
+	var query string
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(answer))
+	}))
+	t.Cleanup(srv.Close)
+	c, _ := New(Options{Name: "t", URL: srv.URL, APIKey: "k"})
+	ctx := context.Background()
+
+	answer = `{"path":"/s/LIVE-X","state":"queued","bytes":2048,"files":3,"dirs":1,"complete":true,"measured_at":"2026-10-14T01:10:00Z","took_ms":1500}`
+	got, err := c.Size(ctx, "/s/LIVE-X", true)
+	if err != nil || got.Bytes != 2048 || got.Files != 3 || got.State != SizeQueued || !got.Complete || got.MeasuredAt.IsZero() {
+		t.Fatalf("gate answer: %+v, %v", got, err)
+	}
+	if query != "measure=1&path=%2Fs%2FLIVE-X" {
+		t.Errorf("query %q", query)
+	}
+	if _, err := c.Size(ctx, "/s/LIVE-X", false); err != nil || query != "path=%2Fs%2FLIVE-X" {
+		t.Errorf("without measure: query %q, %v", query, err)
+	}
+	for _, tc := range []struct {
+		code   int
+		answer string
+	}{
+		{http.StatusNotFound, "404 page not found"},
+		{http.StatusNotFound, "syncwatch gate: endpoint not permitted"},
+		{http.StatusOK, "<!DOCTYPE html><html>"},
+	} {
+		code, answer = tc.code, tc.answer
+		if _, err := c.Size(ctx, "/s/LIVE-X", false); !errors.Is(err, ErrNoSize) {
+			t.Errorf("HTTP %d %q: %v, want ErrNoSize", tc.code, tc.answer, err)
+		}
+	}
+	code, answer = http.StatusForbidden, "syncwatch gate: directory not in a permitted browse root"
+	if _, err := c.Size(ctx, "/elsewhere/X", false); err == nil || errors.Is(err, ErrNoSize) {
+		t.Errorf("a refused directory is an error of its own: %v", err)
+	}
+}

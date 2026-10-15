@@ -35,12 +35,15 @@
   function applyGridFilter() {
     var q = document.getElementById("grid-search");
     var onlyProblems = document.getElementById("grid-problems");
+    var showDisk = document.getElementById("grid-disk");
     if (!q || !onlyProblems) return;
     var text = q.value.trim().toLowerCase();
     var only = onlyProblems.checked;
+    var disk = !showDisk || showDisk.checked;
     document.querySelectorAll(".frow").forEach(function (row) {
       var match = (!text || (row.getAttribute("data-search") || "").indexOf(text) >= 0) &&
-        (!only || row.classList.contains("has-problem"));
+        (!only || row.classList.contains("has-problem")) &&
+        (disk || !row.classList.contains("disk-only"));
       row.classList.toggle("hidden", !match);
     });
     document.querySelectorAll(".group").forEach(function (g) {
@@ -49,7 +52,7 @@
       if ((text || only) && visible > 0) g.open = true;
     });
     try {
-      sessionStorage.setItem("sw-grid", JSON.stringify({ q: q.value, p: only }));
+      sessionStorage.setItem("sw-grid", JSON.stringify({ q: q.value, p: only, d: disk }));
     } catch (e) { /* storage may be unavailable */ }
   }
 
@@ -334,13 +337,19 @@
   document.addEventListener("DOMContentLoaded", function () {
     var q = document.getElementById("grid-search");
     var p = document.getElementById("grid-problems");
+    var dk = document.getElementById("grid-disk");
     if (q && p) {
       try {
         var saved = JSON.parse(sessionStorage.getItem("sw-grid") || "null");
-        if (saved) { q.value = saved.q || ""; p.checked = !!saved.p; }
+        if (saved) {
+          q.value = saved.q || "";
+          p.checked = !!saved.p;
+          if (dk && saved.d === false) dk.checked = false;
+        }
       } catch (e) { /* ignore */ }
       q.addEventListener("input", applyGridFilter);
       p.addEventListener("change", applyGridFilter);
+      if (dk) dk.addEventListener("change", applyGridFilter);
       applyGridFilter();
     }
     initSiteFilter();

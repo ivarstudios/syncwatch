@@ -93,6 +93,7 @@ var queryParams = map[string][]string{
 	pathCompletion:   {"folder", "device"},
 	pathRemoteNeed:   {"folder", "device", "page", "perpage"},
 	pathFolderErrors: {"folder", "page", "perpage"},
+	pathSize:         {"path", "measure"},
 }
 
 // The limit of a remoteneed request: syncwatch asks for the first page of
@@ -125,6 +126,7 @@ type Options struct {
 	OnPin       func(fp string) // called with the fingerprint to store whenever the pin is set or replaced
 	RootCAs     *x509.CertPool  // nil means the system pool
 	BrowseRoots []string        // directories the token may list besides the parents of Syncthing's folders
+	SizeCache   string          // the file that keeps the measured folder sizes; "" keeps them in memory only
 	Log         *slog.Logger
 }
 
@@ -157,6 +159,8 @@ type Gate struct {
 
 	imu      sync.Mutex
 	inflight map[string]*inflight // per client address
+
+	sizes *sizer // folder sizes, measured by the gate itself (size.go)
 }
 
 // refusal counts one client's refused requests for one reason since the
@@ -190,6 +194,7 @@ func New(o Options) (*Gate, error) {
 	for _, p := range stclient.Allowlist() {
 		g.allowed[p] = true
 	}
+	g.sizes = newSizer(o.SizeCache, o.Log)
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	g.hc = &http.Client{Transport: g.transport(headerTimeout), CheckRedirect: noRedirect}
 	g.hcLong = &http.Client{Transport: g.transport(0), CheckRedirect: noRedirect}
@@ -352,6 +357,11 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q, err := checkQuery(r.URL.Path, r.URL.RawQuery)
 	if err != nil {
 		g.deny(w, r, http.StatusBadRequest, "query not permitted", err.Error())
+		return
+	}
+	if r.URL.Path == pathSize {
+		// The gate answers this itself: Syncthing has no such endpoint.
+		g.serveSize(w, r, q)
 		return
 	}
 	if r.URL.Path == pathBrowse {
@@ -538,6 +548,13 @@ func checkQuery(path, raw string) (url.Values, error) {
 					return nil, fmt.Errorf("the parameter %s must be a positive integer", k)
 				}
 			}
+		}
+	case pathSize:
+		if q.Get("path") == "" {
+			return nil, errors.New("the parameter path is necessary")
+		}
+		if q.Has("measure") && q.Get("measure") != "1" {
+			return nil, errors.New("the parameter measure must be 1")
 		}
 	case pathRemoteNeed:
 		if q.Get("folder") == "" {

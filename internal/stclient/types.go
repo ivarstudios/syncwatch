@@ -264,3 +264,29 @@ type DiskChangeData struct {
 	Path       string `json:"path"`
 	ModifiedBy string `json:"modifiedBy"`
 }
+
+// DirSize is a syncwatch gate's answer about the size of one directory on
+// the disk of its server (/syncwatch/size). Syncthing knows the size of its
+// own folders only, thus the gate measures the others on the file system.
+type DirSize struct {
+	Path  string `json:"path"`
+	State string `json:"state,omitempty"` // SizeQueued or SizeMeasuring; empty while the gate does not measure it
+	// The result of the last measurement. MeasuredAt is zero before the
+	// first one.
+	Bytes      int64     `json:"bytes"`
+	Files      int64     `json:"files"`
+	Dirs       int64     `json:"dirs"`
+	Complete   bool      `json:"complete"` // false: the walk stopped early or could not read everything, Bytes is a lower limit
+	Skipped    int64     `json:"skipped,omitempty"`
+	MeasuredAt time.Time `json:"measured_at"`
+	TookMS     int64     `json:"took_ms"`
+	// Error tells why the gate cannot measure the directory, for example
+	// because the share is not mounted in the gate container.
+	Error string `json:"error,omitempty"`
+}
+
+// The states of a size measurement (DirSize.State).
+const (
+	SizeQueued    = "queued"
+	SizeMeasuring = "measuring"
+)

@@ -54,5 +54,11 @@ services:
       # The gate reads the key only at the start. After a change of the API
       # key in Syncthing, restart the gate.
       - /share/CACHEDEV1_DATA/Containers/syncthing/config/config.xml:/syncthing/config.xml:ro
+      # The shares, read-only, at the same paths as in the Syncthing
+      # container: the gate measures the size of the project folders that are
+      # not in Syncthing (the Folders page of syncwatch). Without them,
+      # syncwatch shows these folders without a size.
+      # - /share/CACHEDEV2_DATA/SOL-LIVE-1SOURCE:/share/CACHEDEV2_DATA/SOL-LIVE-1SOURCE:ro
+      # - /share/CACHEDEV2_DATA/SOL-LIVE-2PROJECTFILES:/share/CACHEDEV2_DATA/SOL-LIVE-2PROJECTFILES:ro
     labels:
       - com.centurylinklabs.watchtower.enable=false

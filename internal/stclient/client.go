@@ -53,13 +53,15 @@ const (
 	epBrowse         endpoint = "/rest/system/browse"
 	epEvents         endpoint = "/rest/events"
 	epMetrics        endpoint = "/metrics"
+	// A syncwatch gate answers epSize itself; Syncthing has no such path.
+	epSize endpoint = "/syncwatch/size"
 )
 
 var allowlist = map[endpoint]bool{
 	epHealth: true, epSystemStatus: true, epSystemVersion: true, epConnections: true,
 	epDeviceStats: true, epFolderStats: true, epConfigFolders: true, epConfigDevices: true,
 	epDBStatus: true, epFolderErrors: true, epCompletion: true, epRemoteNeed: true, epPendingDevices: true,
-	epPendingFolders: true, epBrowse: true, epEvents: true, epMetrics: true,
+	epPendingFolders: true, epBrowse: true, epEvents: true, epMetrics: true, epSize: true,
 }
 
 // Allowlist returns the endpoint paths the client may request, for tests and docs.
@@ -573,6 +575,36 @@ func GateRefusedEndpoint(err error) bool {
 		return false
 	}
 	return strings.HasPrefix(se.Body, gatePrefix+" endpoint not permitted") || strings.HasPrefix(se.Body, gatePrefix+" endpoint not allowed")
+}
+
+// ErrNoSize marks a server that cannot measure directory sizes: Syncthing
+// without a syncwatch gate, or a gate of an older version.
+var ErrNoSize = errors.New("the server has no syncwatch gate that measures folder sizes")
+
+// Size asks the syncwatch gate of the server for the size of dir, a
+// directory on the disk of the server. With measure, the gate also starts a
+// new measurement (it measures one directory at a time); the answer then
+// has the state SizeQueued or SizeMeasuring. Syncthing itself answers 404
+// (or its web page), an older gate refuses the endpoint: both give
+// ErrNoSize.
+func (c *Client) Size(ctx context.Context, dir string, measure bool) (DirSize, error) {
+	q := url.Values{"path": {dir}}
+	if measure {
+		q.Set("measure", "1")
+	}
+	var out DirSize
+	body, err := c.fetch(ctx, epSize, q, c.opts.Timeout, c.opts.Retries)
+	if err != nil {
+		var se *StatusError
+		if errors.As(err, &se) && se.Code == http.StatusNotFound {
+			return out, ErrNoSize
+		}
+		return out, err
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return out, ErrNoSize
+	}
+	return out, nil
 }
 
 // PendingDevices calls /rest/cluster/pending/devices.

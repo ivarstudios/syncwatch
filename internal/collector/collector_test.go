@@ -261,6 +261,9 @@ func (f *fakeST) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	case "/syncwatch/size":
+		// Syncthing without a gate: syncwatch measures no sizes then.
+		http.NotFound(w, r)
 	default:
 		f.t.Errorf("unexpected request %s", r.URL.Path)
 		http.NotFound(w, r)

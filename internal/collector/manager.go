@@ -229,6 +229,19 @@ func (m *Manager) ScanNow(serverID string) ScanStart {
 	return r.c.ScanNow()
 }
 
+// MeasureSize asks the gate of one server to measure the size of path, a
+// project folder that is not in Syncthing, for an administrator (see
+// Collector.MeasureNow).
+func (m *Manager) MeasureSize(serverID, path string) error {
+	m.mu.Lock()
+	r := m.running[serverID]
+	m.mu.Unlock()
+	if r == nil {
+		return ErrSizeNotUp
+	}
+	return r.c.MeasureNow(path)
+}
+
 // RescanNow asks every collector for a full re-check (used after settings changes).
 func (m *Manager) RescanNow() {
 	m.mu.Lock()

@@ -69,6 +69,7 @@ func RunGate(ctx context.Context, o GateOptions) error {
 	}
 	g, err := gate.New(gate.Options{
 		Syncthing: o.Syncthing, APIKey: key, Token: tok, Pin: pin, BrowseRoots: o.BrowseRoots, Log: log,
+		SizeCache: filepath.Join(o.DataDir, "sizes.json"),
 		OnPin: func(fp string) {
 			if err := os.WriteFile(pinFile, []byte(fp+"\n"), 0o600); err != nil {
 				log.Error("cannot save the pinned certificate of Syncthing", "err", err)
@@ -100,6 +101,7 @@ func RunGate(ctx context.Context, o GateOptions) error {
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ServeTLS(ln, "", "") }()
+	go g.Run(ctx) // measures the folder sizes that syncwatch asks for
 	log.Info("syncwatch gate started", "listen", ln.Addr().String(), "syncthing", o.Syncthing)
 	select {
 	case <-ctx.Done():

@@ -259,6 +259,7 @@ collector:
   concurrency: 3            # parallel requests of each activity (full check, structure scan)
   request_timeout: 30s
   down_after_failures: 2
+  size_time: "02:00"        # the gates measure the project folders that are not in Syncthing each night, or "off"
 checks:                     # custom values for each check
   H7: { urgent: true, debounce: 1h }
   S7: { enabled: true }     # keep S7 on: it reports a new project folder that a person did not add to Syncthing
@@ -381,6 +382,15 @@ structure:
 - Behind a [read-only gate](#read-only-gate), the gate permits listings only under the parents of the Syncthing folders. Shares from `shares.add`, and shares that `share_type_from_path` finds more than 1 level above a folder, need `SYNCWATCH_GATE_BROWSE_ROOTS` on that gate.
 
 [examples/ivar.yaml](examples/ivar.yaml) has the complete structure rules of IVAR Studios, the first installation.
+
+**Folders not in Syncthing.** The Folders page also lists the project folders on the disk of a server that are not in a Syncthing folder (the directories of S7). Thus you see which project folders still need a Syncthing folder.
+
+- Such a folder shows as a grey box with a dashed edge in the column of its server, never as a state of Syncthing. When a Syncthing folder with the same name is in the same group, the box is in the row of that folder. Else the folder has a row of its own, with its name in italics.
+- The box shows the size of the folder on the disk, for example `1.3 TB`. `≥ 1.3 TB` is a lower limit: the measurement stopped after 30 minutes, or it could not read all directories. The tooltip gives the number of files and the time of the measurement.
+- The group heading counts these folders apart: `8 folders · ✔ no faults · ▢ 2 not in Syncthing`. They are no faults, and "Only folders with faults" hides them. "Show folders not in Syncthing" shows or hides the rows of their own.
+- The [read-only gate](#read-only-gate) of the server measures the sizes. It measures each folder each night after `collector.size_time` (default 02:00). An administrator can select **⟳** next to the name of a row to measure its folders now. Each gate measures one folder at a time.
+- A server without a gate, or with a gate of an older version, shows the boxes without a size and without **⟳**.
+- A share that has no Syncthing folder of the server is not scanned: add it to `shares.add` (and to `SYNCWATCH_GATE_BROWSE_ROOTS` on its gate).
 
 **Nested project folders (S3).** syncwatch finds a project folder that a person copies into another project folder in less than 1 day, also when Syncthing reports no change. This is true when a baseline scan takes less than 10 seconds:
 
@@ -556,6 +566,8 @@ A Syncthing API key can change all data. Thus a person who controls syncwatch, o
 - The pinned Syncthing fingerprint is in `/data/syncthing.pin`. The gate user needs read access to the file, or the gate does not start. When the Syncthing certificate changes behind a gate, syncwatch shows H1 for the server. The H1 message gives the instruction: delete `syncthing.pin` in the data directory of the gate and restart the gate.
 - Each client address can have at most 4 event long-polls (`/rest/events`) and 64 other requests in progress at the same time. The gate refuses more requests with `429`. syncwatch sends at most 2 times `concurrency` plus 2 requests at the same time to one server.
 - The gate logs refused requests one time each minute for each client address and reason, with a count.
+- **Folder sizes.** The gate answers `/syncwatch/size` itself: Syncthing knows the size of its own folders only. The gate measures a directory only inside a directory that a `browse` may list, never the share itself. It reads the names and the sizes of the files, never their contents, and it does not follow symbolic links. It measures one directory at a time, with short pauses, and it stops after 30 minutes. It keeps the results in `/data/sizes.json`. Each measurement gives an INFO line in the log of the gate with the size, the number of files and the time it took: use these lines to see what the measurements cost the NAS.
+- To measure, the gate must see the shares. Mount each share **read-only** in the gate container, at the same path as in the Syncthing container (`- /share/…/AKKA-LIVE-1SOURCE:/share/…/AKKA-LIVE-1SOURCE:ro`). Thus the gate cannot change a file, also not by a fault. Without the mount, the Folders page shows "size unknown" and the reason.
 
 Installation: [examples/gate-compose.yml](examples/gate-compose.yml) on each server. Then type the gate URL (`https://<nas>:8385`) and the gate token in syncwatch instead of the API URL and the API key. Also set **GUI URL for links** (`gui_url`) to the Syncthing GUI (`https://<nas>:8384`). Without it, the "Open in Syncthing" links of the dashboard open the gate, and the gate answers `403`. The Syncthing GUI stays as it is for the administrators.
 
@@ -804,7 +816,8 @@ Layout: `cmd/syncwatch` (CLI) · `internal/stclient` (the client with the allowl
 - No disk-space or hardware monitor, no graphs, no metrics history.
 - syncwatch cannot report its own stop. If its host stops, syncwatch sends no messages, and if that host is a monitored server, syncwatch never sends its H1 urgent message. Use an outside check of `/healthz` or the [dead-man URL](#health-check-and-dead-man-url). Or run syncwatch on a different host ([Where to run syncwatch](#where-to-run-syncwatch)). If you do none of these, the missed Monday report is the signal.
 - Syncthing 2.x only.
-- The Folders page lists only Syncthing folders. A share with open structure findings can show no fault there. The Findings page lists these findings (category structure).
+- The Folders page lists the Syncthing folders and the project folders that are not in Syncthing (S7). The other structure findings (S1 to S6) are not on the Folders page: a share with such findings can show no fault there. The Findings page lists these findings (category structure).
+- Folder sizes need a gate that sees the shares (read-only mounts). syncwatch never measures a folder by itself.
 
 ## License
 

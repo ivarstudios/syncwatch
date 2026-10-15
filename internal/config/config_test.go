@@ -632,3 +632,24 @@ func TestPlainHTTPNeedsOptIn(t *testing.T) {
 		t.Fatal("allow_http lost in a clone")
 	}
 }
+
+// collector.size_time: 02:00 by default, "off" in any case, and a time
+// that is not HH:MM is an error that names the field.
+func TestSizeTime(t *testing.T) {
+	c, err := ParseYAML([]byte("servers: [{name: a, url: 'https://a:1'}]\n"))
+	if err != nil || c.Collector.SizeTime != "02:00" {
+		t.Fatalf("default: %q, %v", c.Collector.SizeTime, err)
+	}
+	c, err = ParseYAML([]byte("servers: [{name: a, url: 'https://a:1'}]\ncollector: {size_time: 'OFF'}\n"))
+	if err != nil || c.Collector.SizeTime != "off" {
+		t.Fatalf("off: %q, %v", c.Collector.SizeTime, err)
+	}
+	c, err = ParseYAML([]byte("servers: [{name: a, url: 'https://a:1'}]\ncollector: {size_time: '3:30'}\n"))
+	if err != nil || c.Collector.SizeTime != "3:30" {
+		t.Fatalf("3:30: %q, %v", c.Collector.SizeTime, err)
+	}
+	_, err = ParseYAML([]byte("servers: [{name: a, url: 'https://a:1'}]\ncollector: {size_time: '25:00'}\n"))
+	if err == nil || !strings.Contains(err.Error(), "Measure folder sizes each night at (collector.size_time)") {
+		t.Fatalf("25:00: %v", err)
+	}
+}

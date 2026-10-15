@@ -60,6 +60,10 @@ type Collector struct {
 	localSaved    map[string]time.Time // by folder: when its last local change was written to the store; see saveLocalChange
 	localDue      map[string]bool      // folders whose newest local change waits for the store
 	relayOK       map[string]time.Time // by relay listener URI: the first sample without an error after a failure; see relayListeners
+	sizeMu        sync.Mutex           // guards the fields to sizeNone; see sizes.go
+	sizeFetched   map[string]time.Time // by path: when the size was last read from the gate
+	sizeNight     map[string]string    // by path: the night whose measurement was requested
+	sizeNone      bool                 // the server answered that it measures no sizes, in this session
 
 	trafficEvery time.Duration // how often traffic counters are read
 }

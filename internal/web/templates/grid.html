@@ -3,26 +3,27 @@
   <label class="search">Search <input type="search" id="grid-search" placeholder="Folder label or ID" autocomplete="off"></label>
   {{with .Data.VM.Sites}}{{template "site-filter" .}}{{end}}
   <label class="check"><input type="checkbox" id="grid-problems"> Only folders with faults</label>
+  <label class="check" title="Project folders on the disk of a server that are not in a Syncthing folder"><input type="checkbox" id="grid-disk" checked> Show folders not in Syncthing</label>
 </div>
 {{template "grid-body" .}}
 {{template "foot" .}}{{end}}
 
 {{define "cell"}}<span class="cell c-{{.Class}}" title="{{.Title}}">{{if .Icon}}<span aria-hidden="true">{{.Icon}}</span> {{end}}{{.Text}}</span>{{end}}
 
-{{define "grid-body"}}{{$vm := .Data.VM}}
+{{define "grid-body"}}{{$vm := .Data.VM}}{{$admin := .Data.Admin}}{{$csrf := .CSRF}}
 <div id="grid-body" hx-get="/frag/grid" hx-trigger="sse:update" hx-swap="outerHTML">
   {{if not $vm.Groups}}<p class="card">There are no folders.</p>{{end}}
   <div class="grid-wide">
   {{range $gi, $g := $vm.Groups}}
     <details class="group" id="g-{{$gi}}" data-key="group:{{$g.Name}}" {{if $g.Open}}open{{end}}>
-      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{end}}{{if $g.Stale}} · <span class="muted" title="A server of these folders is not up: the grid shows its last known state">○ {{$g.Stale}} with an unknown state</span>{{end}}{{if not (or $g.Problems $g.Stale)}} · <span class="c-ok">✔ no faults</span>{{end}}</summary>
+      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{end}}{{if $g.Stale}} · <span class="muted" title="A server of these folders is not up: the grid shows its last known state">○ {{$g.Stale}} with an unknown state</span>{{end}}{{if not (or $g.Problems $g.Stale)}} · <span class="c-ok">✔ no faults</span>{{end}}{{if $g.OnDisk}} · <span class="muted" title="Project folders on the disk of a server that are not in a Syncthing folder">▢ {{$g.OnDisk}} not in Syncthing</span>{{end}}</summary>
       <div class="scroll">
       <table class="grid">
         <thead><tr><th scope="col" class="fcol">Folder</th>{{range $vm.Devices}}<th scope="col" class="dcol {{if .Server}}srv{{end}}" title="{{.ID}}"{{if and $vm.Sites .Server}} data-site="{{.Site}}"{{end}}>{{.Name}}{{if .Server}}<span class="muted"> (server)</span>{{end}}</th>{{end}}</tr></thead>
         <tbody>
         {{range $g.Items}}
-          <tr class="frow{{if .Problem}} has-problem{{end}}" data-search="{{.Search}}">
-            <th scope="row" class="fcol" title="ID {{.ID}} · on {{.Servers}}">{{.Label}}</th>
+          <tr class="frow{{if .Problem}} has-problem{{end}}{{if .DiskOnly}} disk-only{{end}}" id="{{.Anchor}}" data-search="{{.Search}}">
+            <th scope="row" class="fcol" title="{{if .DiskOnly}}Not in Syncthing · on the disk of {{.Servers}}{{else}}ID {{.ID}} · on {{.Servers}}{{end}}">{{if and $admin .Measure}}<form method="post" action="/grid/measure" class="measure"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="back" value="/grid#{{.Anchor}}">{{range .Measure}}<input type="hidden" name="server" value="{{.Server}}"><input type="hidden" name="path" value="{{.Path}}">{{end}}<button type="submit" class="icon" title="Measure the size on the disk now" aria-label="Measure the size of {{.Label}} on the disk now">⟳</button></form>{{end}}{{.Label}}</th>
             {{range $i, $c := .Cells}}<td{{if $vm.Sites}}{{with index $vm.Devices $i}}{{if .Server}} data-site="{{.Site}}"{{end}}{{end}}{{end}}>{{template "cell" $c}}</td>{{end}}
           </tr>
         {{end}}
@@ -44,7 +45,7 @@
   </div>
   <p class="legend muted small">
     <span class="cell c-ok">✔ synced</span> <span class="cell c-sync">⟳ syncing or scanning</span> <span class="cell c-err">✖ error</span> <span class="cell c-warn">⚠ file watcher error</span>
-    <span class="cell c-paused">⏸ paused</span> <span class="cell c-off">○ offline</span> <span class="cell c-off">? unknown</span> <span class="cell c-warn">⊘ not shared back</span> <span class="cell c-na">– not shared</span>
+    <span class="cell c-paused">⏸ paused</span> <span class="cell c-off">○ offline</span> <span class="cell c-off">? unknown</span> <span class="cell c-warn">⊘ not shared back</span> <span class="cell c-na">– not shared</span> <span class="cell c-disk">▢ on the disk, not in Syncthing (size)</span>
   </p>
 </div>
 {{end}}

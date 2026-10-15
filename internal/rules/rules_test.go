@@ -918,3 +918,14 @@ func TestPCOfflineLastSeenInConfiguredZone(t *testing.T) {
 		t.Fatalf("detail value %q", v)
 	}
 }
+
+func TestSize(t *testing.T) {
+	for b, want := range map[int64]string{
+		0: "0 bytes", 1: "1 byte", 999: "999 bytes", 1500: "1.5 kB", 85_000_000: "85 MB",
+		412_400_000_000: "412 GB", 9_960_000_000: "10 GB", 999_600_000_000: "1.0 TB", 1_270_000_000_000: "1.3 TB",
+	} {
+		if got := Size(b); got != want {
+			t.Errorf("Size(%d) = %q, want %q", b, got, want)
+		}
+	}
+}

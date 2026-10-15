@@ -482,6 +482,23 @@ type Structure struct {
 	ScanListings int
 	ScanTook     time.Duration
 	ScanBaseline bool
+	// Sizes are the sizes on the disk of the project folders that are not
+	// in Syncthing (rules.NotInSyncthing), by path, as the gate of the
+	// server measured them. NoSizes: the server has no gate that measures
+	// sizes (Syncthing without a gate, or an older gate).
+	Sizes   map[string]*DirSize
+	NoSizes bool
+}
+
+// DirSize is the size of a directory on the disk of a server, which the
+// gate of the server measures (stclient.DirSize).
+type DirSize struct {
+	Bytes, Files int64
+	Complete     bool      // false: Bytes is a lower limit (the walk stopped early or could not read everything)
+	MeasuredAt   time.Time // the end of the last measurement; zero before the first
+	Took         time.Duration
+	State        string // stclient.SizeQueued or SizeMeasuring while the gate measures it
+	Error        string // why the gate cannot measure it, or why syncwatch cannot ask
 }
 
 // Share is a directory whose children are project folders.
@@ -621,6 +638,13 @@ func (st *Structure) Clone() *Structure {
 	for k, n := range st.Nested {
 		nc := *n
 		c.Nested[k] = &nc
+	}
+	if st.Sizes != nil {
+		c.Sizes = make(map[string]*DirSize, len(st.Sizes))
+		for k, s := range st.Sizes {
+			sc := *s
+			c.Sizes[k] = &sc
+		}
 	}
 	return &c
 }
