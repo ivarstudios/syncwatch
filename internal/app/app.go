@@ -639,6 +639,7 @@ func Run(ctx context.Context, o Options) error {
 		ChannelsChanged: channelsChanged,
 		Delivery:        ntf.Delivery,
 		ScanNow:         mgr.ScanNow,
+		MeasureSize:     mgr.MeasureSize,
 	}, o.Version, log)
 	if err != nil {
 		return err

@@ -50,6 +50,7 @@ type Hooks struct {
 	ChannelsChanged func()                                    // notification channels were replaced; retry now
 	Delivery        func() notify.Delivery                    // whether notifications reach their channels
 	ScanNow         func(serverID string) collector.ScanStart // start a structure scan of a server for an administrator
+	MeasureSize     func(serverID, path string) error         // ask the gate of a server to measure a project folder that is not in Syncthing
 }
 
 // Server is the HTTP handler.
@@ -197,6 +198,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /problems/{id}/ignore", s.action(RoleAdmin, s.handleIgnore))
 	m.HandleFunc("POST /problems/{id}/unsnooze", s.action(RoleAdmin, s.handleUnsnooze))
 	m.HandleFunc("POST /structure/scan", s.action(RoleAdmin, s.handleScanNow))
+	m.HandleFunc("POST /grid/measure", s.action(RoleAdmin, s.handleMeasure))
 
 	m.HandleFunc("GET /settings", s.page(RoleAdmin, s.handleSettings))
 	m.HandleFunc("POST /settings/servers", s.action(RoleAdmin, s.handleServerSave))
@@ -640,11 +642,11 @@ func (s *Server) fragOverview(w http.ResponseWriter, r *http.Request, info reque
 }
 
 func (s *Server) handleGrid(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	s.render(w, r, http.StatusOK, "grid", info, map[string]any{"Title": "Folders", "VM": s.grid(s.eng.View(), info.Role)})
+	s.render(w, r, http.StatusOK, "grid", info, map[string]any{"Title": "Folders", "VM": s.grid(s.eng.View(), info.Role), "Admin": info.Role == RoleAdmin})
 }
 
 func (s *Server) fragGrid(w http.ResponseWriter, r *http.Request, info requestInfo) {
-	s.fragment(w, "grid-body", info, map[string]any{"VM": s.grid(s.eng.View(), info.Role)})
+	s.fragment(w, "grid-body", info, map[string]any{"VM": s.grid(s.eng.View(), info.Role), "Admin": info.Role == RoleAdmin})
 }
 
 func (s *Server) handleProblems(w http.ResponseWriter, r *http.Request, info requestInfo) {

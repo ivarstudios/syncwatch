@@ -190,13 +190,13 @@ func repeatOptions(v string) []repeatOption {
 var formInputs = map[string][]string{
 	"notifications": {"discord_webhook_clear", "discord_notices_webhook_clear", "site", "discord_role_id", "repeat_urgent", "quiet_hours", "reminder_time", "weekly_day", "weekly_time", "weekly_top", "timezone", "public_url"},
 	"checks":        {"failing_files", "stuck_sync", "paused", "pc_offline", "conflict_window", "relay_lost", "inactive_project", "old_device", "dead_share"},
-	"collector":     {"mode", "event_timeout", "full_check_interval", "poll_interval", "structure_interval", "baseline_interval", "concurrency", "request_timeout", "down_after_failures"},
+	"collector":     {"mode", "event_timeout", "full_check_interval", "poll_interval", "structure_interval", "baseline_interval", "concurrency", "request_timeout", "down_after_failures", "size_time"},
 }
 
 // keepWhenMissing are the inputs of version 0.9. A form that does not send
 // one of them (a script written for an older version) keeps the stored
 // value, as for an empty webhook input. A browser always sends them.
-var keepWhenMissing = map[string]bool{"site": true, "repeat_urgent": true, "relay_lost": true}
+var keepWhenMissing = map[string]bool{"site": true, "repeat_urgent": true, "relay_lost": true, "size_time": true}
 
 // formHas reports whether the form sent the input name, also with an empty
 // value.
@@ -216,7 +216,7 @@ func formValues(c *config.Config) map[string]string {
 		"conflict_window": th.ConflictWindow.String(), "relay_lost": th.RelayLost.String(), "inactive_project": th.InactiveProject.String(), "old_device": th.OldDevice.String(), "dead_share": th.DeadShare.String(),
 		"mode": col.Mode, "event_timeout": col.EventTimeout.String(), "full_check_interval": col.FullCheckInterval.String(), "poll_interval": col.PollInterval.String(),
 		"structure_interval": col.StructureInterval.String(), "baseline_interval": col.BaselineInterval.String(), "concurrency": strconv.Itoa(col.Concurrency),
-		"request_timeout": col.RequestTimeout.String(), "down_after_failures": strconv.Itoa(col.DownAfter),
+		"request_timeout": col.RequestTimeout.String(), "down_after_failures": strconv.Itoa(col.DownAfter), "size_time": col.SizeTime,
 	}
 }
 
@@ -1217,6 +1217,16 @@ func (s *Server) handleCollectorSave(w http.ResponseWriter, r *http.Request, inf
 	}
 	if n, err := strconv.Atoi(r.FormValue("down_after_failures")); err == nil {
 		col.DownAfter = n // out of range: Validate names the field and the range
+	}
+	if formHas(r, "size_time") { // a script of an older version keeps the stored value
+		switch v := strings.TrimSpace(r.FormValue("size_time")); {
+		case v == "":
+			col.SizeTime = "02:00"
+		case strings.EqualFold(v, "off"):
+			col.SizeTime = "off"
+		default:
+			col.SizeTime = v // not HH:MM: Validate names the field
+		}
 	}
 	if len(errs) > 0 {
 		s.refuse(w, r, info, old, "collector", "Not saved. "+strings.Join(errs, "\n"), bad)

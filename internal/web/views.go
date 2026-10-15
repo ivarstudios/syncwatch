@@ -1,6 +1,8 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"net/url"
@@ -419,17 +421,34 @@ type gridCell struct {
 
 type gridRow struct {
 	ID, Label, Search, Servers string
+	Anchor                     string // the id of the row on the page, for the way back after Measure
 	Problem                    bool
 	Stale                      bool // a server of the folder shows only its last known state
+	DiskOnly                   bool // a project folder that is on the disk of a server and in no Syncthing folder
+	OnDisk                     bool // a server has the folder on its disk, not in Syncthing (a grey cell)
+	Measure                    []measureTarget
 	Cells                      []gridCell
 }
+
+// measureTarget is a folder on the disk of a server that the Measure
+// button of its row asks the gate of the server to measure.
+type measureTarget struct{ Server, Path string }
 
 type gridGroup struct {
 	Name           string
 	Problems, Rows int
 	Stale          int // rows with the last known state of a server
+	OnDisk         int // rows with a folder on the disk of a server that is not in Syncthing
 	Open           bool
 	Items          []gridRow
+}
+
+// diskDir is a project folder on the disk of a server that no Syncthing
+// folder holds (rules.NotInSyncthing), with its size from the gate.
+type diskDir struct {
+	share, path string
+	size        *model.DirSize
+	noSizes     bool // the server has no gate that measures sizes
 }
 
 type deviceItem struct {
@@ -534,6 +553,8 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 	type folderInfo struct {
 		id, label, group string
 		on               map[string]*model.Folder // server ID → folder
+		disk             map[string]diskDir       // server ID → the folder on the disk of the server, not in Syncthing
+		diskOnly         bool                     // in no Syncthing folder of any server
 		servers          []string
 	}
 	infos := map[string]*folderInfo{}
@@ -568,6 +589,58 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 		}
 	}
 
+	// The project folders on the disk of a server that are not in Syncthing
+	// (S7): a grey cell in the column of the server, in the row of the
+	// Syncthing folder with the same name in the same group, or in a row of
+	// their own. They tell what still has to be added to Syncthing.
+	byLabel := map[string]string{} // group and lower-case label → row ID
+	for _, id := range order {
+		fi := infos[id]
+		if k := fi.group + "\x00" + strings.ToLower(fi.label); byLabel[k] == "" {
+			byLabel[k] = id
+		}
+	}
+	for _, sv := range snap.Servers {
+		if sv.Structure == nil {
+			continue
+		}
+		for _, sh := range sv.Structure.Shares {
+			group := showControls(groupName(sv.Name, sh.Name))
+			for _, d := range sh.Dirs {
+				if !rules.NotInSyncthing(cs, d) {
+					continue
+				}
+				label := showControls(d.Name)
+				k := group + "\x00" + strings.ToLower(label)
+				id := byLabel[k]
+				if id == "" {
+					id = "disk:" + k
+					byLabel[k] = id
+					infos[id] = &folderInfo{id: id, label: label, group: group, on: map[string]*model.Folder{}, diskOnly: true}
+					order = append(order, id)
+				}
+				fi := infos[id]
+				if _, ok := fi.on[sv.ID]; ok {
+					continue // the server has the Syncthing folder, in another place
+				}
+				if fi.disk == nil {
+					fi.disk = map[string]diskDir{}
+				}
+				dd := diskDir{share: showControls(sh.Name), path: d.Path, noSizes: sv.Structure.NoSizes}
+				if sz := sv.Structure.Sizes[d.Path]; sz != nil {
+					c := *sz
+					dd.size = &c
+				}
+				if _, seen := fi.disk[sv.ID]; !seen {
+					fi.disk[sv.ID] = dd
+					if fi.diskOnly {
+						fi.servers = append(fi.servers, showControls(sv.Name))
+					}
+				}
+			}
+		}
+	}
+
 	groups := map[string]*gridGroup{}
 	var gorder []string
 	lists := make([]deviceList, len(vm.Devices))
@@ -576,11 +649,21 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 	}
 	for _, id := range order {
 		fi := infos[id]
-		row := gridRow{ID: id, Label: fi.label, Search: strings.ToLower(fi.label + " " + id), Servers: strings.Join(fi.servers, ", ")}
+		row := gridRow{ID: id, Label: fi.label, Search: strings.ToLower(fi.label + " " + id), Servers: strings.Join(fi.servers, ", "),
+			Anchor: rowAnchor(id), DiskOnly: fi.diskOnly}
+		if fi.diskOnly {
+			row.Search = strings.ToLower(fi.label)
+		}
 		for i, d := range devs {
 			var cell gridCell
 			if d.IsServer {
-				if f, ok := fi.on[d.ServerID]; ok {
+				if dd, ok := fi.disk[d.ServerID]; ok {
+					cell = s.diskCell(snap.Server(d.ServerID), dd, cfg)
+					row.OnDisk = true
+					if !dd.noSizes {
+						row.Measure = append(row.Measure, measureTarget{Server: d.ServerID, Path: dd.path})
+					}
+				} else if f, ok := fi.on[d.ServerID]; ok {
 					cell = serverCell(f)
 					if sv := snap.Server(d.ServerID); sv != nil && !folderStateKnown(sv) {
 						// The last known state, in grey: not a current "✔ 100%".
@@ -611,14 +694,19 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 			gorder = append(gorder, fi.group)
 		}
 		g.Items = append(g.Items, row)
-		g.Rows++
+		if !row.DiskOnly {
+			g.Rows++
+			vm.Folders++
+		}
+		if row.OnDisk {
+			g.OnDisk++
+		}
 		if row.Problem {
 			g.Problems++
 		}
 		if row.Stale {
 			g.Stale++
 		}
-		vm.Folders++
 	}
 	for _, name := range gorder {
 		g := groups[name]
@@ -639,6 +727,66 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 	})
 	vm.Lists = lists
 	return vm
+}
+
+// rowAnchor is the id of a row on the Folders page: short, and the same at
+// each render, so that Measure can return to the row.
+func rowAnchor(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return "r-" + hex.EncodeToString(sum[:6])
+}
+
+// diskCell shows a project folder on the disk of a server that is not in
+// Syncthing: a grey box with its size, never a state of Syncthing.
+func (s *Server) diskCell(sv *model.Server, dd diskDir, cfg *config.Config) gridCell {
+	name := "the server"
+	if sv != nil {
+		name = sv.Name
+	}
+	c := gridCell{Class: "disk", Icon: "▢", Text: "not in Syncthing", Title: fmt.Sprintf("On the disk of %s in %s, not in Syncthing.", name, dd.share)}
+	if dd.noSizes {
+		c.Title += " The server has no syncwatch gate that measures sizes."
+		return c
+	}
+	when := "The gate measures it each night at " + cfg.Collector.SizeTime + ", or select ⟳ to measure it now."
+	if cfg.Collector.SizeTime == "off" {
+		when = "The nightly measurement is off: select ⟳ to measure it now."
+	}
+	sz := dd.size
+	if sz == nil {
+		c.Text = "not measured"
+		c.Title += " Not measured yet. " + when
+		return c
+	}
+	if !sz.MeasuredAt.IsZero() {
+		c.Text = rules.Size(sz.Bytes)
+		if !sz.Complete {
+			c.Text = "≥ " + c.Text
+		}
+		c.Title += fmt.Sprintf(" %s in %s, measured %s in %s.", c.Text, plural(int(sz.Files), "file", "files"), s.fmtTime(sz.MeasuredAt), sz.Took.Round(time.Second))
+		if !sz.Complete {
+			c.Title += " The measurement stopped early or could not read everything: the size is a lower limit."
+		}
+	} else {
+		c.Text = "not measured"
+	}
+	switch sz.State {
+	case stclient.SizeMeasuring:
+		c.Icon = "⟳"
+		c.Title += " The gate measures it now."
+	case stclient.SizeQueued:
+		c.Icon = "⟳"
+		c.Title += " The gate measures it soon: it measures one folder at a time."
+	}
+	if sz.Error != "" {
+		if sz.MeasuredAt.IsZero() {
+			c.Text = "size unknown"
+		}
+		c.Title += " " + sz.Error + "."
+	} else if sz.MeasuredAt.IsZero() && sz.State == "" {
+		c.Title += " Not measured yet. " + when
+	}
+	return c
 }
 
 // pcCell shows a PC's state for a folder, using the best report from any server.

@@ -38,12 +38,14 @@ type env struct {
 	jar  http.CookieJar
 	http *http.Client
 
-	mu        sync.Mutex
-	notices   []string        // titles and summaries sent through Hooks.Notice
-	noticeAll []notify.Notice // the same notices with their Security flag
-	accepted  []string        // AcceptCert calls
-	resets    []string        // ResetPin calls
-	delivery  notify.Delivery
+	mu         sync.Mutex
+	notices    []string        // titles and summaries sent through Hooks.Notice
+	noticeAll  []notify.Notice // the same notices with their Security flag
+	accepted   []string        // AcceptCert calls
+	resets     []string        // ResetPin calls
+	measured   []string        // MeasureSize calls: "server|path"
+	measureErr error           // what MeasureSize answers
+	delivery   notify.Delivery
 }
 
 func (e *env) setDelivery(d notify.Delivery) {
@@ -119,6 +121,12 @@ func newEnv(t *testing.T, yaml string) *env {
 			defer e.mu.Unlock()
 			e.resets = append(e.resets, id)
 			return st.SetPin(id, "")
+		},
+		MeasureSize: func(id, path string) error {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.measured = append(e.measured, id+"|"+path)
+			return e.measureErr
 		},
 		SendTest:        func(context.Context) error { return nil },
 		SendNoticesTest: func(context.Context) error { return nil },

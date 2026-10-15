@@ -31,6 +31,7 @@ collector:
   event_timeout: 50s      # below the idle timeout of the VPN
   full_check_interval: 4h
   structure_interval: 1h
+  size_time: "02:00"      # the gates measure the project folders that are not in Syncthing
 
 notifications:
   # discord_webhook: https://discord.com/api/webhooks/…
