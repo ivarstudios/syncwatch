@@ -172,6 +172,17 @@
     stampAgo(document);
   });
 
+  // htmx settles each new element that has the id of an old one (the rows
+  // of the Folders page, its groups, the findings): for the swap it gets
+  // the classes of the old element, and 20 ms later (after afterSwap) its
+  // own classes again. That drops the classes of the filters ("hidden",
+  // "site-hidden"): each live update showed all folders again. Thus filter
+  // again when the update is settled.
+  document.addEventListener("htmx:afterSettle", function () {
+    applyGridFilter();
+    applySiteFilter();
+  });
+
   // "last scan 21:52 (3 minutes ago)": data-ago is the age in
   // seconds when syncwatch wrote the element. The age counts on while the
   // page is open, in the words of agoWords in scan.go: a live update comes
