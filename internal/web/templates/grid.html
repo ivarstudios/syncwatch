@@ -16,7 +16,7 @@
   <div class="grid-wide">
   {{range $gi, $g := $vm.Groups}}
     <details class="group" id="g-{{$gi}}" data-key="group:{{$g.Name}}" {{if $g.Open}}open{{end}}>
-      <summary><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{end}}{{if $g.Stale}} · <span class="muted" title="A server of these folders is not up: the grid shows its last known state">○ {{$g.Stale}} with an unknown state</span>{{end}}{{if not (or $g.Problems $g.Stale)}} · <span class="c-ok">✔ no faults</span>{{end}}{{if $g.OnDisk}} · <span class="muted" title="Project folders on the disk of a server that are not in a Syncthing folder">▢ {{$g.OnDisk}} not in Syncthing</span>{{end}}</summary>
+      <summary><span class="head"><strong>{{$g.Name}}</strong> <span class="muted">{{plural $g.Rows "folder" "folders"}}</span>{{if $g.Problems}} · <span class="c-err">✖ {{$g.Problems}} with faults</span>{{end}}{{if $g.Stale}} · <span class="muted" title="A server of these folders is not up: the grid shows its last known state">○ {{$g.Stale}} with an unknown state</span>{{end}}{{if not (or $g.Problems $g.Stale)}} · <span class="c-ok">✔ no faults</span>{{end}}{{if $g.OnDisk}} · <span class="muted" title="Project folders on the disk of a server that are not in a Syncthing folder">▢ {{$g.OnDisk}} not in Syncthing</span>{{end}}</span></summary>
       <div class="scroll">
       <table class="grid">
         <colgroup><col class="fcol">{{range $vm.Devices}}<col class="dcol">{{end}}</colgroup>

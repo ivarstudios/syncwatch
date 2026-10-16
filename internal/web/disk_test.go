@@ -251,3 +251,29 @@ func TestGridCellsShowSizesInLine(t *testing.T) {
 		t.Errorf("%d cells, %d slots for ⟳", cells, slots)
 	}
 }
+
+// The rows and the groups of the Folders page are in alphabetical order,
+// also with faults: a folder is where the eye looks for it. The faults show
+// in the cells and on the Findings page.
+func TestGridIsAlphabetical(t *testing.T) {
+	e := adminEnv(t, twoServers+diskRules)
+	diskEnv(t, e)
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Folders["zulu"] = &model.Folder{ID: "zulu", Label: "LIVE-ZULU-2PROJECTFILES", Path: "/s/AKKA-LIVE-2PROJECTFILES/LIVE-ZULU-2PROJECTFILES", State: "idle", Paused: true}
+		s.Folders["beta"] = &model.Folder{ID: "beta", Label: "LIVE-BETA-1SOURCE", Path: "/s/AKKA-LIVE-1SOURCE/LIVE-BETA-1SOURCE", State: "idle"}
+	})
+	e.eng.Evaluate()
+	_, page := e.get("/grid")
+	if !strings.Contains(rowOf(t, page, "LIVE-ZULU-2PROJECTFILES"), "has-problem") {
+		t.Fatal("LIVE-ZULU-2PROJECTFILES has no fault")
+	}
+	wide, _, _ := strings.Cut(page, `<div class="grid-narrow">`)
+	last := -1
+	for _, label := range []string{"LIVE-BETA-1SOURCE", "LIVE-ALPHA-2PROJECTFILES", "LIVE-NEW-2PROJECTFILES", "LIVE-ZULU-2PROJECTFILES"} {
+		i := strings.Index(wide, ">"+label+"</th>")
+		if i <= last {
+			t.Errorf("%s at %d, after %d: want the groups and their rows in alphabetical order", label, i, last)
+		}
+		last = i
+	}
+}

@@ -220,16 +220,27 @@ table.list input[name^=debounce] { width: 5rem; display: inline-block; }
 .scroll { overflow-x: auto; }
 /* One horizontal scroll for all groups of the Folders page: their columns stay in line. */
 .grid-wide { overflow-x: auto; } .grid-wide .scroll { overflow-x: visible; }
+/* Each group is as wide as its table, at least the window: a group that scrolls keeps its background and its edge. */
+.grid-wide .group { width: max-content; min-width: 100%; box-sizing: border-box; }
 .group { margin-bottom: 8px; }
 .group > summary { padding: 10px 15px; cursor: pointer; background: var(--panel-head); }
 .group[open] > summary { border-bottom: 1px solid var(--panel-border); }
+/* The name of a group stays in view when the page scrolls sideways. */
+.grid-wide .group > summary { list-style: none; }
+.grid-wide .group > summary::-webkit-details-marker { display: none; }
+.grid-wide .group > summary > .head { position: sticky; left: 15px; display: inline-block; }
+.grid-wide .group > summary > .head::before { content: "▸"; color: var(--muted); margin-right: .35rem; display: inline-block; transition: transform .1s; }
+.grid-wide .group[open] > summary > .head::before { transform: rotate(90deg); }
 .group > summary strong { font-family: var(--font-head); font-weight: 500; font-variant-numeric: lining-nums; font-size: 1.1rem; color: var(--strong); }
 /* A fixed layout with the same column widths in each group: each server and PC is in the same column on the whole page. */
-table.grid { border-collapse: separate; border-spacing: 0; width: 100%; font-size: .88rem; table-layout: fixed; }
+/* width 1px: the fixed layout needs a width, and its table is never narrower than its columns. Thus the table is as wide as the columns, at least the window. */
+table.grid { border-collapse: separate; border-spacing: 0; width: 1px; min-width: 100%; font-size: .88rem; table-layout: fixed; }
 table.grid col.fcol { width: 22rem; } table.grid col.dcol { width: 10rem; }
 table.grid th, table.grid td { padding: 4px 6px; border-top: 1px solid var(--line); text-align: center; white-space: nowrap; }
 table.grid thead th { position: sticky; top: 0; background: var(--panel); font-weight: 600; font-size: .8rem; border-top: 0; border-bottom: 2px solid var(--line); }
 table.grid .fcol { text-align: left; position: sticky; left: 0; background: var(--panel); overflow: hidden; text-overflow: ellipsis; font-weight: 500; z-index: 1; }
+/* A line between the folder names and the columns: the names stay when the page scrolls sideways. */
+table.grid th.fcol { border-right: 1px solid var(--panel-border); box-shadow: 2px 0 4px -2px rgba(0, 0, 0, .25); }
 /* Each box has the same width, and a slot for ⟳ (empty in the other cells) keeps the boxes of a column in line. */
 table.grid td .cell { width: 7.5rem; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 table.grid td .mslot { display: inline-block; width: 1.6rem; text-align: left; vertical-align: middle; }

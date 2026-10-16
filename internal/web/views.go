@@ -725,23 +725,26 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 			g.Stale++
 		}
 	}
+	// Always in alphabetical order, also with faults: a folder is where the
+	// eye looks for it. The faults show in their cells, in the count of the
+	// group and on the Findings page.
 	for _, name := range gorder {
 		g := groups[name]
 		sort.SliceStable(g.Items, func(a, b int) bool {
-			if g.Items[a].Problem != g.Items[b].Problem {
-				return g.Items[a].Problem
-			}
 			return strings.ToLower(g.Items[a].Label) < strings.ToLower(g.Items[b].Label)
 		})
 		g.Open = g.Problems > 0
 		vm.Groups = append(vm.Groups, *g)
 	}
 	sort.SliceStable(vm.Groups, func(a, b int) bool {
-		if (vm.Groups[a].Problems > 0) != (vm.Groups[b].Problems > 0) {
-			return vm.Groups[a].Problems > 0
-		}
-		return vm.Groups[a].Name < vm.Groups[b].Name
+		return strings.ToLower(vm.Groups[a].Name) < strings.ToLower(vm.Groups[b].Name)
 	})
+	for i := range lists {
+		items := lists[i].Items
+		sort.SliceStable(items, func(a, b int) bool {
+			return strings.ToLower(items[a].Folder) < strings.ToLower(items[b].Folder)
+		})
+	}
 	vm.Lists = lists
 	return vm
 }
