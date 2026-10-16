@@ -124,13 +124,13 @@ func TestFolderStateAgreesEverywhere(t *testing.T) {
 		}
 	}
 	_, grid := e.get("/frag/grid")
-	if !strings.Contains(grid, `c-warn" title="file watcher error: inotify limit"`) || !strings.Contains(grid, "file watcher error</span>") {
+	if !strings.Contains(grid, `c-warn" title="file watcher error: inotify limit.`) || !strings.Contains(grid, "watcher error</span>") {
 		t.Error("grid: the watcher error is not shown as a warning cell")
 	}
 	if n := strings.Count(grid, `cell c-err" title=`); n != 2 { // one per view (wide table and narrow list)
 		t.Errorf("grid: %d error cells, want 2 (the folder error only)", n)
 	}
-	if !strings.Contains(grid, `c-sync" title="Scanning"`) {
+	if !strings.Contains(grid, `c-sync" title="Scanning.`) {
 		t.Error("grid: the scanning folder is not shown as scanning")
 	}
 

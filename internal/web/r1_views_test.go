@@ -297,7 +297,7 @@ func TestGridPCUnknownWhileServerDown(t *testing.T) {
 	if c := cells["BOTH"]; c.Text != "unknown" || !strings.Contains(c.Title, "not up") {
 		t.Errorf("PC seen by a server that is down: %+v", c)
 	}
-	if c := cells["AKKA-ONLY"]; c.Text != "offline 100%" {
+	if c := cells["AKKA-ONLY"]; c.Class != "off" || c.Icon != "○" || !strings.Contains(c.Title, "Offline") || !strings.Contains(c.Title, "100%") {
 		t.Errorf("PC seen only by a server that is up: %+v", c)
 	}
 }

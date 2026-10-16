@@ -494,24 +494,39 @@ func pct(p float64) string {
 }
 
 func serverCell(f *model.Folder) gridCell {
+	have := progress(f.LocalPercent(), f.GlobalBytes, f.NeedBytes)
 	switch f.FolderSync() {
 	case model.SyncPaused:
-		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the server", Problem: true}
+		return gridCell{Class: "paused", Icon: "⏸", Text: "paused", Title: "Paused on the server. " + have, Problem: true}
 	case model.SyncError:
 		msg := f.Error
 		if msg == "" {
 			msg = plural(max(f.Errors, f.PullErrors), "failed item", "failed items")
 		}
-		return gridCell{Class: "err", Icon: "✖", Text: "error", Title: msg, Problem: true}
+		return gridCell{Class: "err", Icon: "✖", Text: "error", Title: msg + ". " + have, Problem: true}
 	case model.SyncWatchError:
-		return gridCell{Class: "warn", Icon: "⚠", Text: "file watcher error", Title: "file watcher error: " + f.WatchError, Problem: true}
+		return gridCell{Class: "warn", Icon: "⚠", Text: "watcher error", Title: "file watcher error: " + f.WatchError + ". " + have, Problem: true}
 	case model.SyncScanning:
-		return gridCell{Class: "sync", Icon: "⟳", Text: "scanning", Title: "Scanning"}
+		return gridCell{Class: "sync", Icon: "⟳", Text: rules.Size(haveBytes(f.GlobalBytes, f.NeedBytes)), Title: "Scanning. " + have}
 	case model.SyncUpToDate:
-		return gridCell{Class: "ok", Icon: "✔", Text: "100%", Title: "Up to date"}
+		return gridCell{Class: "ok", Icon: "✔", Text: rules.Size(f.GlobalBytes), Title: "Up to date. " + progress(100, f.GlobalBytes, 0)}
 	default:
-		return gridCell{Class: "sync", Icon: "⟳", Text: pct(f.LocalPercent()), Title: fmt.Sprintf("%s, %s", f.State, plural(int(f.NeedItems), "remaining item", "remaining items"))}
+		return gridCell{Class: "sync", Icon: "⟳", Text: rules.Size(haveBytes(f.GlobalBytes, f.NeedBytes)),
+			Title: fmt.Sprintf("%s. %s, %s", f.State, have, plural(int(f.NeedItems), "remaining item", "remaining items"))}
 	}
+}
+
+// haveBytes is what a device has of a folder of global bytes, with need
+// bytes still to get.
+func haveBytes(global, need int64) int64 { return max(global-need, 0) }
+
+// progress writes the part of a folder that a device has, for a tooltip:
+// "62%: 120 GB of 412 GB".
+func progress(p float64, global, need int64) string {
+	if need <= 0 {
+		return pct(p) + ": " + rules.Size(global) // also 99%: only deletions remain
+	}
+	return fmt.Sprintf("%s: %s of %s", pct(p), rules.Size(haveBytes(global, need)), rules.Size(global))
 }
 
 // plural formats a count with its noun: plural(1, "folder", "folders") is
@@ -745,7 +760,7 @@ func (s *Server) diskCell(sv *model.Server, dd diskDir, cfg *config.Config) grid
 	if sv != nil {
 		name = sv.Name
 	}
-	c := gridCell{Class: "disk", Icon: "▢", Text: "not in Syncthing", Title: fmt.Sprintf("On the disk of %s in %s, not in Syncthing.", name, dd.share)}
+	c := gridCell{Class: "disk", Icon: "▢", Text: "no gate", Title: fmt.Sprintf("On the disk of %s in %s, not in Syncthing.", name, dd.share)}
 	if dd.noSizes {
 		c.Title += " The server has no syncwatch gate that measures sizes."
 		return c
@@ -826,7 +841,7 @@ func (s *Server) pcCell(snap *model.Snapshot, on map[string]*model.Folder, d *mo
 	case !d.Connected && !serversKnown(snap, d.SeenBy):
 		// A server that knows the device is not up: the device can be
 		// connected to it. The same rule as the PCs tile.
-		title := "A server of this device is not up: last known " + pct(best.Percent)
+		title := "A server of this device is not up: last known " + progress(best.Percent, best.GlobalBytes, best.NeedBytes)
 		if !d.LastSeen.IsZero() {
 			title += ", last seen " + s.fmtTime(d.LastSeen)
 		}
@@ -836,11 +851,13 @@ func (s *Server) pcCell(snap *model.Snapshot, on map[string]*model.Folder, d *mo
 		if !d.LastSeen.IsZero() {
 			title += ", last seen " + s.fmtTime(d.LastSeen)
 		}
-		return gridCell{Class: "off", Icon: "○", Text: "offline " + pct(best.Percent), Title: title}
+		title += ". Last known " + progress(best.Percent, best.GlobalBytes, best.NeedBytes)
+		return gridCell{Class: "off", Icon: "○", Text: rules.Size(haveBytes(best.GlobalBytes, best.NeedBytes)), Title: title}
 	case best.Percent >= 100:
-		return gridCell{Class: "ok", Icon: "✔", Text: "100%", Title: "Up to date"}
+		return gridCell{Class: "ok", Icon: "✔", Text: rules.Size(best.GlobalBytes), Title: "Up to date. " + progress(100, best.GlobalBytes, 0)}
 	default:
-		return gridCell{Class: "sync", Icon: "⟳", Text: pct(best.Percent), Title: plural(int(best.NeedItems), "remaining item", "remaining items")}
+		return gridCell{Class: "sync", Icon: "⟳", Text: rules.Size(haveBytes(best.GlobalBytes, best.NeedBytes)),
+			Title: progress(best.Percent, best.GlobalBytes, best.NeedBytes) + ", " + plural(int(best.NeedItems), "remaining item", "remaining items")}
 	}
 }
 
