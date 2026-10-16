@@ -87,15 +87,28 @@ func TestGridShowsFoldersNotInSyncthing(t *testing.T) {
 		t.Error("no toggle for the folders not in Syncthing")
 	}
 
-	// The Measure button of a row asks for each of its folders on a disk.
-	form := regexp.MustCompile(`<form method="post" action="/grid/measure" class="measure">.*?</form>`)
-	f := form.FindString(alpha)
-	if f == "" || !strings.Contains(f, `name="server" value="sol"`) || !strings.Contains(f, `name="path" value="`+solAlpha+`"`) ||
-		strings.Contains(f, akkaAlpha) || !strings.Contains(f, `name="back" value="/grid#r-`) {
-		t.Errorf("Measure form of the synced row: %s", f)
+	// ⟳ sits next to each grey box and measures that one folder on that one
+	// server: never in the name column, and not while the gate measures it.
+	form := regexp.MustCompile(`</span><form method="post" action="/grid/measure" class="measure">.*?</form></td>`)
+	if strings.Contains(alpha, "/grid/measure") {
+		t.Errorf("a ⟳ while the gate of SOL measures the folder:\n%s", alpha)
 	}
-	if f := form.FindString(fresh); !strings.Contains(f, `name="server" value="akka"`) || !strings.Contains(f, `name="path" value="`+akkaNew+`"`) {
-		t.Errorf("Measure form of the row on the disk: %s", f)
+	f := form.FindAllString(fresh, -1)
+	if len(f) != 1 || !strings.Contains(f[0], `name="server" value="akka"`) || !strings.Contains(f[0], `name="path" value="`+akkaNew+`"`) ||
+		!strings.Contains(f[0], `name="back" value="/grid#r-`) || !strings.Contains(f[0], `aria-label="Measure the size of LIVE-NEW-2PROJECTFILES on AKKA now"`) {
+		t.Errorf("⟳ of the folder on the disk of AKKA: %q", f)
+	}
+	for _, row := range []string{alpha, fresh} {
+		if th, _, _ := strings.Cut(row, "</th>"); strings.Contains(th, "/grid/measure") {
+			t.Errorf("a ⟳ in the name column: %s", th)
+		}
+	}
+	e.hub.Update("sol", func(s *model.Server) { s.Structure.Sizes[solAlpha].State = "" })
+	e.eng.Evaluate()
+	_, page = e.get("/grid")
+	f = form.FindAllString(rowOf(t, page, "LIVE-ALPHA-2PROJECTFILES"), -1)
+	if len(f) != 1 || !strings.Contains(f[0], `name="server" value="sol"`) || !strings.Contains(f[0], `name="path" value="`+solAlpha+`"`) || strings.Contains(f[0], akkaAlpha) {
+		t.Errorf("⟳ of the folder on the disk of SOL, in the synced row: %q", f)
 	}
 
 	// A viewer sees the folders and their sizes, not the button.

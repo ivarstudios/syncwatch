@@ -23,8 +23,8 @@
         <tbody>
         {{range $g.Items}}
           <tr class="frow{{if .Problem}} has-problem{{end}}{{if .DiskOnly}} disk-only{{end}}" id="{{.Anchor}}" data-search="{{.Search}}">
-            <th scope="row" class="fcol" title="{{if .DiskOnly}}Not in Syncthing · on the disk of {{.Servers}}{{else}}ID {{.ID}} · on {{.Servers}}{{end}}">{{if and $admin .Measure}}<form method="post" action="/grid/measure" class="measure"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="back" value="/grid#{{.Anchor}}">{{range .Measure}}<input type="hidden" name="server" value="{{.Server}}"><input type="hidden" name="path" value="{{.Path}}">{{end}}<button type="submit" class="icon" title="Measure the size on the disk now" aria-label="Measure the size of {{.Label}} on the disk now">⟳</button></form>{{end}}{{.Label}}</th>
-            {{range $i, $c := .Cells}}<td{{if $vm.Sites}}{{with index $vm.Devices $i}}{{if .Server}} data-site="{{.Site}}"{{end}}{{end}}{{end}}>{{template "cell" $c}}</td>{{end}}
+            <th scope="row" class="fcol" title="{{if .DiskOnly}}Not in Syncthing · on the disk of {{.Servers}}{{else}}ID {{.ID}} · on {{.Servers}}{{end}}">{{.Label}}</th>
+            {{range $i, $c := .Cells}}<td{{if $vm.Sites}}{{with index $vm.Devices $i}}{{if .Server}} data-site="{{.Site}}"{{end}}{{end}}{{end}}>{{template "cell" $c}}{{with $c.Measure}}{{if $admin}}<form method="post" action="/grid/measure" class="measure"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="server" value="{{.Server}}"><input type="hidden" name="path" value="{{.Path}}"><button type="submit" class="icon" title="Measure the size on {{.ServerName}} now" aria-label="Measure the size of {{.Folder}} on {{.ServerName}} now">⟳</button></form>{{end}}{{end}}</td>{{end}}
           </tr>
         {{end}}
         </tbody>
@@ -38,7 +38,7 @@
     <details class="group" data-key="dev:{{.Device.ID}}"{{if and $vm.Sites .Device.Server}} data-site="{{.Device.Site}}"{{end}} {{if .Problems}}open{{end}}>
       <summary><strong>{{.Device.Name}}</strong>{{if .Device.Server}} <span class="muted">(server)</span>{{end}} · <span class="muted">{{plural (len .Items) "folder" "folders"}}</span>{{if .Problems}} · <span class="c-err">✖ {{.Problems}}</span>{{end}}</summary>
       <ul class="dlist">
-        {{range .Items}}<li class="frow{{if .Cell.Problem}} has-problem{{end}}" data-search="{{lower .Folder}}"><span>{{.Folder}}</span>{{template "cell" .Cell}}</li>{{end}}
+        {{range .Items}}<li class="frow{{if .Cell.Problem}} has-problem{{end}}" data-search="{{lower .Folder}}"><span>{{.Folder}}</span>{{template "cell" .Cell}}{{with .Cell.Measure}}{{if $admin}}<form method="post" action="/grid/measure" class="measure"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="server" value="{{.Server}}"><input type="hidden" name="path" value="{{.Path}}"><button type="submit" class="icon" title="Measure the size on {{.ServerName}} now" aria-label="Measure the size of {{.Folder}} on {{.ServerName}} now">⟳</button></form>{{end}}{{end}}</li>{{end}}
       </ul>
     </details>
   {{end}}

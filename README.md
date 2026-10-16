@@ -388,7 +388,7 @@ structure:
 - Such a folder shows as a grey box with a dashed edge in the column of its server, never as a state of Syncthing. When a Syncthing folder with the same name is in the same group, the box is in the row of that folder. Else the folder has a row of its own, with its name in italics.
 - The box shows the size of the folder on the disk, for example `1.3 TB`. `≥ 1.3 TB` is a lower limit: the measurement stopped after 30 minutes, or it could not read all directories. The tooltip gives the number of files and the time of the measurement.
 - The group heading counts these folders apart: `8 folders · ✔ no faults · ▢ 2 not in Syncthing`. They are no faults, and "Only folders with faults" hides them. "Show folders not in Syncthing" shows or hides the rows of their own.
-- The [read-only gate](#read-only-gate) of the server measures the sizes. It measures each folder each night after `collector.size_time` (default 02:00). An administrator can select **⟳** next to the name of a row to measure its folders now. Each gate measures one folder at a time.
+- The [read-only gate](#read-only-gate) of the server measures the sizes. It measures each folder each night after `collector.size_time` (default 02:00). An administrator can select **⟳** next to a grey box to measure that folder on that server now. Each gate measures one folder at a time.
 - A server without a gate, or with a gate of an older version, shows the boxes without a size and without **⟳**.
 - A share that has no Syncthing folder of the server is not scanned: add it to `shares.add` (and to `SYNCWATCH_GATE_BROWSE_ROOTS` on its gate).
 

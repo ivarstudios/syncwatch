@@ -417,6 +417,7 @@ type gridDevice struct {
 type gridCell struct {
 	Class, Icon, Text, Title string
 	Problem                  bool
+	Measure                  *measureTarget // a folder on a disk that an administrator can measure now (⟳ next to the box)
 }
 
 type gridRow struct {
@@ -426,13 +427,13 @@ type gridRow struct {
 	Stale                      bool // a server of the folder shows only its last known state
 	DiskOnly                   bool // a project folder that is on the disk of a server and in no Syncthing folder
 	OnDisk                     bool // a server has the folder on its disk, not in Syncthing (a grey cell)
-	Measure                    []measureTarget
 	Cells                      []gridCell
 }
 
-// measureTarget is a folder on the disk of a server that the Measure
-// button of its row asks the gate of the server to measure.
-type measureTarget struct{ Server, Path string }
+// measureTarget is a folder on the disk of one server that the ⟳ button
+// next to its grey box asks the gate of that server to measure. Back is the
+// way back to the row.
+type measureTarget struct{ Server, ServerName, Path, Folder, Back string }
 
 type gridGroup struct {
 	Name           string
@@ -660,8 +661,9 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 				if dd, ok := fi.disk[d.ServerID]; ok {
 					cell = s.diskCell(snap.Server(d.ServerID), dd, cfg)
 					row.OnDisk = true
-					if !dd.noSizes {
-						row.Measure = append(row.Measure, measureTarget{Server: d.ServerID, Path: dd.path})
+					// Not while the gate measures it: the box then shows ⟳ itself.
+					if !dd.noSizes && (dd.size == nil || dd.size.State == "") {
+						cell.Measure = &measureTarget{Server: d.ServerID, ServerName: showControls(d.Name), Path: dd.path, Folder: fi.label, Back: "/grid#" + row.Anchor}
 					}
 				} else if f, ok := fi.on[d.ServerID]; ok {
 					cell = serverCell(f)
