@@ -383,6 +383,8 @@ structure:
 
 [examples/ivar.yaml](examples/ivar.yaml) has the complete structure rules of IVAR Studios, the first installation.
 
+**Folders page.** Each cell shows the size of the folder on that server or PC: `✔ 412 GB` when it is up to date, `⟳ 120 GB` while it syncs (the part that the device has now). The tooltip gives the percentage, for example "30%: 120 GB of 400 GB". Each server and PC has the same column in each group, and each box has the same width.
+
 **Folders not in Syncthing.** The Folders page also lists the project folders on the disk of a server that are not in a Syncthing folder (the directories of S7). Thus you see which project folders still need a Syncthing folder.
 
 - Such a folder shows as a grey box with a dashed edge in the column of its server, never as a state of Syncthing. When a Syncthing folder with the same name is in the same group, the box is in the row of that folder. Else the folder has a row of its own, with its name in italics.

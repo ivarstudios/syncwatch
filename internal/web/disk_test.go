@@ -74,7 +74,7 @@ func TestGridShowsFoldersNotInSyncthing(t *testing.T) {
 	}
 	fresh := rowOf(t, page, "LIVE-NEW-2PROJECTFILES")
 	if !strings.Contains(fresh, `class="frow disk-only"`) || !strings.Contains(fresh, "▢</span> 1.3 TB</span>") ||
-		!strings.Contains(fresh, `title="Not in Syncthing · on the disk of AKKA"`) {
+		!strings.Contains(fresh, `title="LIVE-NEW-2PROJECTFILES · not in Syncthing · on the disk of AKKA"`) {
 		t.Errorf("the folder that is only on the disk:\n%s", fresh)
 	}
 	if strings.Contains(page, "_archive") {
@@ -89,7 +89,7 @@ func TestGridShowsFoldersNotInSyncthing(t *testing.T) {
 
 	// ⟳ sits next to each grey box and measures that one folder on that one
 	// server: never in the name column, and not while the gate measures it.
-	form := regexp.MustCompile(`</span><form method="post" action="/grid/measure" class="measure">.*?</form></td>`)
+	form := regexp.MustCompile(`</span><span class="mslot"><form method="post" action="/grid/measure" class="measure">.*?</form></span></td>`)
 	if strings.Contains(alpha, "/grid/measure") {
 		t.Errorf("a ⟳ while the gate of SOL measures the folder:\n%s", alpha)
 	}
@@ -128,7 +128,7 @@ func TestGridFoldersNotInSyncthingWithoutGate(t *testing.T) {
 	e.eng.Evaluate()
 	_, page := e.get("/grid")
 	fresh := rowOf(t, page, "LIVE-NEW-2PROJECTFILES")
-	if !strings.Contains(fresh, "▢</span> not in Syncthing</span>") || !strings.Contains(fresh, "The server has no syncwatch gate that measures sizes.") ||
+	if !strings.Contains(fresh, "▢</span> no gate</span><span class=\"mslot\"></span>") || !strings.Contains(fresh, "The server has no syncwatch gate that measures sizes.") ||
 		strings.Contains(fresh, "/grid/measure") {
 		t.Errorf("without a gate:\n%s", fresh)
 	}
@@ -191,7 +191,8 @@ func TestSettingsSizeTime(t *testing.T) {
 	csrf := e.csrf("/settings")
 	col := url.Values{"csrf": {csrf}, "mode": {"events"}, "event_timeout": {"50s"}, "full_check_interval": {"4h"}, "poll_interval": {"15m"},
 		"structure_interval": {"1h"}, "baseline_interval": {"7d"}, "request_timeout": {"30s"}, "concurrency": {"3"}, "down_after_failures": {"2"}}
-	for in, want := range map[string]string{"3:15": "3:15", "Off": "off", "": "02:00"} {
+	for _, c := range [][2]string{{"3:15", "3:15"}, {"Off", "off"}, {"", "02:00"}} {
+		in, want := c[0], c[1]
 		col.Set("size_time", in)
 		if msg, isErr := flash(e.post("/settings/collector", col)); isErr || e.cfg.Get().Collector.SizeTime != want {
 			t.Errorf("size_time %q: %q, stored %q", in, msg, e.cfg.Get().Collector.SizeTime)
@@ -207,5 +208,46 @@ func TestSettingsSizeTime(t *testing.T) {
 	col.Del("size_time")
 	if _, isErr := flash(e.post("/settings/collector", col)); isErr || e.cfg.Get().Collector.SizeTime != "02:00" {
 		t.Errorf("without the input: stored %q", e.cfg.Get().Collector.SizeTime)
+	}
+}
+
+// Each cell shows a size: a synced folder its size, a folder that syncs the
+// part that the server has, with the percentage in the tooltip. Each group
+// has the same columns, so each device is in the same column on the whole
+// page, and each cell has the slot for ⟳ so that the boxes stay in line.
+func TestGridCellsShowSizesInLine(t *testing.T) {
+	e := adminEnv(t, twoServers+diskRules)
+	diskEnv(t, e)
+	e.hub.Update("akka", func(s *model.Server) {
+		s.Folders["alpha"].GlobalBytes = 412_400_000_000
+		s.Folders["beta"] = &model.Folder{ID: "beta", Label: "LIVE-BETA-1SOURCE", Path: "/s/AKKA-LIVE-1SOURCE/LIVE-BETA-1SOURCE", State: "syncing",
+			GlobalBytes: 400_000_000_000, NeedBytes: 280_000_000_000, NeedItems: 5}
+	})
+	e.eng.Evaluate()
+	_, page := e.get("/grid")
+	alpha := rowOf(t, page, "LIVE-ALPHA-2PROJECTFILES")
+	if !strings.Contains(alpha, `<span class="cell c-ok" title="Up to date. 100%: 412 GB"><span aria-hidden="true">✔</span> 412 GB</span>`) {
+		t.Errorf("synced folder:\n%s", alpha)
+	}
+	beta := rowOf(t, page, "LIVE-BETA-1SOURCE")
+	if !strings.Contains(beta, `<span class="cell c-sync" title="syncing. 30%: 120 GB of 400 GB, 5 remaining items"><span aria-hidden="true">⟳</span> 120 GB</span>`) {
+		t.Errorf("folder that syncs:\n%s", beta)
+	}
+	if got := progress(99.9, 412_400_000_000, 0); got != "99%: 412 GB" {
+		t.Errorf("only deletions remain: %q", got)
+	}
+
+	// The same columns in each group, and a slot in each cell.
+	colgroups := regexp.MustCompile(`<colgroup>.*?</colgroup>`).FindAllString(page, -1)
+	if len(colgroups) < 2 {
+		t.Fatalf("%d groups with a colgroup, want 2 or more", len(colgroups))
+	}
+	for _, cg := range colgroups {
+		if cg != colgroups[0] || !strings.HasPrefix(cg, `<colgroup><col class="fcol"><col class="dcol">`) {
+			t.Errorf("colgroup %q, want %q", cg, colgroups[0])
+		}
+	}
+	if cells, slots := strings.Count(page, "<td"), strings.Count(page, `<span class="mslot">`); cells == 0 || cells != slots {
+		t.Errorf("%d cells, %d slots for ⟳", cells, slots)
 	}
 }
