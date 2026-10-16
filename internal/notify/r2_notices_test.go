@@ -61,7 +61,11 @@ func TestSecurityNoticeKeptUntilAChannelAcceptsIt(t *testing.T) {
 	r.sender.fail(&httpError{code: 404, text: "Unknown Webhook"})
 	r.n.Notice(Notice{Title: "Server AKKA changed", Summary: "The API key is replaced.", Security: true})
 	r.n.Notice(Notice{Title: "Checks changed", Summary: "H7 is off."})
-	waitFor(t, func() bool { return pendingNotices(r) == 1 && strings.Count(logs.String(), "settings notice") == 2 })
+	// The log line comes before the notice is free for the retries: wait for
+	// both, or Delivery can still count the notice as being sent.
+	waitFor(t, func() bool {
+		return pendingNotices(r) == 1 && strings.Count(logs.String(), "settings notice") == 2 && r.n.Delivery().NoticesKept == 1
+	})
 	if !strings.Contains(logs.String(), `msg="settings notice kept until a channel accepts it" title="Server AKKA changed"`) ||
 		!strings.Contains(logs.String(), `msg="settings notice discarded, Discord refused it" title="Checks changed"`) {
 		t.Fatalf("log:\n%s", logs.String())
