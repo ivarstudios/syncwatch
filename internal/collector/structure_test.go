@@ -269,7 +269,9 @@ func TestScanTimerStartsDueScans(t *testing.T) {
 	if st := structureOf(hub); st != nil {
 		t.Fatal("scan started before it was due")
 	}
-	first := waitFor(t, hub, "the timer's scan", func(s *model.Server) bool { return s.Structure != nil })
+	// The end of the scan (ScannedAt), not the shares that the scan
+	// publishes before its walk.
+	first := waitFor(t, hub, "the timer's scan", func(s *model.Server) bool { return s.Structure != nil && !s.Structure.ScannedAt.IsZero() })
 	if first.Structure.ScanBaseline {
 		t.Fatal("regular scan expected")
 	}
@@ -395,5 +397,56 @@ func TestMissedEventsRescansFoldersAndLimitsFullChecks(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if nested() != 1 {
 		t.Fatal("a failed listing removed the nested entry")
+	}
+}
+
+// A scan publishes the listings of the shares before it walks into the
+// project folders: the folders show on the Folders page at once, also while
+// the walk of a large NAS takes minutes. The end of the scan comes with the
+// walk.
+func TestScanPublishesTheSharesBeforeTheWalk(t *testing.T) {
+	fake := newFakeST(t)
+	release := make(chan struct{})
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A listing inside a project folder waits: the walk.
+		if r.URL.Path == "/rest/system/browse" && strings.Contains(r.URL.Query().Get("current"), `\LIVE-`) {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		fake.ServeHTTP(w, r)
+	})
+	c, hub, _, stop := startCollector(t, h, "")
+	defer stop()
+	done := make(chan error, 1)
+	go func() { done <- c.scan(context.Background(), true) }()
+	waitUntil(t, "the shares before the walk", func() bool {
+		st := structureOf(hub)
+		return st != nil && len(st.Shares) > 0
+	})
+	src := shareByName(t, structureOf(hub), "AKKA-LIVE-1SOURCE")
+	if len(src.Dirs) != 6 || src.ListedAt.IsZero() {
+		t.Errorf("published share: %d dirs, listed %v", len(src.Dirs), src.ListedAt)
+	}
+	last := func() (at time.Time) {
+		hub.View("akka", func(s *model.Server) { at = s.LastStructureScan })
+		return at
+	}
+	if !last().IsZero() {
+		t.Error("the end of the scan is set before the walk")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the scan ended before the walk: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if last().IsZero() {
+		t.Error("no end of the scan after the walk")
 	}
 }

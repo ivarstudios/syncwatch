@@ -83,6 +83,8 @@ h1 { font-size: 1.6rem; } h2 { font-size: 1.2rem; } h3 { font-size: 1.07rem; mar
 .top .logout button.link:hover { color: var(--nav-link-hover); }
 
 main { max-width: 1400px; margin: 0 auto; padding: 20px 15px; }
+/* The Folders page uses the whole window: each server and PC is a column. */
+main.wide { max-width: none; }
 .foot { text-align: center; color: var(--muted); font-size: .8rem; padding: 1.5rem 1rem; }
 
 /* Panels (Syncthing: panel-default). A heading as the first child of a panel

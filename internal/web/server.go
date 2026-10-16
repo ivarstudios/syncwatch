@@ -5,8 +5,10 @@ package web
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io"
@@ -475,7 +477,37 @@ func (s *Server) funcs() template.FuncMap {
 		"plus1":        func(i int) int { return i + 1 },
 		"list":         func(s ...string) []string { return s },
 		"plural":       plural,
+		"asset":        assetURL,
 	}
+}
+
+// assetVersion has a short hash of the content of each file in assets, made
+// once. assetURL puts it in the URL of the file: a new version of syncwatch
+// gives new URLs, thus no browser keeps an old stylesheet or script from its
+// cache (the files are cached for a day).
+var assetVersion = func() map[string]string {
+	out := map[string]string{}
+	_ = fs.WalkDir(assetFS, "assets", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		b, err := assetFS.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		sum := sha256.Sum256(b)
+		out[strings.TrimPrefix(p, "assets/")] = hex.EncodeToString(sum[:5])
+		return nil
+	})
+	return out
+}()
+
+// assetURL is the URL of a file in assets, with the version of its content.
+func assetURL(name string) string {
+	if v := assetVersion[name]; v != "" {
+		return "/assets/" + name + "?v=" + v
+	}
+	return "/assets/" + name
 }
 
 // Login, logout and first-run setup.

@@ -672,8 +672,11 @@ func sameContent(a, b model.Finding) bool {
 }
 
 // visibleFingerprint hashes what the dashboard shows of the snapshot (server
-// status, folder states, completion, connections), ignoring timestamps that
-// change on every event such as "last contact".
+// status, folder states, completion, connections, the sizes in the cells of
+// the Folders page, the folders of the shares and their sizes on the disk),
+// ignoring timestamps that change on every event such as "last contact". A
+// size counts as the dashboard writes it ("412 GB"): a sync does not refresh
+// the dashboards for each byte.
 func visibleFingerprint(snap *model.Snapshot) uint64 {
 	h := fnv.New64a()
 	w := func(parts ...any) {
@@ -693,10 +696,11 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 		w(sv.ID, sv.Status, sv.Version, sv.LastError, sv.Loaded, sv.Mode, sv.Cert.NotAfter.Unix())
 		for _, id := range sortedKeys(sv.Folders) {
 			f := sv.Folders[id]
-			w(id, f.Label, f.State, f.Paused, f.Error, f.WatchError, f.Errors, f.PullErrors, f.NeedItems, int(f.LocalPercent()))
+			w(id, f.Label, f.State, f.Paused, f.Error, f.WatchError, f.Errors, f.PullErrors, f.NeedItems, int(f.LocalPercent()),
+				rules.Size(f.GlobalBytes), rules.Size(max(f.GlobalBytes-f.NeedBytes, 0)))
 			for _, dev := range sortedKeys(f.Completion) {
 				c := f.Completion[dev]
-				w(dev, int(c.Percent), c.RemoteState)
+				w(dev, int(c.Percent), c.RemoteState, rules.Size(c.GlobalBytes), rules.Size(max(c.GlobalBytes-c.NeedBytes, 0)))
 			}
 		}
 		for _, id := range sortedKeys(sv.Connections) {
@@ -705,8 +709,18 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 		for _, id := range sortedKeys(sv.Devices) {
 			w(id, sv.Devices[id].Name, sv.Devices[id].Paused)
 		}
-		if sv.Structure != nil {
-			w(sv.Structure.ScannedAt.Unix(), len(sv.Structure.Shares), len(sv.Structure.Nested))
+		if st := sv.Structure; st != nil {
+			w(st.ScannedAt.Unix(), len(st.Shares), len(st.Nested), st.NoSizes)
+			for _, sh := range st.Shares {
+				w("share", sh.Path, sh.Error)
+				for _, d := range sh.Dirs {
+					w("dir", d.Name, len(d.FolderIDs))
+				}
+			}
+			for _, p := range sortedKeys(st.Sizes) {
+				z := st.Sizes[p]
+				w("size", p, rules.Size(z.Bytes), z.Complete, z.State, z.Error, z.MeasuredAt.Unix())
+			}
 		}
 	}
 	return h.Sum64()
