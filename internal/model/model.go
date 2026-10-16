@@ -135,6 +135,14 @@ type Server struct {
 	Structure      *Structure
 	Rate           Rate // current transfer rate over all connections
 
+	// Deleted are the project folders outside Syncthing that a structure
+	// scan found deleted (S8), by path. The store keeps them over a
+	// restart: the server gets them when it enters the hub (the start of
+	// the application, or the collector manager), before an evaluation
+	// sees it. One goes when an administrator removes it, or when a scan
+	// lists the folder again.
+	Deleted map[string]*DeletedDir
+
 	RemoteStates    map[string]map[string]string     // last known remoteState by folder ID, then device ID; see RemoteState
 	LastCompletions map[string]map[string]Completion // last completion of a connected, valid device by folder ID, then device ID; see LastCompletion
 
@@ -501,6 +509,22 @@ type DirSize struct {
 	Error        string // why the gate cannot measure it, or why syncwatch cannot ask
 }
 
+// DeletedDir is a project folder outside Syncthing (rules.NotInSyncthing)
+// that a listing of its share had, and that the next listing of the share
+// did not have. No other device has a copy of such a folder.
+type DeletedDir struct {
+	Path, Name       string
+	Share, ShareName string    // the path and the name of the share
+	DetectedAt       time.Time // the end of the listing without the folder
+	// Size is the last size of the folder that the gate measured, nil when
+	// syncwatch knows none.
+	Size *DirSize
+	// All: the folder went with all the other directories of its share in
+	// one listing. Then the share is not mounted in the Syncthing container
+	// now, or all of its folders are deleted.
+	All bool
+}
+
 // Share is a directory whose children are project folders.
 type Share struct {
 	Path      string
@@ -600,6 +624,22 @@ func (s *Server) Clone() *Server {
 	c.PendingFolders = slices.Clone(s.PendingFolders)
 	c.Conflicts = maps.Clone(s.Conflicts)
 	c.Structure = s.Structure.Clone()
+	if s.Deleted != nil {
+		c.Deleted = make(map[string]*DeletedDir, len(s.Deleted))
+		for k, d := range s.Deleted {
+			c.Deleted[k] = d.Clone()
+		}
+	}
+	return &c
+}
+
+// Clone returns a deep copy.
+func (d *DeletedDir) Clone() *DeletedDir {
+	c := *d
+	if d.Size != nil {
+		sc := *d.Size
+		c.Size = &sc
+	}
 	return &c
 }
 

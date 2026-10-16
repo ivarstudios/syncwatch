@@ -417,7 +417,9 @@ type gridDevice struct {
 type gridCell struct {
 	Class, Icon, Text, Title string
 	Problem                  bool
+	Deleted                  bool           // a project folder outside Syncthing that a scan found deleted (S8)
 	Measure                  *measureTarget // a folder on a disk that an administrator can measure now (⟳ next to the box)
+	Forget                   *measureTarget // a deleted folder that an administrator can remove from syncwatch (✕ next to the box)
 }
 
 type gridRow struct {
@@ -427,11 +429,13 @@ type gridRow struct {
 	Stale                      bool // a server of the folder shows only its last known state
 	DiskOnly                   bool // a project folder that is on the disk of a server and in no Syncthing folder
 	OnDisk                     bool // a server has the folder on its disk, not in Syncthing (a grey cell)
+	Deleted                    bool // a server has the folder deleted (a yellow cell): the row shows also without the folders not in Syncthing
 	Cells                      []gridCell
 }
 
-// measureTarget is a folder on the disk of one server that the ⟳ button
-// next to its grey box asks the gate of that server to measure. Back is the
+// measureTarget is a folder on the disk of one server: the ⟳ button next to
+// its grey box asks the gate of that server to measure it, the ✕ button
+// next to its yellow box (deleted) removes it from syncwatch. Back is the
 // way back to the row.
 type measureTarget struct{ Server, ServerName, Path, Folder, Back string }
 
@@ -440,6 +444,7 @@ type gridGroup struct {
 	Problems, Rows int
 	Stale          int // rows with the last known state of a server
 	OnDisk         int // rows with a folder on the disk of a server that is not in Syncthing
+	Deleted        int // rows with a deleted folder (S8)
 	Open           bool
 	Items          []gridRow
 }
@@ -461,6 +466,7 @@ type deviceList struct {
 	Device   gridDevice
 	Items    []deviceItem
 	Problems int
+	Deleted  int
 }
 
 type gridVM struct {
@@ -568,9 +574,10 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 
 	type folderInfo struct {
 		id, label, group string
-		on               map[string]*model.Folder // server ID → folder
-		disk             map[string]diskDir       // server ID → the folder on the disk of the server, not in Syncthing
-		diskOnly         bool                     // in no Syncthing folder of any server
+		on               map[string]*model.Folder     // server ID → folder
+		disk             map[string]diskDir           // server ID → the folder on the disk of the server, not in Syncthing
+		deleted          map[string]*model.DeletedDir // server ID → the folder that a scan found deleted on the server (S8)
+		diskOnly         bool                         // in no Syncthing folder of any server
 		servers          []string
 	}
 	infos := map[string]*folderInfo{}
@@ -657,6 +664,47 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 		}
 	}
 
+	// The project folders outside Syncthing that a scan found deleted (S8):
+	// a yellow box in the column of the server, in the row with the same
+	// name in the group, or in a row of their own. A row whose cell of the
+	// server shows something else gives the deleted folder a row of its own.
+	for _, sv := range snap.Servers {
+		paths := make([]string, 0, len(sv.Deleted))
+		for p := range sv.Deleted {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for _, p := range paths {
+			d := sv.Deleted[p]
+			group, label := showControls(groupName(sv.Name, d.ShareName)), showControls(d.Name)
+			k := group + "\x00" + strings.ToLower(label)
+			id := byLabel[k]
+			if fi := infos[id]; fi != nil {
+				_, onDisk := fi.disk[sv.ID]
+				if fi.on[sv.ID] != nil || onDisk || fi.deleted[sv.ID] != nil {
+					id = ""
+					k = "deleted:" + sv.ID + "\x00" + p
+				}
+			}
+			if id == "" {
+				id = "disk:" + k
+				if byLabel[k] == "" {
+					byLabel[k] = id
+				}
+				infos[id] = &folderInfo{id: id, label: label, group: group, on: map[string]*model.Folder{}, diskOnly: true}
+				order = append(order, id)
+			}
+			fi := infos[id]
+			if fi.deleted == nil {
+				fi.deleted = map[string]*model.DeletedDir{}
+			}
+			fi.deleted[sv.ID] = d
+			if fi.diskOnly {
+				fi.servers = append(fi.servers, showControls(sv.Name))
+			}
+		}
+	}
+
 	groups := map[string]*gridGroup{}
 	var gorder []string
 	lists := make([]deviceList, len(vm.Devices))
@@ -673,7 +721,11 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 		for i, d := range devs {
 			var cell gridCell
 			if d.IsServer {
-				if dd, ok := fi.disk[d.ServerID]; ok {
+				if dd, ok := fi.deleted[d.ServerID]; ok {
+					cell = s.deletedCell(snap.Server(d.ServerID), dd, role == RoleAdmin)
+					row.Deleted = true
+					cell.Forget = &measureTarget{Server: d.ServerID, ServerName: showControls(d.Name), Path: dd.Path, Folder: fi.label, Back: "/grid#" + row.Anchor}
+				} else if dd, ok := fi.disk[d.ServerID]; ok {
 					cell = s.diskCell(snap.Server(d.ServerID), dd, cfg)
 					row.OnDisk = true
 					// Not while the gate measures it: the box then shows ⟳ itself.
@@ -699,6 +751,9 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 				row.Problem = true
 				lists[i].Problems++
 			}
+			if cell.Deleted {
+				lists[i].Deleted++
+			}
 			row.Cells = append(row.Cells, cell)
 			if cell.Class != "na" {
 				lists[i].Items = append(lists[i].Items, deviceItem{Folder: fi.label, Cell: cell})
@@ -718,6 +773,9 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 		if row.OnDisk {
 			g.OnDisk++
 		}
+		if row.Deleted {
+			g.Deleted++
+		}
 		if row.Problem {
 			g.Problems++
 		}
@@ -733,7 +791,7 @@ func (s *Server) grid(v *engine.View, role string) gridVM {
 		sort.SliceStable(g.Items, func(a, b int) bool {
 			return strings.ToLower(g.Items[a].Label) < strings.ToLower(g.Items[b].Label)
 		})
-		g.Open = g.Problems > 0
+		g.Open = g.Problems > 0 || g.Deleted > 0
 		vm.Groups = append(vm.Groups, *g)
 	}
 	sort.SliceStable(vm.Groups, func(a, b int) bool {
@@ -805,6 +863,33 @@ func (s *Server) diskCell(sv *model.Server, dd diskDir, cfg *config.Config) grid
 		c.Title += " " + sz.Error + "."
 	} else if sz.MeasuredAt.IsZero() && sz.State == "" {
 		c.Title += " Not measured yet. " + when
+	}
+	return c
+}
+
+// deletedCell shows a project folder outside Syncthing that a scan found
+// deleted (S8): a yellow box, with when syncwatch found it deleted and its
+// last size in the tooltip. admin: the viewer can remove it (✕).
+func (s *Server) deletedCell(sv *model.Server, d *model.DeletedDir, admin bool) gridCell {
+	name := "the server"
+	if sv != nil {
+		name = sv.Name
+	}
+	c := gridCell{Class: "deleted", Icon: "⚠", Text: "deleted", Deleted: true,
+		Title: fmt.Sprintf("Deleted on %s in %s: found %s. It was not in Syncthing: no other device has a copy.", name, d.ShareName, s.fmtTime(d.DetectedAt))}
+	if sz := d.Size; sz != nil {
+		size := rules.Size(sz.Bytes)
+		if !sz.Complete {
+			size = "≥ " + size
+		}
+		c.Title += fmt.Sprintf(" Last size %s in %s, measured %s.", size, plural(int(sz.Files), "file", "files"), s.fmtTime(sz.MeasuredAt))
+	}
+	if d.All {
+		c.Title += " All the directories of the share went in one scan: make sure that the share is mounted in the Syncthing container."
+	}
+	c.Title += " If the deletion was a mistake, restore the folder from the recycle bin or a backup of the server."
+	if admin {
+		c.Title += " Else select ✕ to remove it from syncwatch."
 	}
 	return c
 }

@@ -590,7 +590,16 @@ func Run(ctx context.Context, o Options) error {
 	var known []*model.Server
 	for _, s := range cfg.Servers {
 		if id, _ := st.ServerDeviceID(s.ID); id != "" && !s.Disabled {
-			known = append(known, &model.Server{ID: s.ID, Name: s.Name, URL: s.URL, GUIURL: s.LinkURL(), MyID: id})
+			sv := &model.Server{ID: s.ID, Name: s.Name, URL: s.URL, GUIURL: s.LinkURL(), MyID: id}
+			// The deleted project folders (S8) too: this makes the hub
+			// ready for the first evaluation, and without them their
+			// findings would resolve at each start.
+			if d, err := st.DeletedDirs(s.ID); err != nil {
+				log.Error("cannot read the deleted project folders", "server", s.Name, "err", err)
+			} else if len(d) > 0 {
+				sv.Deleted = d
+			}
+			known = append(known, sv)
 		}
 	}
 	hub.SetServers(known)
@@ -640,6 +649,7 @@ func Run(ctx context.Context, o Options) error {
 		Delivery:        ntf.Delivery,
 		ScanNow:         mgr.ScanNow,
 		MeasureSize:     mgr.MeasureSize,
+		ForgetDeleted:   mgr.ForgetDeleted,
 	}, o.Version, log)
 	if err != nil {
 		return err

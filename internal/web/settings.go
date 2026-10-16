@@ -580,6 +580,7 @@ func (s *Server) handleServerDelete(w http.ResponseWriter, r *http.Request, info
 	}
 	_ = s.st.DeleteSecret(store.ServerAPIKeySecret(id))
 	_ = s.st.SetPin(id, "")
+	_ = s.st.ForgetListings(id)
 	s.announce(r, notify.Notice{Title: "Server " + name + " removed", Summary: "syncwatch deleted its API key and pinned certificate.", Security: true})
 	s.redirect(w, r, "/settings#servers", "The server is removed.", false)
 }

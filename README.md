@@ -355,7 +355,7 @@ syncwatch then does not report H11 for the PC. H12 (Relay connection lost) opens
 
 A **share** is a directory whose subdirectories are project folders. syncwatch finds the shares automatically. A share is the parent directory of each Syncthing folder path, plus `shares.add`, minus `shares.exclude`. With `share_type_from_path`, the share is the nearest parent directory whose name matches.
 
-The general structure checks (S1, S2, S6, S7) need no rules. The checks for names and placement (S3, S4, S5, X2) use the structure rules:
+The general structure checks (S1, S2, S6, S7, S8) need no rules. The checks for names and placement (S3, S4, S5, X2) use the structure rules:
 
 ```yaml
 structure:
@@ -393,6 +393,18 @@ structure:
 - The [read-only gate](#read-only-gate) of the server measures the sizes. It measures each folder each night after `collector.size_time` (default 02:00). An administrator can select **⟳** next to a grey box to measure that folder on that server now. Each gate measures one folder at a time.
 - A server without a gate, or with a gate of an older version, shows the boxes without a size and without **⟳**.
 - A share that has no Syncthing folder of the server is not scanned: add it to `shares.add` (and to `SYNCWATCH_GATE_BROWSE_ROOTS` on its gate).
+- A measurement that fails, for example because the folder does not exist now, shows no size: the box keeps the last size, or shows `size unknown`. The tooltip gives the error.
+
+**Deleted folders (S8).** A project folder that is not in Syncthing has no copy on another device. Thus syncwatch tells you when such a folder goes:
+
+- The structure scan compares each listing of a share with the last listing. A project folder not in Syncthing that the last listing had and the new listing does not have is deleted. syncwatch finds it at the next structure scan (default every hour), or at once with **Scan now**.
+- syncwatch keeps the listings and the deleted folders in its database. After a restart, the first scan also finds the folders that were deleted while syncwatch did not run. The first scan after the update to this version only records the listings.
+- A deleted folder shows as a yellow box `⚠ deleted` in the column of its server. The tooltip gives the time when syncwatch found it deleted and its last measured size. "Show folders not in Syncthing" does not hide it, and "Only folders with faults" shows it.
+- S8 is urgent: Discord gets a message after 5 minutes. If the deletion was a mistake, restore the folder from the recycle bin of the NAS (on QNAP: `@Recycle` in the share) or from a backup. The next scan then finds the folder again, and S8 resolves.
+- If the deletion was intended, an administrator selects **✕** next to the yellow box. syncwatch asks for a confirmation, then forgets the folder, and S8 resolves. Nothing changes on the server. A viewer sees the box without **✕**.
+- A share that lists no directory where it listed 2 or more directories gives 1 finding for the share, not 1 for each folder: possibly the share is not mounted in the Syncthing container. Each folder still gets its yellow box.
+- A renamed or moved folder shows as deleted under its old name, and as a new folder under its new name. Remove the old name with **✕**.
+- A share that syncwatch cannot list changes nothing. The directory of a Syncthing folder that goes gets H4 (Syncthing stops the folder: "folder path missing"), not S8.
 
 **Nested project folders (S3).** syncwatch finds a project folder that a person copies into another project folder in less than 1 day, also when Syncthing reports no change. This is true when a baseline scan takes less than 10 seconds:
 
@@ -405,7 +417,7 @@ When Syncthing reports a change in a Syncthing folder, syncwatch finds a nested 
 
 **Scan now and the last scan.** The structure scan runs every `structure_interval` (default 1 hour). Thus a finding for a corrected mistake can stay open for up to 1 hour.
 
-- Each structure finding (S3 to S7) shows the end of the last structure scan that listed its share. An example is "last scan 09:05 (3 minutes ago)". S1 and S2 show the end of the last structure scan of the server. The Overview tile of the server shows the same time. All users see it.
+- Each structure finding (S3 to S8) shows the end of the last structure scan that listed its share. An example is "last scan 09:05 (3 minutes ago)". S1 and S2 show the end of the last structure scan of the server. The Overview tile of the server shows the same time. All users see it.
 - Sometimes syncwatch cannot list a share, for example because of a timeout or a volume that is not mounted. Then the findings of the share keep the last known state (tag "stale"). They show the time of the last listing of the share and the error.
 - An administrator can select **Scan now** in the details of a structure finding (its server) or in Settings → Structure (each enabled server). syncwatch then scans the shares immediately. This is the same scan as the timed scan, and it only reads.
 - A corrected mistake resolves immediately. The Findings page shows the result after the scan, and the other open Findings pages update automatically. The answer names each share that syncwatch cannot list.
@@ -441,6 +453,7 @@ The severity is ERROR, WARNING or INFO. An *urgent* check sends an urgent messag
 | S5 | Incorrect share | The type token or a placement rule does not match the share. | ERROR | |
 | S6 | Duplicate name | The same name is in 2 shares on one server. | WARNING | |
 | S7 | Not in Syncthing | A project folder is not in a Syncthing folder. | INFO | |
+| S8 | Project folder deleted | A project folder that is not in a Syncthing folder is gone: the last listing of its share had it, the new listing does not. No other device has a copy. A share that lists no directory now gives 1 finding for its folders. The finding stays open until the folder is back or an administrator removes it on the Folders page (✕). See [Deleted folders](#shares-and-structure-rules). | WARNING | yes |
 | C1 | Inactive project folder | No file in a folder changed for 180 days. syncwatch uses the newest file that the server pulled from another device, or the newest local change that it saw (events mode). When it knows neither, it uses the time when it first saw the folder. | INFO | |
 | C2 | Inactive device | A device is offline for 90 days, or never connected, but is still configured. | INFO | |
 | C3 | Folder not used by device | A folder is shared with a device that never connected to the server, or that does not share it back, for 30 days. | INFO | |
@@ -818,7 +831,7 @@ Layout: `cmd/syncwatch` (CLI) · `internal/stclient` (the client with the allowl
 - No disk-space or hardware monitor, no graphs, no metrics history.
 - syncwatch cannot report its own stop. If its host stops, syncwatch sends no messages, and if that host is a monitored server, syncwatch never sends its H1 urgent message. Use an outside check of `/healthz` or the [dead-man URL](#health-check-and-dead-man-url). Or run syncwatch on a different host ([Where to run syncwatch](#where-to-run-syncwatch)). If you do none of these, the missed Monday report is the signal.
 - Syncthing 2.x only.
-- The Folders page lists the Syncthing folders and the project folders that are not in Syncthing (S7). The other structure findings (S1 to S6) are not on the Folders page: a share with such findings can show no fault there. The Findings page lists these findings (category structure).
+- The Folders page lists the Syncthing folders, the project folders that are not in Syncthing (S7) and the deleted ones (S8). The other structure findings (S1 to S6) are not on the Folders page: a share with such findings can show no fault there. The Findings page lists these findings (category structure).
 - Folder sizes need a gate that sees the shares (read-only mounts). syncwatch never measures a folder by itself.
 
 ## License

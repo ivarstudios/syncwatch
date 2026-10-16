@@ -459,11 +459,23 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 			sh.ListedAt = listed
 		}
 	}
+	gone, back := c.noteListings(st, cs, shares, listed)
 	c.update(func(s *model.Server) {
 		if s.Structure == nil {
 			s.Structure = &model.Structure{}
 		}
 		s.Structure.Shares = early
+		for _, p := range back {
+			delete(s.Deleted, p)
+		}
+		for _, d := range gone {
+			if s.Deleted == nil {
+				s.Deleted = map[string]*model.DeletedDir{}
+			}
+			if s.Deleted[d.Path] == nil {
+				s.Deleted[d.Path] = d
+			}
+		}
 	})
 
 	found := map[string]*model.NestedDir{}

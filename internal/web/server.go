@@ -53,6 +53,7 @@ type Hooks struct {
 	Delivery        func() notify.Delivery                    // whether notifications reach their channels
 	ScanNow         func(serverID string) collector.ScanStart // start a structure scan of a server for an administrator
 	MeasureSize     func(serverID, path string) error         // ask the gate of a server to measure a project folder that is not in Syncthing
+	ForgetDeleted   func(serverID, path string) error         // remove a deleted project folder of a server from syncwatch (S8)
 }
 
 // Server is the HTTP handler.
@@ -201,6 +202,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /problems/{id}/unsnooze", s.action(RoleAdmin, s.handleUnsnooze))
 	m.HandleFunc("POST /structure/scan", s.action(RoleAdmin, s.handleScanNow))
 	m.HandleFunc("POST /grid/measure", s.action(RoleAdmin, s.handleMeasure))
+	m.HandleFunc("POST /grid/forget", s.action(RoleAdmin, s.handleForget))
 
 	m.HandleFunc("GET /settings", s.page(RoleAdmin, s.handleSettings))
 	m.HandleFunc("POST /settings/servers", s.action(RoleAdmin, s.handleServerSave))

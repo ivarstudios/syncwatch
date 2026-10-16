@@ -63,3 +63,36 @@ func (s *Server) handleMeasure(w http.ResponseWriter, r *http.Request, info requ
 	}
 	s.redirect(w, r, back, msg, len(started) == 0)
 }
+
+// handleForget removes a deleted project folder from syncwatch, for an
+// administrator: the ✕ button next to a yellow box on the Folders page
+// (S8). Its finding resolves. Nothing changes on the server.
+func (s *Server) handleForget(w http.ResponseWriter, r *http.Request, info requestInfo) {
+	back := "/grid"
+	if b := r.FormValue("back"); strings.HasPrefix(b, "/grid") {
+		back = safeNext(b)
+	}
+	id, path := r.FormValue("server"), r.FormValue("path")
+	if id == "" || path == "" {
+		s.redirect(w, r, back, "The request is not complete. Reload the page and try again.", true)
+		return
+	}
+	name := id
+	if sc, ok := s.cfg.Get().ServerByKey(id); ok {
+		name = sc.Name
+	}
+	folder := path
+	if i := strings.LastIndexAny(folder, `/\`); i >= 0 {
+		folder = folder[i+1:]
+	}
+	err := errors.New("syncwatch cannot remove it now")
+	if s.hooks.ForgetDeleted != nil {
+		err = s.hooks.ForgetDeleted(id, path)
+	}
+	if err != nil {
+		s.redirect(w, r, back, fmt.Sprintf("syncwatch cannot remove %s on %s: %v.", folder, name, err), true)
+		return
+	}
+	s.log.Info("administrator removed a deleted folder from syncwatch", "server", name, "path", path, "role", info.Role, "ip", clientIP(r))
+	s.redirect(w, r, back, fmt.Sprintf("The deleted folder %s on %s is removed from syncwatch.", folder, name), false)
+}

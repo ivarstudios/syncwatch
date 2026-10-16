@@ -253,6 +253,9 @@ table.grid th.srv { color: var(--link); }
 /* A project folder on the disk of a server, not in Syncthing: a grey box with a dashed edge and its size, never a state of Syncthing. */
 .c-disk.cell { background: var(--neutral-bg); color: var(--neutral); border: 1px dashed var(--neutral); padding: calc(.1rem - 1px) calc(.4rem - 1px); }
 tr.disk-only > th.fcol { color: var(--muted); font-style: italic; font-weight: 400; }
+/* A project folder outside Syncthing that a scan found deleted (S8): a yellow box with a dashed edge. */
+.c-deleted.cell { background: var(--warn-bg); color: var(--warn); font-weight: 600; border: 1px dashed var(--warn-fill); padding: calc(.1rem - 1px) calc(.4rem - 1px); }
+tr.deleted > th.fcol { font-style: italic; font-weight: 400; }
 form.measure { display: inline; margin: 0 0 0 .1rem; }
 form.measure button.icon { padding: 0 .3rem; line-height: 1.3; font-size: .8rem; font-style: normal; color: var(--link); background: none; border-color: transparent; }
 form.measure button.icon:hover { color: var(--link-hover); border-color: var(--btn-border); }

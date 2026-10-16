@@ -101,7 +101,20 @@ func (m *Manager) Sync() {
 			continue
 		}
 		want[s.ID] = s
-		hubServers = append(hubServers, &model.Server{ID: s.ID, Name: s.Name, URL: s.URL, GUIURL: s.LinkURL()})
+		sv := &model.Server{ID: s.ID, Name: s.Name, URL: s.URL, GUIURL: s.LinkURL()}
+		if !m.hub.View(s.ID, func(*model.Server) {}) {
+			// New in the hub (a server without a known device ID at the
+			// start, a new server, or one enabled again): the deleted
+			// folders that the store keeps, before an evaluation sees the
+			// server, so that their S8 findings stay open. The start of
+			// the application gives them to the other servers.
+			if d, err := m.st.DeletedDirs(s.ID); err != nil {
+				m.log.Error("cannot read the deleted project folders", "server", s.Name, "err", err)
+			} else if len(d) > 0 {
+				sv.Deleted = d
+			}
+		}
+		hubServers = append(hubServers, sv)
 	}
 	m.hub.SetServers(hubServers)
 

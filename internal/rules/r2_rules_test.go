@@ -660,6 +660,10 @@ func TestEveryFindingHasAResolvedSentence(t *testing.T) {
 	addShare(st, cs, src, "LIVE-KYRGYZ-2PROJECTFILES", "ME-LIVE-WORKSHOP", "random stuff", "LIVE-NOTSYNCED-1SOURCE")
 	addShare(st, cs, "/share/X/AKKA-LIVE-2PROJECTFILES", "LIVE-NOTSYNCED-1SOURCE")
 	st.Structure.Nested["n"] = &model.NestedDir{Path: src + "/LIVE-NOTSYNCED-1SOURCE/r/LIVE-NESTED", Parent: src + "/LIVE-NOTSYNCED-1SOURCE", Share: src, Source: "scan", FoundAt: now}
+	st.Deleted = map[string]*model.DeletedDir{
+		src + "/LIVE-GONE-1SOURCE":           {Path: src + "/LIVE-GONE-1SOURCE", Name: "LIVE-GONE-1SOURCE", Share: src, ShareName: "AKKA-LIVE-1SOURCE", DetectedAt: now},
+		"/share/X/AKKA-LIVE-3RENDERS/LIVE-A": {Path: "/share/X/AKKA-LIVE-3RENDERS/LIVE-A", Name: "LIVE-A", Share: "/share/X/AKKA-LIVE-3RENDERS", ShareName: "AKKA-LIVE-3RENDERS", DetectedAt: now, All: true},
+	}
 	eval(Input{Snapshot: &model.Snapshot{Servers: []*model.Server{st}}})
 
 	// Cleanup checks.

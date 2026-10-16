@@ -66,6 +66,8 @@ type Collector struct {
 	sizeNone      bool                 // the server answered that it measures no sizes, in this session
 
 	trafficEvery time.Duration // how often traffic counters are read
+
+	known map[string]store.ShareListing // by share path: the last listing of the share; nil until the first scan reads the store; see noteListings
 }
 
 // rootCAs are the certificate authorities that a CA-signed certificate of a
