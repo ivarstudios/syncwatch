@@ -361,7 +361,9 @@ var errNotLoaded = errors.New("the first full check of the server is not complet
 // nested project folders: folders not in Syncthing on every scan, synced
 // folders only on a baseline scan (events cover them in between) except in
 // polled mode, which has no events and therefore walks them every time.
-// It returns an error, and writes nothing, when it stops before the end.
+// It writes the listings of the shares as soon as they are complete, and
+// the rest at the end. It returns an error, and writes nothing more, when
+// it stops before the end.
 func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	var sv *model.Server
 	c.hub.View(c.id, func(s *model.Server) { sv = s.Clone() })
@@ -443,6 +445,26 @@ func (c *Collector) scan(ctx context.Context, baseline bool) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	// The listings of the shares are complete: publish them at once. Thus
+	// the folders of the shares (the Folders page, S4 to S7, the folder
+	// sizes) do not wait for the walk into the project folders below. That
+	// walk can take many minutes on a large NAS, and the first scan after a
+	// start is a baseline scan. The end of the scan and the nested project
+	// folders (S3) follow when the walk is complete. Copies: the scan
+	// changes its own shares later.
+	listed := time.Now()
+	early := (&model.Structure{Shares: shares}).Clone().Shares
+	for _, sh := range early {
+		if sh.Error == "" {
+			sh.ListedAt = listed
+		}
+	}
+	c.update(func(s *model.Server) {
+		if s.Structure == nil {
+			s.Structure = &model.Structure{}
+		}
+		s.Structure.Shares = early
+	})
 
 	found := map[string]*model.NestedDir{}
 	var fmu sync.Mutex
