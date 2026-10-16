@@ -9,13 +9,13 @@ syncwatch is a small **read-only** monitor for [Syncthing](https://syncthing.net
 - **urgent messages** in Discord for large faults. Examples: a server unreachable, servers not connected, a folder that stopped the sync, a nested project folder.
 - a **lobby page** for a screen in the office, and a **JSON API** for Home Assistant and scripts.
 
-syncwatch **never changes Syncthing**. It reads the REST API of each server with a typed client. The client can only send `GET` requests to an allowlist of endpoints. Thus syncwatch needs no SMB mounts, no file system access and no software on the PCs.
+syncwatch **never changes Syncthing**. It reads the REST API of each server with a typed client. The client can only send `GET` requests to an allowlist of endpoints. Thus syncwatch needs no SMB mounts, no file system access and no software on the PCs. Only the optional folder sizes on the Folders page need the [read-only gate](#read-only-gate) on the NAS, with the shares mounted read-only.
 
 ![Overview](docs/screenshots/overview.png)
 
 More screenshots: [Folders](docs/screenshots/grid.png) · [Findings](docs/screenshots/problems.png) · [Lobby page](docs/screenshots/lobby.png).
 
-**Status:** test release. The first test release is [`v0.9.0-rc1`](https://github.com/ivarstudios/syncwatch/releases/tag/v0.9.0-rc1), a pre-release (image tag `0.9.0-rc1`). The examples below name version 1.0.0, which follows after the test on real NAS hardware. Until then, use `0.9.0-rc1` or [build syncwatch yourself](#build-it-yourself). syncwatch supports Syncthing 2.x only.
+**Status:** test release. The latest test release is [`v0.9.0-rc5`](https://github.com/ivarstudios/syncwatch/releases/tag/v0.9.0-rc5), a pre-release (image tag `0.9.0-rc5`). The image is public on GHCR: a pull needs no login. Since 2026-10-14 the test runs on 3 QNAP NAS (QTS and QuTS hero): syncwatch on one of them, and a read-only gate on each. The examples below name version 1.0.0, which follows after this test. Until then, use the latest `0.9.0-rc…` image or [build syncwatch yourself](#build-it-yourself). syncwatch supports Syncthing 2.x only.
 
 ## Contents
 
