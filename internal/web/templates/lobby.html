@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
 <title>{{.Title}} · syncwatch</title>
-<link rel="stylesheet" href="/assets/lobby.css">
-<link rel="icon" href="/assets/syncwatch-icon.svg" type="image/svg+xml">
-<link rel="icon" href="/assets/syncwatch-icon-32.png" type="image/png" sizes="32x32">
-<link rel="apple-touch-icon" href="/assets/syncwatch-icon-256.png">
-<script src="/assets/htmx.min.js" defer></script>
-<script src="/assets/htmx-ext-sse.js" defer></script>
-<script src="/assets/app.js" defer></script>
-<script src="/assets/lobby.js" defer></script>
+<link rel="stylesheet" href="{{asset "lobby.css"}}">
+<link rel="icon" href="{{asset "syncwatch-icon.svg"}}" type="image/svg+xml">
+<link rel="icon" href="{{asset "syncwatch-icon-32.png"}}" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="{{asset "syncwatch-icon-256.png"}}">
+<script src="{{asset "htmx.min.js"}}" defer></script>
+<script src="{{asset "htmx-ext-sse.js"}}" defer></script>
+<script src="{{asset "app.js"}}" defer></script>
+<script src="{{asset "lobby.js"}}" defer></script>
 </head>
 <body class="lobby" hx-ext="sse" sse-connect="/events" data-tz-offset="{{.TZOffset}}">
 <main>
@@ -26,7 +26,7 @@
 {{define "lobby-body"}}{{$vm := .Data.VM}}
 <div id="lobby-body" class="lobby-body" hx-get="/frag/lobby{{with $vm.Query}}?{{.}}{{end}}" hx-trigger="every 60s, sse:update" hx-swap="outerHTML">
   <header class="lobby-top">
-    <h1 class="brand"><img class="logo" src="/assets/syncwatch-icon.svg" alt="" width="21" height="24">syncwatch</h1>
+    <h1 class="brand"><img class="logo" src="{{asset "syncwatch-icon.svg"}}" alt="" width="21" height="24">syncwatch</h1>
     <p class="health" aria-label="Health summary">{{$vm.Health}}</p>
     <p class="changed"><span class="live-on">Real-time view</span><span class="live-off">No connection to syncwatch</span> · last change <span class="nowrap">{{$vm.Changed}}</span></p>
   </header>

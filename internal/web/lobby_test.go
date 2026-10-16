@@ -229,7 +229,7 @@ func TestLobbyContentSecurityPolicy(t *testing.T) {
 		t.Errorf("scripts: %v", scripts)
 	}
 	for _, s := range scripts {
-		if !regexp.MustCompile(`^<script src="/assets/[a-z.-]+\.js" defer>$`).MatchString(s) {
+		if !regexp.MustCompile(`^<script src="/assets/[a-z.-]+\.js\?v=[0-9a-f]{10}" defer>$`).MatchString(s) {
 			t.Errorf("script %s is not a file from /assets", s)
 		}
 	}
@@ -246,7 +246,7 @@ func TestLobbyContentSecurityPolicy(t *testing.T) {
 			t.Errorf("%s: %d", m[1], r.StatusCode)
 		}
 	}
-	for _, want := range []string{`href="/assets/lobby.css"`, `src="/assets/htmx.min.js"`, `src="/assets/htmx-ext-sse.js"`, `src="/assets/app.js"`, `src="/assets/lobby.js"`,
+	for _, want := range []string{`href="/assets/lobby.css?v=`, `src="/assets/htmx.min.js?v=`, `src="/assets/htmx-ext-sse.js?v=`, `src="/assets/app.js?v=`, `src="/assets/lobby.js?v=`,
 		`"includeIndicatorStyles":false`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the lobby lacks %s", want)

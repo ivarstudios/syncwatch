@@ -5,17 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
 <title>{{if .Title}}{{.Title}} · {{end}}syncwatch</title>
-<link rel="stylesheet" href="/assets/app.css">
-<link rel="icon" href="/assets/syncwatch-icon.svg" type="image/svg+xml">
-<link rel="icon" href="/assets/syncwatch-icon-32.png" type="image/png" sizes="32x32">
-<link rel="apple-touch-icon" href="/assets/syncwatch-icon-256.png">
-<script src="/assets/htmx.min.js" defer></script>
-<script src="/assets/htmx-ext-sse.js" defer></script>
-<script src="/assets/app.js" defer></script>
+<link rel="stylesheet" href="{{asset "app.css"}}">
+<link rel="icon" href="{{asset "syncwatch-icon.svg"}}" type="image/svg+xml">
+<link rel="icon" href="{{asset "syncwatch-icon-32.png"}}" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="{{asset "syncwatch-icon-256.png"}}">
+<script src="{{asset "htmx.min.js"}}" defer></script>
+<script src="{{asset "htmx-ext-sse.js"}}" defer></script>
+<script src="{{asset "app.js"}}" defer></script>
 </head>
 <body{{if .Role}} hx-ext="sse" sse-connect="/events" data-tz-offset="{{.TZOffset}}"{{end}}>
 <header class="top">
-  <a class="brand" href="/"><img class="logo" src="/assets/syncwatch-icon.svg" alt="" width="21" height="24">syncwatch</a>
+  <a class="brand" href="/"><img class="logo" src="{{asset "syncwatch-icon.svg"}}" alt="" width="21" height="24">syncwatch</a>
   {{if .Role}}
   <nav aria-label="Main navigation">
     <a href="/" {{if eq .Nav "overview"}}aria-current="page"{{end}}>Overview</a>
@@ -33,7 +33,7 @@
   {{end}}
   {{end}}
 </header>
-<main>
+<main{{if eq .Nav "grid"}} class="wide"{{end}}>
 {{template "alert" .}}
 {{if .Role}}<div id="sw-conn" class="conn-lost" role="status" hidden>✖ <strong>No connection to syncwatch</strong> from <span class="sw-conn-since"></span>. The page shows old data.</div>{{end}}
 {{if .Flash}}<div class="flash ok" role="status">✔ {{.Flash}}</div>{{end}}
