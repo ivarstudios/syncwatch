@@ -160,9 +160,9 @@ func NeedKey(st *store.Store, c *config.Config) []string {
 	return out
 }
 
-// DropRemovedServers deletes the API keys and pinned certificates of servers
-// that are in old but not in c, so a later server with the same ID can't
-// inherit them.
+// DropRemovedServers deletes the API keys, pinned certificates, share
+// listings and deleted folders of servers that are in old but not in c, so
+// a later server with the same ID can't inherit them.
 func DropRemovedServers(st *store.Store, old, c *config.Config) error {
 	if old == nil {
 		return nil
@@ -174,7 +174,7 @@ func DropRemovedServers(st *store.Store, old, c *config.Config) error {
 	var errs []error
 	for _, s := range old.Servers {
 		if !keep[s.ID] {
-			errs = append(errs, st.DeleteSecret(store.ServerAPIKeySecret(s.ID)), st.SetPin(s.ID, ""))
+			errs = append(errs, st.DeleteSecret(store.ServerAPIKeySecret(s.ID)), st.SetPin(s.ID, ""), st.ForgetListings(s.ID))
 		}
 	}
 	return errors.Join(errs...)

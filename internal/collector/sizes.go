@@ -103,7 +103,7 @@ func (c *Collector) syncSizes(ctx context.Context, now time.Time) {
 		if ctx.Err() != nil {
 			return
 		}
-		ds := fromGate(res)
+		ds := fromGate(res, old)
 		if err != nil {
 			// Keep the last result, with the reason why syncwatch cannot
 			// read a new one.
@@ -189,7 +189,7 @@ func (c *Collector) MeasureNow(path string) error {
 	if err != nil {
 		return err
 	}
-	ds := fromGate(res)
+	ds := fromGate(res, st.Sizes[path])
 	c.sizeMu.Lock()
 	if c.sizeFetched != nil {
 		c.sizeFetched[path] = time.Now()
@@ -244,9 +244,22 @@ func nightKey(cfg *config.Config, now time.Time) string {
 	return start.Format("2006-01-02T15:04")
 }
 
-func fromGate(r stclient.DirSize) *model.DirSize {
-	return &model.DirSize{Bytes: r.Bytes, Files: r.Files, Complete: r.Complete, MeasuredAt: r.MeasuredAt,
+// fromGate converts a result of the gate. A result with an error and no
+// size is a measurement that failed (the directory does not exist, the gate
+// cannot see the share): it keeps the last size that syncwatch read (old),
+// with the error, or it has no size (MeasuredAt zero). Thus a failed
+// measurement never shows as a size of 0 bytes.
+func fromGate(r stclient.DirSize, old *model.DirSize) *model.DirSize {
+	ds := &model.DirSize{Bytes: r.Bytes, Files: r.Files, Complete: r.Complete, MeasuredAt: r.MeasuredAt,
 		Took: time.Duration(r.TookMS) * time.Millisecond, State: r.State, Error: r.Error}
+	if r.Error == "" || r.Bytes != 0 || r.Files != 0 {
+		return ds
+	}
+	ds.Bytes, ds.Files, ds.Complete, ds.MeasuredAt, ds.Took = 0, 0, false, time.Time{}, 0
+	if old != nil && !old.MeasuredAt.IsZero() {
+		ds.Bytes, ds.Files, ds.Complete, ds.MeasuredAt, ds.Took = old.Bytes, old.Files, old.Complete, old.MeasuredAt, old.Took
+	}
+	return ds
 }
 
 func sameSize(a, b *model.DirSize) bool {

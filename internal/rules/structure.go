@@ -12,6 +12,9 @@ import (
 
 func (e *evaluator) structure() {
 	for _, sv := range e.Snapshot.Servers {
+		// From the store, not from a scan: also before the first full
+		// check after a start.
+		e.deleted(sv)
 		if !sv.Loaded {
 			continue
 		}

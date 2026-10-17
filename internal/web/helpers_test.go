@@ -45,6 +45,8 @@ type env struct {
 	resets     []string        // ResetPin calls
 	measured   []string        // MeasureSize calls: "server|path"
 	measureErr error           // what MeasureSize answers
+	forgotten  []string        // ForgetDeleted calls: "server|path"
+	forgetErr  error           // what ForgetDeleted answers
 	delivery   notify.Delivery
 }
 
@@ -127,6 +129,12 @@ func newEnv(t *testing.T, yaml string) *env {
 			defer e.mu.Unlock()
 			e.measured = append(e.measured, id+"|"+path)
 			return e.measureErr
+		},
+		ForgetDeleted: func(id, path string) error {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			e.forgotten = append(e.forgotten, id+"|"+path)
+			return e.forgetErr
 		},
 		SendTest:        func(context.Context) error { return nil },
 		SendNoticesTest: func(context.Context) error { return nil },

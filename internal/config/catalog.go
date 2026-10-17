@@ -40,6 +40,7 @@ var Catalog = []CheckInfo{
 	{"S5", "Incorrect share", model.CatStructure, model.Error, false, 5 * time.Minute},
 	{"S6", "Duplicate name", model.CatStructure, model.Warn, false, 5 * time.Minute},
 	{"S7", "Not in Syncthing", model.CatStructure, model.Info, false, 5 * time.Minute},
+	{"S8", "Project folder deleted", model.CatStructure, model.Warn, true, 5 * time.Minute},
 	{"C1", "Inactive project folder", model.CatCleanup, model.Info, false, 5 * time.Minute},
 	{"C2", "Inactive device", model.CatCleanup, model.Info, false, 5 * time.Minute},
 	{"C3", "Folder not used by device", model.CatCleanup, model.Info, false, 5 * time.Minute},

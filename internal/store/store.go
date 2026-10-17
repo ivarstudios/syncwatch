@@ -109,6 +109,24 @@ var schema = []string{
 		last_local_change INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY(server, folder)
 	)`,
+	`CREATE TABLE IF NOT EXISTS share_listings (
+		server TEXT NOT NULL,
+		share TEXT NOT NULL,
+		dirs INTEGER NOT NULL,
+		unsynced TEXT NOT NULL,
+		PRIMARY KEY(server, share)
+	)`,
+	`CREATE TABLE IF NOT EXISTS deleted_dirs (
+		server TEXT NOT NULL,
+		path TEXT NOT NULL,
+		name TEXT NOT NULL,
+		share TEXT NOT NULL,
+		share_name TEXT NOT NULL,
+		detected_at INTEGER NOT NULL,
+		all_gone INTEGER NOT NULL DEFAULT 0,
+		size TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY(server, path)
+	)`,
 }
 
 // Open opens (creating if needed) the database at path. key is the 32-byte

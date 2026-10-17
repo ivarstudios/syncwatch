@@ -277,3 +277,17 @@ func TestGridIsAlphabetical(t *testing.T) {
 		last = i
 	}
 }
+
+// The rows and the groups of the Folders page have ids. htmx gives a new
+// element with the id of an old one its own classes again after a live
+// update (the settle, after afterSwap): that dropped the classes of the
+// filters, and each update showed all folders again. app.js filters again
+// when the update is settled. The behaviour runs in the browser; this pins
+// the shipped script.
+func TestGridFilterSurvivesLiveUpdates(t *testing.T) {
+	e := adminEnv(t, twoServers+diskRules)
+	_, js := e.get("/assets/app.js")
+	if !regexp.MustCompile(`"htmx:afterSettle", function \(\) \{\s*applyGridFilter\(\);\s*applySiteFilter\(\);`).MatchString(js) {
+		t.Error("app.js does not filter again after the settle of a live update")
+	}
+}

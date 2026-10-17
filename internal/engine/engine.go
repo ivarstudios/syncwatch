@@ -342,6 +342,12 @@ func (z *freezer) frozen(f model.Finding) bool {
 		// contacted yet" (after a start) says nothing about it.
 		return z.unknown[f.Server]
 	}
+	if f.Check == "S8" {
+		// From the deleted folders that syncwatch keeps itself (in the
+		// store, and in the hub from the start): a server that is down
+		// changes nothing about them.
+		return false
+	}
 	if f.Server == "" {
 		if absenceCheck(f) && (z.unloaded || z.anyPresentStale(f.Related)) {
 			return true
@@ -721,6 +727,9 @@ func visibleFingerprint(snap *model.Snapshot) uint64 {
 				z := st.Sizes[p]
 				w("size", p, rules.Size(z.Bytes), z.Complete, z.State, z.Error, z.MeasuredAt.Unix())
 			}
+		}
+		for _, p := range sortedKeys(sv.Deleted) {
+			w("deleted", p, sv.Deleted[p].DetectedAt.Unix())
 		}
 	}
 	return h.Sum64()
